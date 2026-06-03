@@ -726,40 +726,84 @@ src/
 
 ## 12. Implementation Roadmap
 
-### Phase 1: Foundation (Week 1-2)
+This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. Phases are sequenced by dependency, not calendar; sizing is indicative (S ≈ days, M ≈ 1-2 wks, L ≈ 3-4 wks). Each phase ships behind tests and is independently demoable.
 
-1. Set up new directory structure
-2. Migrate domain models to `domain/`
-3. Create service layer interfaces
-4. Replace in-memory state with repository calls
-5. Add missing tests for critical paths
+### 12.0 Architecture Principles
 
-### Phase 2: Route Decomposition (Week 3-4)
+- **Rust core, WASM-targeted.** Domain + service logic compiles to WASM (`wasm32-*`); the host provides I/O (network, DB, platform APIs) via a typed boundary (WIT / component model or host functions). Decide the WASM/host split in Phase 0 — it constrains everything.
+- **No god files** (>500 lines), thin handlers → services → repositories, business logic never in handlers.
+- **No in-memory state** in handlers; all state is loaded-from-storage (mandatory under WASM's ephemeral instances).
+- **Workspace-native & tenant-isolated** from day one; isolation (TEN-007) enforced at the repository layer.
+- **TDD throughout**; `proptest` for all boundary validation. Coverage gates: 80% overall, 95% critical paths.
+- **Cross-cutting from commit #1**: audit logging (ADR-045), correlation IDs (`tracing`), secrets via Vault, UTC everywhere, fail-fast validation (newtypes, no silent fallbacks).
 
-1. Split `summaries.py` (5,574 lines → 6 modules)
-2. Split `archive.py` (4,051 lines → 5 modules)
-3. Split `wiki.py` (2,277 lines → 4 modules)
-4. Extract business logic to services
+### 12.1 Phase 0 — Toolchain & Architecture Spike (M)
 
-### Phase 3: Service Layer (Week 5-6)
+1. Cargo workspace, `wasm32` target, build/test/CI harness, `proptest`.
+2. **Decide the WASM boundary**: what runs in-WASM vs host-side, the async story in WASM, and streaming-vs-batch for fetch/clustering (resolves brief open Q#11 — WASM memory ceiling).
+3. Host runtime choice (e.g. wasmtime/edge/browser) and the typed host I/O interface.
+4. Walking skeleton: one trivial request through host → WASM service → repository → DB.
 
-1. Implement `SummaryService`
-2. Implement `ScheduleService`
-3. Implement `DeliveryService`
-4. Implement `JobService`
+### 12.2 Phase 1 — Core Domain, Persistence & Identity (L)
 
-### Phase 4: Testing & Stabilization (Week 7-8)
+1. Workspace / Tenant / WorkspaceConnection models; repository layer with tenant isolation (TEN-007, DAT-001/002).
+2. Pluggable identity behind `dyn IdentityProvider` — ship **≥2 providers** (Discord OAuth + email magic link or Google SSO) to prove the abstraction (WSP-001).
+3. JWT (short-lived) + refresh-token revocation; session store (DB/Redis), audit log, correlation IDs, secrets.
+4. **Gates**: brief open Q#1 (identity-link collision) and Q#2 (workspace auto-create vs explicit) must be answered here.
 
-1. Add unit tests for all services
-2. Add integration tests for repositories
-3. Add API contract tests
-4. Fix migration numbering gaps
+### 12.3 Phase 2 — Platform Adapters, Ingestion & Reprocessing (L)
 
-### Phase 5: Knowledge Management (Week 9-10)
+*Critical-path: greenfield means no seed data, so every workspace depends on this before it has anything to summarize.*
+1. `PlatformAdapter`/`PlatformFetcher` trait → `NormalizedMessage` (ADR-051); Discord + Slack adapters; WhatsApp import.
+2. Message processing: cleaning, code blocks, attachments, threads, substantial-vs-trivial (MSG-*).
+3. **Unified reprocessing/backfill** (DAT-003..006) folding together backfill jobs (ADR-068), coverage tracking (ADR-072), and retrospective archive (ADR-006): first-class job type, idempotent (dedup on platform message ID), resumable, retention-bounded with recorded gaps.
 
-1. Refactor RuVector integration
-2. Implement coherence gate properly
-3. Add wiki synthesis tests
+### 12.4 Phase 3 — Summarization Pipeline (L)
+
+1. Resilient multi-model retry engine (ADR-024): summary-type-dependent start model, failure-type strategies, hard cost cap.
+2. Adaptive token allocation (ADR-095, fixed-point cost math).
+3. Structured extraction (key points, action items, technical terms, participants) + grounded citations with position-index resolution (ADR-004).
+4. Job tracking lifecycle (ADR-013): synchronous record-before-async, RUNNING→PAUSED on restart, persisted errors.
+5. **Gates**: brief open Q#5 (cost-cap mid-chain policy), Q#6 (quality-detection robustness).
+
+### 12.5 Phase 4 — Delivery & Summary Storage (M)
+
+1. Platform-agnostic delivery (§4): `PLATFORM_CHANNEL`/`PLATFORM_DM` resolved against connected platforms (DEL-010), `rich`/markdown/template/json formats with per-platform rich rendering (FMT-001/005).
+2. Capability-gated, admin-enabled destinations (§4.3 DEN-*; DEL-011) — hidden when unconfigured, enforced server-side, encrypted config.
+3. Stored summaries + dashboard storage destination (always-on).
+
+### 12.6 Phase 5 — Dashboard & Web API (L)
+
+1. OpenAPI-first thin API over services (workspace-scoped routes).
+2. Summary management: list/filter/search/detail, pin/archive/tag, push, bulk ops (§5.1).
+3. Schedule management API + creation wizard (§5.2, ADR-089).
+4. Real-time updates via SSE/WebSocket (no in-memory queues — Redis pub/sub or equivalent).
+
+### 12.7 Phase 6 — Scheduling & Rolling Summaries (M)
+
+1. Persistent scheduler with restore-on-restart, grace period, auto-disable (SCH-*).
+2. Runtime scope resolution (ADR-011): CHANNEL/CATEGORY/WORKSPACE; store scope vs channels-with-content separately.
+3. Rolling periods (ADR-101): append/resummarize/hybrid, the **one-active-summary-per-schedule invariant**, idempotent finalization, per-destination delivery (ADR-108).
+
+### 12.8 Phase 7 — Knowledge: RuVector Phase 1 + Coherence Gate + Wiki (L)
+
+1. **Lock the embedding model first** (brief open Q#8) — clustering breaks if it changes later.
+2. RuVector semantic search + FTS5 dual-index (target <100ms p99); confirm RuVector Rust API vs FFI (brief open Q#7).
+3. Inline knowledge-unit extraction (≤20/summary), multi-layer dedup (ADR-118), **Coherence Gate (COH-001, now HIGH)**.
+4. Wiki: auto-ingestion (ADR-067), dual-tab pages (ADR-063), emergent structure (ADR-090); AI Wiki Curator (§8.4 CUR-*) with confidence-gated, reversible actions.
+
+### 12.9 Phase 8 — Multi-Tenancy & White-Label (M)
+
+1. Tenants, subdomains + custom domains (DNS verification), branding, member management/invites, tenant-scoped OAuth (TEN-001..006).
+2. **Gate**: brief open Q#3 (billing model) before exposing tenant self-service.
+
+### 12.10 Phase 9 — Hardening & Launch (M)
+
+1. Coverage gates met (80%/95%), perf benchmarks (<30s summary for <1000 msgs; <100ms p99 search).
+2. Security review (tenant isolation, encrypted secrets, JWT revocation), GDPR soft-delete + verified cascade.
+3. Observability, load testing, runbooks.
+
+> **Cross-platform summaries** (brief open Q#9) and the future RuVector phases (GNN/SONA/rvLite, §8.3 COH-002..004) are explicitly **post-v1** unless promoted.
 
 ---
 
