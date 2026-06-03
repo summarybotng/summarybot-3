@@ -214,14 +214,14 @@ Note: numbering is inconsistent in the source (some `NNN`, some `ADR-NNN`); show
 
 ## Open questions for the user
 
-1. **Identity-linking collision (ADR-066, blocking).** When a user links a platform account already tied to a different user, resolution logic is explicitly undefined. What is the expected behavior — reject, merge, or admin-mediated claim?
-2. **Workspace creation strategy (ADR-066, blocking).** Auto-create a workspace from the first platform connection, or require explicit user creation? Affects onboarding and the data model.
-3. **Workspace/tenant billing model (ADR-066, ADR-079).** Tenant billing is undefined and gates all multi-tenancy features (FUT-010+). Is billing per-tenant, per-workspace, or per-platform?
+1. ~~**Identity-linking collision (ADR-066, blocking).**~~ **RESOLVED 2026-06-03: REJECT + admin-mediated claim** (no auto-merge, no silent reassign). PRD WSP-010.
+2. ~~**Workspace creation strategy (ADR-066, blocking).**~~ **RESOLVED 2026-06-03: EXPLICIT creation, then connect platforms** (no auto-create on connect). PRD WSP-009.
+3. ~~**Workspace/tenant billing model (ADR-066, ADR-079).**~~ **RESOLVED 2026-06-03: PER-TENANT** — tenant owns unlimited workspaces under its plan. PRD TEN-008.
 4. ~~**Legacy `guild_id` migration timing (PRD §7.1).**~~ **RESOLVED 2026-06-03: GREENFIELD.** No migration of legacy data, no back-compat `guild_id` columns; `guild_id` lives only in `WorkspaceConnection.platform_id`. Historical content is re-ingested from source platforms via adapters. See PRD §7.3 (DAT-001..006).
-5. **Cost cap mid-chain failure policy (ADR-024).** When the $0.50 cap halts retries mid-chain with no final summary, what does the user get — a partial summary, an error, or a best-effort lower-quality result? Where does the cap config live (env/DB/request)?
-6. **Quality-detection robustness (ADR-024/025).** Malformed-content detection depends on exact markers like `[Unable to parse...]`. The ADR explicitly flags this as under-specified — should the rewrite use regex/structural detection instead, and what are the real production failure signatures?
-7. **RuVector scope for v1 (ADR-052/057/087/090).** PRD commits Phase 1 + Coherence Gate. Is RuVector's native Rust API the dependency (vs FFI), and is the FTS5 dual-index a hard launch requirement or can launch be RuVector-only? ADR-087 depends on ADR-057 being complete first — confirm sequencing.
-8. **Embedding model choice (ADR-052, ADR-090).** Undetermined (sentence-transformers vs `text-embedding-3-small` vs local). Clustering breaks if the model changes — this needs locking before any vector schema is written.
+5. ~~**Cost cap mid-chain failure policy (ADR-024).**~~ **RESOLVED 2026-06-03: best-effort partial, flagged degraded**, with cost+attempt metadata. Cap configurable per-workspace with per-request override. PRD SUM-016.
+6. ~~**Quality-detection robustness (ADR-024/025).**~~ **RESOLVED 2026-06-03: structural validation** (response JSON schema + finish_reason), not marker strings. PRD SUM-017.
+7. ~~**RuVector scope for v1 (ADR-052/057/087/090).**~~ **RESOLVED 2026-06-03: native Rust crate** (fall back to Rust-native vector lib only if unviable). PRD KNO-006. *Still open*: FTS5 dual-index as a hard launch requirement, and ADR-087→ADR-057 sequencing — defer to Phase 7 detailed design.
+8. ~~**Embedding model choice (ADR-052, ADR-090).**~~ **RESOLVED 2026-06-03: local self-hosted** (e.g. bge-small / all-MiniLM via candle), model+version pinned. PRD KNO-007.
 9. **Cross-platform summaries (ADR-066).** Spanning Discord + Slack in one summary is proposed but not decided. In scope for v1? Affects scope definition and the fetcher abstraction.
 10. **Wiki source-of-truth for git versioning (ADR-087).** RuVector is primary but markdown doesn't version natively. What is the snapshotting/cache-invalidation strategy, and how do human markdown edits reconcile (`human_correction` units) — accept eventual consistency or enforce sync?
-11. **WASM memory ceiling for batch fetch (ADR-051, ADR-090).** Collecting all raw messages / full similarity graphs may exceed WASM memory for large guilds. Should fetching/clustering be streaming-by-default, and which operations stay server-side?
+11. ~~**WASM memory ceiling for batch fetch (ADR-051, ADR-090).**~~ **RESOLVED 2026-06-03: server-host owns I/O; WASM is bounded/streamed pure compute.** All fetching/DB/LLM stays host-side; WASM receives streamed bounded inputs. PRD §12.0.

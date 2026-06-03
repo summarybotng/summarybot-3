@@ -66,11 +66,13 @@ The current codebase suffers from:
 | SUM-012 | Track generation metrics (attempts, cost, latency) | Medium | |
 | SUM-013 | Cache summaries with hash-based invalidation | Medium | |
 | SUM-014 | Respect minimum message threshold (default 5) | High | |
-| SUM-015 | Handle prompt length optimization for token limits | High | |
+| SUM-015 | Handle prompt length optimization for token limits | High |
+| SUM-016 | On cost-cap exhaustion mid-chain, return the last usable attempt as a **best-effort partial**, flagged degraded/incomplete with cost+attempt metadata (never silently drop) | High |
+| SUM-017 | Detect malformed/low-quality output by **structural validation** (response JSON schema + finish_reason), not fragile marker strings | High | |
 
 **Non-Functional Requirements**:
 - Response time: < 30 seconds for < 1000 messages
-- Cost cap per generation: Configurable (default $0.50)
+- Cost cap per generation: Configurable **per-workspace** (default $0.50), with optional per-request override
 - Max retry attempts: Configurable (default 5)
 
 ### 1.2 Message Processing
@@ -146,6 +148,8 @@ The current codebase suffers from:
 | WSP-006 | Platform adapter pattern for all fetchers/deliverers (no platform hardcoded in core) | Critical |
 | WSP-007 | Optional platform connections — a workspace may have zero bots attached | High |
 | WSP-008 | Map external platform IDs (guild_id, team_id) to a workspace via a connection table | Critical |
+| WSP-009 | Workspace creation is **explicit**: user creates a named workspace, then attaches platform connections (no auto-create on connect) | High |
+| WSP-010 | Linking a platform account already bound to another user is **rejected**; transfer requires verification / admin-mediated claim (no auto-merge, no silent reassign) | Critical |
 
 **Non-Functional**: "Workspace" is the canonical user-facing term; "guild"/"team" appear only inside platform adapters.
 
@@ -339,6 +343,7 @@ The current codebase suffers from:
 | TEN-005 | Workspace linking to tenants | High |
 | TEN-006 | Tenant-scoped OAuth redirects | High |
 | TEN-007 | Tenant-level data isolation enforced at the repository layer | Critical |
+| TEN-008 | Billing entity is the **tenant**; a tenant owns unlimited workspaces under its plan (not per-workspace billing) | High |
 
 ---
 
@@ -525,6 +530,8 @@ services/
 | KNO-003 | Store in vector database | Medium |
 | KNO-004 | Track ingestion status | Low |
 | KNO-005 | Query by semantic similarity | Low |
+| KNO-006 | Vector search via RuVector's **native Rust crate** (no FFI/sidecar); fall back to a Rust-native vector lib only if the crate proves unviable | Medium |
+| KNO-007 | Embeddings from a **local self-hosted** model (e.g. bge-small / all-MiniLM via candle); model + version pinned, as a change invalidates all stored vectors | Medium |
 
 ### 8.2 Wiki Synthesis (ADR-067)
 
@@ -730,7 +737,7 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 
 ### 12.0 Architecture Principles
 
-- **Rust core, WASM-targeted.** Domain + service logic compiles to WASM (`wasm32-*`); the host provides I/O (network, DB, platform APIs) via a typed boundary (WIT / component model or host functions). Decide the WASM/host split in Phase 0 — it constrains everything.
+- **Server host + WASM compute (decided).** A native Rust server owns all I/O (platform APIs, DB, LLM) and orchestration (retry, cost cap); WASM components (`wasm32-*`, WIT / component model) are sandboxed **pure-compute** units — summarize, extract, ground, dedup, coherence-gate — invoked with **bounded, streamed inputs**. This sidesteps WASM memory ceilings (resolves open Q#11). Edge/browser/offline (rvLite) execution is explicitly post-v1.
 - **No god files** (>500 lines), thin handlers → services → repositories, business logic never in handlers.
 - **No in-memory state** in handlers; all state is loaded-from-storage (mandatory under WASM's ephemeral instances).
 - **Workspace-native & tenant-isolated** from day one; isolation (TEN-007) enforced at the repository layer.
@@ -740,8 +747,8 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 ### 12.1 Phase 0 — Toolchain & Architecture Spike (M)
 
 1. Cargo workspace, `wasm32` target, build/test/CI harness, `proptest`.
-2. **Decide the WASM boundary**: what runs in-WASM vs host-side, the async story in WASM, and streaming-vs-batch for fetch/clustering (resolves brief open Q#11 — WASM memory ceiling).
-3. Host runtime choice (e.g. wasmtime/edge/browser) and the typed host I/O interface.
+2. Implement the **decided** boundary (§12.0): native host owns I/O + orchestration, WASM does bounded/streamed pure compute. Define the typed host↔WASM interface (WIT).
+3. Host runtime choice (e.g. wasmtime) and the host I/O interface.
 4. Walking skeleton: one trivial request through host → WASM service → repository → DB.
 
 ### 12.2 Phase 1 — Core Domain, Persistence & Identity (L)
