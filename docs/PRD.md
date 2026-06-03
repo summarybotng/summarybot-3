@@ -206,10 +206,12 @@ The current codebase suffers from:
 
 ### 4.1 Delivery Destinations
 
+*Delivery is platform-agnostic: a destination targets whichever platforms the workspace has connected. "Deliver to chat" means deliver to the connected platform's channel/DM (Discord channel, Slack channel, Slack DM, …), not Discord specifically. A destination is only offered when its platform connection or configuration exists (see §4.3 DEN-003).*
+
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| DEL-001 | DISCORD_CHANNEL: Deliver to text channel | Critical |
-| DEL-002 | DISCORD_DM: Deliver via direct message | Medium |
+| DEL-001 | PLATFORM_CHANNEL: Deliver to a channel on a connected chat platform (Discord text channel, Slack channel) | Critical |
+| DEL-002 | PLATFORM_DM: Deliver via direct message on a connected chat platform (Discord DM, Slack DM) | Medium |
 | DEL-003 | WEBHOOK: POST to external URL | High |
 | DEL-004 | EMAIL: Send via SMTP | Medium |
 | DEL-005 | DASHBOARD: Store for web viewing | Critical |
@@ -217,6 +219,8 @@ The current codebase suffers from:
 | DEL-007 | Support multiple destinations per schedule | High |
 | DEL-008 | Enable/disable individual destinations | High |
 | DEL-009 | Track delivery results | High |
+| DEL-010 | Resolve chat destinations against the workspace's connected platforms; deliver to each connected platform (e.g. Discord channel AND Slack DM if both connected) | High |
+| DEL-011 | Only offer destinations whose platform is connected/configured; hide the rest (e.g. no Confluence option when Confluence not configured, no Slack DM when Slack not connected) | High |
 
 ### 4.2 Delivery Formats
 
