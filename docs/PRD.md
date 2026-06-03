@@ -132,6 +132,23 @@ The current codebase suffers from:
 | WHA-007 | List ingested chats with statistics | Medium |
 | WHA-008 | API key authentication for ingest | High |
 
+### 2.4 Platform-Agnostic Workspace Model (ADR-066, ADR-078)
+
+*Promoted from Future Requirements §13.1. Foundational for the rewrite: the system is no longer Discord-centric. The `workspace_id` is the primary tenant key; platform connections (Discord/Slack/WhatsApp) are optional attachments to a workspace.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| WSP-001 | Authenticate without Discord (email magic link, Google SSO) | Critical |
+| WSP-002 | Use `workspace_id` as the primary tenant key throughout (replaces `guild_id`) | Critical |
+| WSP-003 | Support workspaces with Slack-only connections | High |
+| WSP-004 | Support cross-platform workspaces (Discord + Slack + WhatsApp in one) | High |
+| WSP-005 | Unified user identity across linked platforms | High |
+| WSP-006 | Platform adapter pattern for all fetchers/deliverers (no platform hardcoded in core) | Critical |
+| WSP-007 | Optional platform connections — a workspace may have zero bots attached | High |
+| WSP-008 | Map external platform IDs (guild_id, team_id) to a workspace via a connection table | Critical |
+
+**Non-Functional**: "Workspace" is the canonical user-facing term; "guild"/"team" appear only inside platform adapters.
+
 ---
 
 ## 3. Scheduling System
@@ -210,6 +227,23 @@ The current codebase suffers from:
 | FMT-003 | template: ADR-014 with thread creation | Medium |
 | FMT-004 | json: Raw JSON for webhooks | Low |
 
+### 4.3 Destination Enablement & Pluggability
+
+*Destinations are pluggable capabilities. A workspace admin opts each optional destination in; the UI only surfaces what is enabled and configured. Confluence is the driving example, but the rule applies to all optional destinations.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| DEN-001 | Each delivery destination is a pluggable capability behind a common trait (`DeliveryDestination`) | High |
+| DEN-002 | Workspace admins enable/disable optional destinations per workspace (Confluence, Email, Webhook, Drive) | High |
+| DEN-003 | Disabled/unconfigured destinations are hidden everywhere in the UI — not shown greyed-out (capability-gated UI) | High |
+| DEN-004 | Enabling a destination requires its configuration to be valid before it becomes selectable (e.g. Confluence base URL + service-account token) | High |
+| DEN-005 | Dashboard and Discord are always-available core destinations and are not hidden | Medium |
+| DEN-006 | Destination availability is enforced server-side, not just in the UI — a disabled destination is rejected by the API | Critical |
+| DEN-007 | Only workspace admins may change destination enablement (ties to PRM-001 ADMIN level) | High |
+| DEN-008 | Per-workspace destination config (credentials) is encrypted at rest (ADR-099: AES-256-GCM) | Critical |
+
+> **Anti-pattern caution (from `docs/reference-brief.md`):** the old system shipped DB schema for webhook/email/Confluence/Drive before working delivery code. A destination counts as "enabled" only when it actually delivers and survives restart — never expose a stubbed destination in the admin UI.
+
 ---
 
 ## 5. Dashboard & Web API
@@ -285,11 +319,52 @@ The current codebase suffers from:
 | PRM-006 | Permission caching | Medium |
 | PRM-007 | Optional enforcement flag | High |
 
+### 6.3 Multi-Tenancy (ADR-079)
+
+*Promoted from Future Requirements §13.3. Required for white-label / hosted deployments. A tenant owns one or more workspaces.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| TEN-001 | Custom subdomains per tenant (acme.summarybot.app) | High |
+| TEN-002 | Custom domains with DNS verification | Medium |
+| TEN-003 | Tenant branding (logo, colors, app name) | Medium |
+| TEN-004 | Tenant member management (invites, roles) | High |
+| TEN-005 | Workspace linking to tenants | High |
+| TEN-006 | Tenant-scoped OAuth redirects | High |
+| TEN-007 | Tenant-level data isolation enforced at the repository layer | Critical |
+
 ---
 
 ## 7. Data Architecture
 
 ### 7.1 Core Data Models
+
+> **Terminology migration (WSP-002)**: `guild_id` is replaced by `workspace_id` across all models below. A workspace may attach zero or more platform connections. Existing Discord-keyed data migrates by creating one workspace per guild.
+
+#### Workspace & Tenancy (ADR-066, ADR-079)
+```rust
+struct Tenant {
+    id: String,
+    name: String,
+    subdomain: Option<String>,      // TEN-001
+    custom_domain: Option<String>,  // TEN-002
+    branding: Branding,             // TEN-003
+}
+
+struct Workspace {
+    id: String,                     // primary tenant key (replaces guild_id)
+    tenant_id: String,
+    name: String,
+    owner_user_id: String,
+    created_at: DateTime,
+}
+
+struct WorkspaceConnection {
+    workspace_id: String,
+    platform: Platform,             // Discord | Slack | WhatsApp
+    platform_id: String,            // guild_id, team_id, etc. (unique per platform)
+}
+```
 
 #### SummaryResult
 ```python
@@ -436,6 +511,32 @@ services/
 | WIK-001 | Ingest summaries to wiki structure | Low |
 | WIK-002 | Track ingestion status | Low |
 | WIK-003 | Regenerate wiki pages | Low |
+
+### 8.3 Coherence Gate & Advanced RuVector (ADR-052)
+
+*Promoted from Future Requirements §13.4 (RuVector Phases 2–4 + coherence gate).*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| COH-001 | Coherence gate: validate generated claims against source messages to prevent hallucination | High |
+| COH-002 | GNN-based conversation topology modeling (thread/reply graph) | Medium |
+| COH-003 | Cross-session agent memory persisted via RuVector | Medium |
+| COH-004 | Self-learning query optimization (SONA) for semantic search | Low |
+| COH-005 | Provenance tracking: every claim links to its source segment | High |
+
+### 8.4 AI Wiki Curator Agent (ADR-077)
+
+*Promoted from Future Requirements §13.5. Automates quality maintenance of the compounding wiki.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| CUR-001 | Curator agent runs on schedule against the wiki | Medium |
+| CUR-002 | Topic merging for similar/duplicate topics (e.g. "auth" vs "authentication") | Medium |
+| CUR-003 | Quality scoring for wiki pages, flag sparse/stale content | Medium |
+| CUR-004 | Automated bidirectional cross-reference linking | Low |
+| CUR-005 | Contradiction detection and resolution across pages | Medium |
+| CUR-006 | Content pruning of stale pages | Low |
+| CUR-007 | Knowledge gap detection (missing topics) | Low |
 
 ---
 
@@ -724,7 +825,7 @@ This section captures features that were discussed, planned, or documented in AD
 
 ### 13.1 Platform-Agnostic Architecture (ADR-066)
 
-**Status**: Proposed (Never Implemented)
+**Status**: ✅ PROMOTED to §2.4 (committed requirements WSP-001..008)
 **Priority**: HIGH - Critical for enterprise adoption
 **Stakeholder Request**: "Allow organizations that don't run Discord to use the system (e.g., Slack-only)"
 
@@ -810,7 +911,7 @@ WhatsApp Cloud API is **push-only** - you receive webhooks but cannot query "giv
 
 ### 13.3 Subdomain Multi-Tenancy (ADR-079)
 
-**Status**: Proposed (Partial Implementation)
+**Status**: ✅ PROMOTED to §6.3 (committed requirements TEN-001..007)
 **Priority**: HIGH - Required for white-label deployments
 
 #### Requirements
@@ -828,7 +929,7 @@ WhatsApp Cloud API is **push-only** - you receive webhooks but cannot query "giv
 
 ### 13.4 RuVector Full Integration Vision (ADR-052)
 
-**Status**: Proposed (Partial - Only basic vector search implemented)
+**Status**: ✅ PROMOTED to §8.3 (committed requirements COH-001..005)
 **Priority**: MEDIUM - Advanced knowledge features
 
 #### Proposed Phases
@@ -855,7 +956,7 @@ WhatsApp Cloud API is **push-only** - you receive webhooks but cannot query "giv
 
 ### 13.5 AI Wiki Curator Agent (ADR-077)
 
-**Status**: Proposed (Not Implemented)
+**Status**: ✅ PROMOTED to §8.4 (committed requirements CUR-001..007)
 **Priority**: MEDIUM - Quality automation
 
 #### Problem Statement
@@ -957,7 +1058,7 @@ See Appendix C for key implemented ADRs.
 
 | ADR | Title | Priority |
 |-----|-------|----------|
-| ADR-052 | RuVector Integration Vision | Medium |
+| ADR-052 | RuVector Integration Vision | Medium → ✅ Committed (§8.3) |
 | ADR-055 | Knowledge Base Agents | Low |
 | ADR-056 | Compounding Wiki Standard | Medium |
 | ADR-057 | Compounding Wiki RuVector | Medium |
@@ -966,12 +1067,12 @@ See Appendix C for key implemented ADRs.
 | ADR-060 | Wiki Curation Model | Low |
 | ADR-061 | Wiki Population Strategies | Low |
 | ADR-063 | Wiki Page Tabs | Low |
-| ADR-066 | Platform-Agnostic Architecture | **High** |
+| ADR-066 | Platform-Agnostic Architecture | **High** → ✅ Committed (§2.4) |
 | ADR-071 | Summary Deduplication | Medium |
 | ADR-072 | Content Coverage Tracking | Medium |
-| ADR-077 | AI Wiki Curator Agent | Medium |
-| ADR-078 | Platform Agnostic UX | High |
-| ADR-079 | Subdomain Multi-Tenancy | **High** |
+| ADR-077 | AI Wiki Curator Agent | Medium → ✅ Committed (§8.4) |
+| ADR-078 | Platform Agnostic UX | High → ✅ Committed (§2.4) |
+| ADR-079 | Subdomain Multi-Tenancy | **High** → ✅ Committed (§6.3) |
 | ADR-080 | Wiki Perspective Filtering | Low |
 | ADR-088 | Unified Scheduling UX | Medium |
 | ADR-096 | Adaptive Summary Granularity | Low |
