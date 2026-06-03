@@ -224,12 +224,15 @@ The current codebase suffers from:
 
 ### 4.2 Delivery Formats
 
+*Format is a render intent, not a platform binding. `rich` resolves to each connected platform's native rich format (Discord embed, Slack Block Kit, …) via its adapter; the adapter falls back to `markdown` if it has no rich representation.*
+
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| FMT-001 | embed: Discord rich embed | High |
+| FMT-001 | rich: Platform-native rich format, rendered per connected platform (Discord embed, Slack Block Kit) | High |
 | FMT-002 | markdown: Plain markdown | High |
 | FMT-003 | template: ADR-014 with thread creation | Medium |
 | FMT-004 | json: Raw JSON for webhooks | Low |
+| FMT-005 | Adapter selects the native rich renderer for its platform; fall back to markdown when no rich format exists | Medium |
 
 ### 4.3 Destination Enablement & Pluggability
 
