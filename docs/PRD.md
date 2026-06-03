@@ -150,6 +150,10 @@ The current codebase suffers from:
 | WSP-008 | Map external platform IDs (guild_id, team_id) to a workspace via a connection table | Critical |
 | WSP-009 | Workspace creation is **explicit**: user creates a named workspace, then attaches platform connections (no auto-create on connect) | High |
 | WSP-010 | Linking a platform account already bound to another user is **rejected**; transfer requires verification / admin-mediated claim (no auto-merge, no silent reassign) | Critical |
+| WSP-011 | Provide a **claim/transfer workflow** for a contested platform identity: a claim record (requester, current owner, status: pending/approved/denied/expired) with request/list/approve/deny API + admin UI | High |
+| WSP-012 | **Self-service first**: completing the platform's own OAuth for the contested account is proof of control and **auto-approves** the transfer (no human needed) — covers the common "same person, two logins" case | High |
+| WSP-013 | Disputes that can't be self-verified escalate to a human approver: a **tenant admin** for same-tenant collisions, a **platform operator** (new role) for cross-tenant collisions | High |
+| WSP-014 | On transfer, atomically move only the **authentication identity** by default; transferring owned workspaces/schedules is a separate explicit step. Every claim and transfer is **audit-logged** (security boundary) | High |
 
 **Non-Functional**: "Workspace" is the canonical user-facing term; "guild"/"team" appear only inside platform adapters.
 
