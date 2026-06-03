@@ -58,7 +58,7 @@ The current codebase suffers from:
 | SUM-004 | Extract action items with assignee, priority, deadline | Critical | |
 | SUM-005 | Extract technical terms with definitions | High | |
 | SUM-006 | Analyze participant contributions | High | Message counts, contribution scores |
-| SUM-007 | Support custom system prompts per guild | High | ADR-034 |
+| SUM-007 | Support custom system prompts per workspace | High | ADR-034 |
 | SUM-008 | Support perspectives (general, developer, executive, support) | Medium | |
 | SUM-009 | Include grounded citations [N] linking to source messages | High | ADR-004 |
 | SUM-010 | Extract knowledge units for RuVector storage | Medium | ADR-090 |
@@ -177,7 +177,7 @@ The current codebase suffers from:
 |----|-------------|----------|
 | SCP-001 | CHANNEL scope: Single or multiple channels | Critical |
 | SCP-002 | CATEGORY scope: All channels in category | High |
-| SCP-003 | GUILD scope: All accessible channels | High |
+| SCP-003 | WORKSPACE scope: All accessible channels across the workspace's connected platforms | High |
 | SCP-004 | Support excluded_channel_ids | High |
 | SCP-005 | Runtime channel resolution | High |
 | SCP-006 | Category mode: combined or individual | Medium |
@@ -280,7 +280,7 @@ The current codebase suffers from:
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| SCM-001 | List schedules for guild | Critical |
+| SCM-001 | List schedules for workspace | Critical |
 | SCM-002 | Create schedule with wizard | Critical |
 | SCM-003 | Update schedule | High |
 | SCM-004 | Delete schedule | High |
@@ -310,7 +310,7 @@ The current codebase suffers from:
 |----|-------------|----------|
 | AUTH-001 | Discord OAuth2 login | Critical |
 | AUTH-002 | JWT token with expiration | Critical |
-| AUTH-003 | Validate guild access | Critical |
+| AUTH-003 | Validate workspace access | Critical |
 | AUTH-004 | Check admin status for management | High |
 | AUTH-005 | API key auth for integrations | Medium |
 
@@ -378,7 +378,7 @@ struct WorkspaceConnection {
 class SummaryResult:
     id: str                           # UUID
     channel_id: str
-    guild_id: str
+    workspace_id: str
     start_time: datetime
     end_time: datetime
     message_count: int
@@ -397,7 +397,7 @@ class SummaryResult:
 ```python
 class StoredSummary:
     id: str
-    guild_id: str
+    workspace_id: str
     source_channel_ids: List[str]
     schedule_id: Optional[str]
     schedule_name_snapshot: Optional[str]  # ADR-109
@@ -420,7 +420,7 @@ class StoredSummary:
 class ScheduledTask:
     id: str
     name: str
-    guild_id: str
+    workspace_id: str
     channel_ids: List[str]
     schedule_type: ScheduleType
     schedule_time: Optional[str]
@@ -444,7 +444,7 @@ class ScheduledTask:
 ```python
 class SummaryJob:
     id: str
-    guild_id: str
+    workspace_id: str
     job_type: JobType
     status: JobStatus
     scope: Optional[str]
@@ -478,10 +478,10 @@ class ProcessedMessage:
 | SummaryRepository | SummaryResult | Exists |
 | StoredSummaryRepository | StoredSummary | Exists |
 | TaskRepository | ScheduledTask, TaskResult | Exists |
-| ConfigRepository | GuildConfig | Exists |
+| ConfigRepository | WorkspaceConfig | Exists |
 | ErrorRepository | ErrorLog | Exists |
 | SummaryJobRepository | SummaryJob | Exists |
-| PromptTemplateRepository | GuildPromptTemplate | Exists |
+| PromptTemplateRepository | WorkspacePromptTemplate | Exists |
 | FeedRepository | FeedConfig | Exists |
 | IngestRepository | IngestDocument | Exists |
 
@@ -553,7 +553,7 @@ services/
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| CFL-001 | Per-guild Confluence configuration | Medium |
+| CFL-001 | Per-workspace Confluence configuration | Medium |
 | CFL-002 | Publish as Confluence pages | Medium |
 | CFL-003 | Template-based titles | Medium |
 | CFL-004 | Add labels (scope, category, channels) | Low |
@@ -588,7 +588,7 @@ services/
 | ERR-001 | Capture errors with type, severity, context | High |
 | ERR-002 | Error types: SUMMARIZATION, PERMISSION, SCHEDULE, FALLBACK | High |
 | ERR-003 | Severity levels: INFO, WARNING, ERROR, CRITICAL | High |
-| ERR-004 | Query by guild, type, severity | High |
+| ERR-004 | Query by workspace, type, severity | High |
 | ERR-005 | Resolve with notes | Medium |
 | ERR-006 | Bulk resolve by type | Low |
 | ERR-007 | Auto-cleanup old errors | Low |
@@ -767,18 +767,18 @@ src/
 ## Appendix B: API Endpoint Summary
 
 ### Summary Management
-- `GET /guilds/{guild_id}/summaries` - List
-- `GET /guilds/{guild_id}/summaries/{id}` - Detail
-- `POST /guilds/{guild_id}/summaries/generate` - Generate
-- `POST /guilds/{guild_id}/summaries/{id}/push` - Push
-- `DELETE /guilds/{guild_id}/summaries/{id}` - Delete
+- `GET /workspaces/{workspace_id}/summaries` - List
+- `GET /workspaces/{workspace_id}/summaries/{id}` - Detail
+- `POST /workspaces/{workspace_id}/summaries/generate` - Generate
+- `POST /workspaces/{workspace_id}/summaries/{id}/push` - Push
+- `DELETE /workspaces/{workspace_id}/summaries/{id}` - Delete
 
 ### Schedule Management
-- `GET /guilds/{guild_id}/schedules` - List
-- `POST /guilds/{guild_id}/schedules` - Create
-- `PATCH /guilds/{guild_id}/schedules/{id}` - Update
-- `DELETE /guilds/{guild_id}/schedules/{id}` - Delete
-- `POST /guilds/{guild_id}/schedules/{id}/execute` - Trigger
+- `GET /workspaces/{workspace_id}/schedules` - List
+- `POST /workspaces/{workspace_id}/schedules` - Create
+- `PATCH /workspaces/{workspace_id}/schedules/{id}` - Update
+- `DELETE /workspaces/{workspace_id}/schedules/{id}` - Delete
+- `POST /workspaces/{workspace_id}/schedules/{id}/execute` - Trigger
 
 ### Archive
 - `GET /archive/sources` - List sources
@@ -786,13 +786,13 @@ src/
 - `GET /archive/jobs/{id}` - Job status
 
 ### Wiki
-- `GET /guilds/{guild_id}/wiki/pages` - List pages
-- `GET /guilds/{guild_id}/wiki/search` - Search
-- `POST /guilds/{guild_id}/wiki/pages/{path}/synthesize` - Synthesize
+- `GET /workspaces/{workspace_id}/wiki/pages` - List pages
+- `GET /workspaces/{workspace_id}/wiki/search` - Search
+- `POST /workspaces/{workspace_id}/wiki/pages/{path}/synthesize` - Synthesize
 
 ### RuVector
-- `GET /ruvector/guilds/{guild_id}/search` - Semantic search
-- `GET /ruvector/guilds/{guild_id}/graph` - Knowledge graph
+- `GET /ruvector/workspaces/{workspace_id}/search` - Semantic search
+- `GET /ruvector/workspaces/{workspace_id}/graph` - Knowledge graph
 
 ---
 
