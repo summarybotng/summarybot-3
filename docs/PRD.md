@@ -346,7 +346,7 @@ The current codebase suffers from:
 
 ### 7.1 Core Data Models
 
-> **Terminology migration (WSP-002)**: `guild_id` is replaced by `workspace_id` across all models below. A workspace may attach zero or more platform connections. Existing Discord-keyed data migrates by creating one workspace per guild.
+> **Workspace-native, greenfield (WSP-002)**: `workspace_id` is the primary tenant key across all models below. `guild_id` exists **nowhere** except `WorkspaceConnection.platform_id`. This is a **greenfield build — there is NO migration of the old system's data and no back-compat columns.** A workspace may attach zero or more platform connections. Historical content is **re-ingested from the source platforms** through the platform adapters (keyed to workspaces from the start), not migrated from the legacy database. See §7.3.
 
 #### Workspace & Tenancy (ADR-066, ADR-079)
 ```rust
@@ -496,6 +496,21 @@ services/
 ├── permission_service.py       # Permission checks
 └── confluence_service.py       # Confluence publishing
 ```
+
+> The "Exists" column above refers to the **legacy** system (reference-only). The rewrite reimplements these repositories workspace-native in Rust; nothing is carried over as-is.
+
+### 7.3 Data Strategy: Greenfield & Reprocessing
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| DAT-001 | Greenfield build — no migration of the legacy database, no back-compat `guild_id` columns | Critical |
+| DAT-002 | All data is workspace-native from creation; `guild_id` lives only in `WorkspaceConnection.platform_id` | Critical |
+| DAT-003 | Historical content is (re)ingested from the source platforms via platform adapters, not imported from the old DB | High |
+| DAT-004 | Reprocessing/backfill is a first-class job type (reuses Job Tracking, §5.3) with progress and resumability | High |
+| DAT-005 | Re-ingestion is idempotent — dedup on platform message ID (never timestamps); re-running a backfill produces no duplicates | High |
+| DAT-006 | Backfill respects platform API retention limits; gaps beyond retention are recorded, not silently dropped (cf. ADR-072 coverage tracking) | Medium |
+
+**Rationale**: a clean workspace-native schema with no legacy-migration debt. Cost: every workspace must (re)ingest its history from live platform sources, bounded by each platform's API retention window.
 
 ---
 
