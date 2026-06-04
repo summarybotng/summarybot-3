@@ -147,13 +147,14 @@ The current codebase suffers from:
 | WSP-005 | Unified user identity across linked platforms | High |
 | WSP-006 | Platform adapter pattern for all fetchers/deliverers (no platform hardcoded in core) | Critical |
 | WSP-007 | Optional platform connections — a workspace may have zero bots attached | High |
-| WSP-008 | Map external platform IDs (guild_id, team_id) to a workspace via a connection table | Critical |
+| WSP-008 | Map external platform IDs (guild_id, team_id) to workspaces via a connection table. A source may map to **many** workspaces (see WSP-015) | Critical |
 | WSP-009 | Workspace creation is **explicit**: user creates a named workspace, then attaches platform connections (no auto-create on connect) | High |
 | WSP-010 | Linking a platform account already bound to another user is **rejected**; transfer requires verification / admin-mediated claim (no auto-merge, no silent reassign) | Critical |
 | WSP-011 | Provide a **claim/transfer workflow** for a contested platform identity: a claim record (requester, current owner, status: pending/approved/denied/expired) with request/list/approve/deny API + admin UI | High |
 | WSP-012 | **Self-service first**: completing the platform's own OAuth for the contested account is proof of control and **auto-approves** the transfer (no human needed) — covers the common "same person, two logins" case | High |
-| WSP-013 | Disputes that can't be self-verified escalate to a human approver: a **tenant admin** for same-tenant collisions, a **platform operator** (new role) for cross-tenant collisions | High |
+| WSP-013 | Disputes that can't be self-verified escalate to a human approver: a **tenant admin** for same-tenant collisions, a **platform operator** for cross-tenant collisions (system-level role, ADR-119) | High |
 | WSP-014 | On transfer, atomically move only the **authentication identity** by default; transferring owned workspaces/schedules is a separate explicit step. Every claim and transfer is **audit-logged** (security boundary) | High |
+| WSP-015 | A platform **source** (guild/team) may connect to **multiple workspaces, including across tenants** — shared sources are supported (e.g. several Discord-based tenants sharing one Slack). No global uniqueness on (platform, platform_id); a channel may be summarized independently by each subscribing workspace. Distinct from WSP-010 (which governs *user identity*, not source connections). See ADR-120 | High |
 
 **Non-Functional**: "Workspace" is the canonical user-facing term; "guild"/"team" appear only inside platform adapters.
 
@@ -333,6 +334,7 @@ The current codebase suffers from:
 | PRM-005 | Command-level checks | High |
 | PRM-006 | Permission caching | Medium |
 | PRM-007 | Optional enforcement flag | High |
+| PRM-008 | **Platform operator**: a system-level role *orthogonal* to the per-workspace levels above (not a fifth value). It is the only role with cross-tenant authority — used to approve cross-tenant identity claims (WSP-013). Assigned **out-of-band via deployment config only** (e.g. an operator-id list); never grantable through the in-app UI. See ADR-119 | High |
 
 ### 6.3 Multi-Tenancy (ADR-079)
 
@@ -346,7 +348,7 @@ The current codebase suffers from:
 | TEN-004 | Tenant member management (invites, roles) | High |
 | TEN-005 | Workspace linking to tenants | High |
 | TEN-006 | Tenant-scoped OAuth redirects | High |
-| TEN-007 | Tenant-level data isolation enforced at the repository layer | Critical |
+| TEN-007 | Tenant-level data isolation enforced at the repository layer. **Documented exception**: an explicitly shared platform source may feed workspaces in different tenants (WSP-015, ADR-120) — the same source content then lands in each subscribing tenant by design | Critical |
 | TEN-008 | Billing entity is the **tenant**; a tenant owns unlimited workspaces under its plan (not per-workspace billing) | High |
 
 ---
@@ -946,7 +948,10 @@ CREATE TABLE workspace_connections (
     workspace_id TEXT NOT NULL,
     platform TEXT NOT NULL,  -- discord, slack, whatsapp
     platform_id TEXT NOT NULL,  -- guild_id, team_id, etc.
-    UNIQUE (platform, platform_id)
+    -- A platform source (e.g. a shared Slack team) MAY feed multiple workspaces,
+    -- including across tenants (ADR-120). Uniqueness is per-workspace only;
+    -- there is NO global UNIQUE(platform, platform_id).
+    UNIQUE (workspace_id, platform, platform_id)
 );
 ```
 

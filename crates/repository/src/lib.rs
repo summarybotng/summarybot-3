@@ -56,13 +56,14 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_workspaces_tenant
                 ON workspaces(tenant_id);
-            -- (platform, platform_id) is globally unique: a platform account
-            -- binds to exactly one workspace (WSP-008 / WSP-010).
+            -- A source (e.g. a shared Slack team) may feed MANY workspaces,
+            -- including across tenants (ADR-120 / WSP-015). Uniqueness is
+            -- per-workspace only; there is no global (platform, platform_id) key.
             CREATE TABLE IF NOT EXISTS workspace_connections (
                 workspace_id TEXT NOT NULL,
                 platform     TEXT NOT NULL,
                 platform_id  TEXT NOT NULL,
-                UNIQUE (platform, platform_id)
+                UNIQUE (workspace_id, platform, platform_id)
             );
             CREATE INDEX IF NOT EXISTS idx_connections_workspace
                 ON workspace_connections(workspace_id);

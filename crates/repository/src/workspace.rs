@@ -2,8 +2,12 @@
 //!
 //! Tenant isolation (TEN-007) is enforced *here*: workspace reads require a
 //! `TenantId` and filter on it, so one tenant can never read another's rows.
-//! The (platform, platform_id) uniqueness (WSP-008/WSP-010) is enforced by the
-//! DB and surfaced as a typed [`AttachError::AlreadyBound`].
+//!
+//! A platform source may feed MANY workspaces, including across tenants
+//! (WSP-015 / ADR-120) — there is no global (platform, platform_id) key, so
+//! [`WorkspaceRepository::resolve_workspaces`] returns a set. The only
+//! connection uniqueness is per-workspace (a workspace can't attach the same
+//! source twice), surfaced as [`AttachError::AlreadyAttached`].
 
 use crate::SqliteRepository;
 use anyhow::Result;
@@ -15,9 +19,10 @@ use rusqlite::{params, ErrorCode};
 /// Outcome of attaching a platform connection.
 #[derive(Debug)]
 pub enum AttachError {
-    /// (platform, platform_id) is already bound — reject, never reassign
-    /// (WSP-010). Resolution goes through the claim/transfer workflow.
-    AlreadyBound {
+    /// This *same workspace* is already connected to this source. Sources may
+    /// be shared across workspaces (ADR-120); this only guards against a
+    /// duplicate row for one workspace.
+    AlreadyAttached {
         platform: &'static str,
         platform_id: String,
     },
@@ -28,12 +33,12 @@ pub enum AttachError {
 impl std::fmt::Display for AttachError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AttachError::AlreadyBound {
+            AttachError::AlreadyAttached {
                 platform,
                 platform_id,
             } => write!(
                 f,
-                "{platform} account {platform_id} is already bound to a workspace"
+                "{platform} source {platform_id} is already attached to this workspace"
             ),
             AttachError::Db(e) => write!(f, "{e}"),
         }
@@ -55,14 +60,17 @@ pub trait WorkspaceRepository {
     fn create_workspace(&self, workspace: &Workspace) -> Result<()>;
     /// Fetch a workspace only if it belongs to `tenant` (TEN-007).
     fn get_workspace(&self, tenant: &TenantId, id: &WorkspaceId) -> Result<Option<Workspace>>;
-    /// Bind a platform account to a workspace, rejecting an existing binding.
+    /// Attach a platform source to a workspace. A source may be attached to
+    /// many workspaces (ADR-120); only a duplicate within the same workspace
+    /// is rejected.
     fn attach_connection(&self, conn: &WorkspaceConnection) -> Result<(), AttachError>;
-    /// Resolve which workspace a platform account maps to (WSP-008).
-    fn resolve_by_connection(
+    /// Resolve which workspace(s) a platform source feeds (WSP-008/WSP-015).
+    /// May span tenants. Ordered by workspace id for determinism.
+    fn resolve_workspaces(
         &self,
         platform: Platform,
         platform_id: &PlatformId,
-    ) -> Result<Option<WorkspaceId>>;
+    ) -> Result<Vec<WorkspaceId>>;
     fn list_connections(&self, workspace: &WorkspaceId) -> Result<Vec<WorkspaceConnection>>;
 }
 
@@ -139,11 +147,13 @@ impl WorkspaceRepository for SqliteRepository {
         );
         match result {
             Ok(_) => Ok(()),
-            // UNIQUE(platform, platform_id) violated -> already bound (WSP-010).
+            // UNIQUE(workspace_id, platform, platform_id) violated: this
+            // workspace already has this source (ADR-120 allows other
+            // workspaces to share it).
             Err(rusqlite::Error::SqliteFailure(e, _))
                 if e.code == ErrorCode::ConstraintViolation =>
             {
-                Err(AttachError::AlreadyBound {
+                Err(AttachError::AlreadyAttached {
                     platform: conn.platform.as_str(),
                     platform_id: conn.platform_id.as_str().to_string(),
                 })
@@ -152,23 +162,24 @@ impl WorkspaceRepository for SqliteRepository {
         }
     }
 
-    fn resolve_by_connection(
+    fn resolve_workspaces(
         &self,
         platform: Platform,
         platform_id: &PlatformId,
-    ) -> Result<Option<WorkspaceId>> {
+    ) -> Result<Vec<WorkspaceId>> {
         let mut stmt = self.conn.prepare(
             "SELECT workspace_id FROM workspace_connections
-             WHERE platform = ?1 AND platform_id = ?2",
+             WHERE platform = ?1 AND platform_id = ?2
+             ORDER BY workspace_id",
         )?;
-        let mut rows = stmt.query(params![platform.as_str(), platform_id.as_str()])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(parse_field(
-                WorkspaceId::parse,
-                row.get::<_, String>(0)?,
-            )?)),
-            None => Ok(None),
+        let rows = stmt.query_map(params![platform.as_str(), platform_id.as_str()], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut out = Vec::new();
+        for raw in rows {
+            out.push(parse_field(WorkspaceId::parse, raw?)?);
         }
+        Ok(out)
     }
 
     fn list_connections(&self, workspace: &WorkspaceId) -> Result<Vec<WorkspaceConnection>> {
@@ -239,49 +250,63 @@ mod tests {
             .is_none());
     }
 
-    #[test]
-    fn connection_maps_to_workspace_and_rejects_double_bind() {
-        let repo = repo();
-        repo.create_workspace(&workspace("ws1", "t1")).unwrap();
-        repo.create_workspace(&workspace("ws2", "t1")).unwrap();
-
-        let conn = WorkspaceConnection::new(
-            WorkspaceId::parse("ws1").unwrap(),
-            Platform::Discord,
-            PlatformId::parse("guild-42").unwrap(),
-        );
-        repo.attach_connection(&conn).unwrap();
-
-        // WSP-008: the platform account resolves to ws1.
-        let resolved = repo
-            .resolve_by_connection(Platform::Discord, &PlatformId::parse("guild-42").unwrap())
-            .unwrap();
-        assert_eq!(resolved.unwrap().as_str(), "ws1");
-
-        // WSP-010: re-binding the same account (even to another workspace) is rejected.
-        let steal = WorkspaceConnection::new(
-            WorkspaceId::parse("ws2").unwrap(),
-            Platform::Discord,
-            PlatformId::parse("guild-42").unwrap(),
-        );
-        assert!(matches!(
-            repo.attach_connection(&steal),
-            Err(AttachError::AlreadyBound { .. })
-        ));
-
-        // Same platform_id on a *different* platform is fine (uniqueness is per-platform).
-        let slack = WorkspaceConnection::new(
-            WorkspaceId::parse("ws2").unwrap(),
+    fn slack(ws: &str, team: &str) -> WorkspaceConnection {
+        WorkspaceConnection::new(
+            WorkspaceId::parse(ws).unwrap(),
             Platform::Slack,
-            PlatformId::parse("guild-42").unwrap(),
-        );
-        assert!(repo.attach_connection(&slack).is_ok());
+            PlatformId::parse(team).unwrap(),
+        )
+    }
 
+    #[test]
+    fn shared_source_feeds_multiple_workspaces_across_tenants() {
+        let repo = repo();
+        // Two Discord-based tenants, each with a workspace, sharing one Slack team.
+        repo.create_workspace(&workspace("ws-a", "tenant-a"))
+            .unwrap();
+        repo.create_workspace(&workspace("ws-b", "tenant-b"))
+            .unwrap();
+
+        // ADR-120 / WSP-015: the same Slack team attaches to both workspaces.
+        repo.attach_connection(&slack("ws-a", "T-shared")).unwrap();
+        repo.attach_connection(&slack("ws-b", "T-shared")).unwrap();
+
+        // Resolution returns both workspaces, even across tenants.
+        let resolved: Vec<String> = repo
+            .resolve_workspaces(Platform::Slack, &PlatformId::parse("T-shared").unwrap())
+            .unwrap()
+            .iter()
+            .map(|w| w.as_str().to_string())
+            .collect();
+        assert_eq!(resolved, vec!["ws-a".to_string(), "ws-b".to_string()]);
+    }
+
+    #[test]
+    fn duplicate_source_within_one_workspace_is_rejected() {
+        let repo = repo();
+        repo.create_workspace(&workspace("ws-a", "tenant-a"))
+            .unwrap();
+        repo.attach_connection(&slack("ws-a", "T-shared")).unwrap();
+
+        // The same source can't be attached twice to the *same* workspace.
+        assert!(matches!(
+            repo.attach_connection(&slack("ws-a", "T-shared")),
+            Err(AttachError::AlreadyAttached { .. })
+        ));
         assert_eq!(
-            repo.list_connections(&WorkspaceId::parse("ws1").unwrap())
+            repo.list_connections(&WorkspaceId::parse("ws-a").unwrap())
                 .unwrap()
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn unknown_source_resolves_to_empty() {
+        let repo = repo();
+        assert!(repo
+            .resolve_workspaces(Platform::Discord, &PlatformId::parse("nope").unwrap())
+            .unwrap()
+            .is_empty());
     }
 }
