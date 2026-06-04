@@ -5,26 +5,63 @@
 //! WASM component. It has no I/O and no platform dependencies (PRD §12.0:
 //! "WASM does bounded/streamed pure compute"; logic never lives in handlers).
 
+mod workspace;
+pub use workspace::{
+    Platform, PlatformId, Tenant, TenantId, UserId, Workspace, WorkspaceConnection,
+};
+
 /// Validation failures surfaced at system boundaries (PRD §12.0: fail-fast,
-/// newtypes, no silent fallbacks).
+/// newtypes, no silent fallbacks). `field` names the offending input so the
+/// same variants serve every validated newtype.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    EmptyWorkspaceId,
-    WorkspaceIdTooLong { len: usize, max: usize },
+    Empty {
+        field: &'static str,
+    },
+    TooLong {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
+    Invalid {
+        field: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValidationError::EmptyWorkspaceId => write!(f, "workspace id must not be empty"),
-            ValidationError::WorkspaceIdTooLong { len, max } => {
-                write!(f, "workspace id length {len} exceeds max {max}")
+            ValidationError::Empty { field } => write!(f, "{field} must not be empty"),
+            ValidationError::TooLong { field, len, max } => {
+                write!(f, "{field} length {len} exceeds max {max}")
             }
+            ValidationError::Invalid { field, reason } => write!(f, "{field} is invalid: {reason}"),
         }
     }
 }
 
 impl std::error::Error for ValidationError {}
+
+/// Shared parser for the bounded, non-empty string ids used as newtypes.
+pub(crate) fn parse_id(
+    field: &'static str,
+    raw: impl Into<String>,
+    max: usize,
+) -> Result<String, ValidationError> {
+    let raw = raw.into();
+    if raw.trim().is_empty() {
+        return Err(ValidationError::Empty { field });
+    }
+    if raw.len() > max {
+        return Err(ValidationError::TooLong {
+            field,
+            len: raw.len(),
+            max,
+        });
+    }
+    Ok(raw)
+}
 
 /// A validated workspace identifier. Construction is the only way in, so an
 /// existing `WorkspaceId` is guaranteed well-formed (parse, don't validate).
@@ -36,17 +73,7 @@ impl WorkspaceId {
     pub const MAX_LEN: usize = 256;
 
     pub fn parse(raw: impl Into<String>) -> Result<Self, ValidationError> {
-        let raw = raw.into();
-        if raw.trim().is_empty() {
-            return Err(ValidationError::EmptyWorkspaceId);
-        }
-        if raw.len() > Self::MAX_LEN {
-            return Err(ValidationError::WorkspaceIdTooLong {
-                len: raw.len(),
-                max: Self::MAX_LEN,
-            });
-        }
-        Ok(Self(raw))
+        Ok(Self(parse_id("workspace id", raw, Self::MAX_LEN)?))
     }
 
     pub fn as_str(&self) -> &str {
@@ -108,14 +135,14 @@ mod tests {
 
     #[test]
     fn workspace_id_rejects_empty_and_blank() {
-        assert_eq!(
+        assert!(matches!(
             WorkspaceId::parse(""),
-            Err(ValidationError::EmptyWorkspaceId)
-        );
-        assert_eq!(
+            Err(ValidationError::Empty { .. })
+        ));
+        assert!(matches!(
             WorkspaceId::parse("   "),
-            Err(ValidationError::EmptyWorkspaceId)
-        );
+            Err(ValidationError::Empty { .. })
+        ));
     }
 
     #[test]
@@ -123,7 +150,7 @@ mod tests {
         let raw = "x".repeat(WorkspaceId::MAX_LEN + 1);
         assert!(matches!(
             WorkspaceId::parse(raw),
-            Err(ValidationError::WorkspaceIdTooLong { .. })
+            Err(ValidationError::TooLong { .. })
         ));
     }
 

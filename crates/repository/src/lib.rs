@@ -7,6 +7,9 @@ use anyhow::Result;
 use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
+mod workspace;
+pub use workspace::{AttachError, WorkspaceRepository};
+
 /// A summary as persisted, with its assigned row id and owning workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSummary {
@@ -38,7 +41,32 @@ impl SqliteRepository {
 
     pub fn with_connection(conn: Connection) -> Result<Self> {
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS summaries (
+            "CREATE TABLE IF NOT EXISTS tenants (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                subdomain     TEXT,
+                custom_domain TEXT
+            );
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id            TEXT PRIMARY KEY,
+                tenant_id     TEXT    NOT NULL,
+                name          TEXT    NOT NULL,
+                owner_user_id TEXT    NOT NULL,
+                created_at    INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_workspaces_tenant
+                ON workspaces(tenant_id);
+            -- (platform, platform_id) is globally unique: a platform account
+            -- binds to exactly one workspace (WSP-008 / WSP-010).
+            CREATE TABLE IF NOT EXISTS workspace_connections (
+                workspace_id TEXT NOT NULL,
+                platform     TEXT NOT NULL,
+                platform_id  TEXT NOT NULL,
+                UNIQUE (platform, platform_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_connections_workspace
+                ON workspace_connections(workspace_id);
+            CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,
                 text          TEXT    NOT NULL,
