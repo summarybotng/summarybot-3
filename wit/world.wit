@@ -1,0 +1,27 @@
+// Typed host <-> WASM boundary (PRD §12.0 / §12.1 task 2).
+//
+// The native host owns ALL I/O (platform APIs, DB, LLM) and orchestration
+// (retry, cost cap). This component is a sandboxed, pure-compute unit: it is
+// handed BOUNDED input and returns a result with no side effects.
+package summarybot:compute@0.1.0;
+
+interface summarize {
+    // Bounded request: the host streams/chunks large inputs before calling.
+    record summary-request {
+        workspace-id: string,
+        messages: list<string>,
+    }
+
+    record summary-result {
+        text: string,
+        message-count: u32,
+        word-count: u32,
+    }
+
+    // Produce a trivial extractive summary. Pure: same input -> same output.
+    summarize: func(req: summary-request) -> summary-result;
+}
+
+world compute {
+    export summarize;
+}

@@ -1,0 +1,22 @@
+# Ruflo — Rust/WASM workspace (greenfield rewrite of SummaryBot-NG).
+# Architecture (PRD §12.0): a native Rust *host* owns all I/O + orchestration;
+# sandboxed WASM components do bounded, streamed *pure compute* behind a typed
+# WIT interface. See docs/PRD.md §12.1 (Phase 0).
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+# The wasm guest is built explicitly for wasm32-wasip2; exclude it from the
+# default native build/test set so `cargo build` / `cargo test` stay green.
+default-members = ["crates/domain", "crates/repository", "crates/host"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.96"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+proptest = "1"
+domain = { path = "crates/domain" }
+repository = { path = "crates/repository" }

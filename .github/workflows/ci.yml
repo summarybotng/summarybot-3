@@ -1,0 +1,43 @@
+# Phase 0 build/test/CI harness (PRD §12.1 task 1).
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (rust-toolchain.toml pins channel + wasm target)
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+          rustup target add wasm32-wasip2
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (native crates)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build the sandboxed WASM component
+        run: cargo build -p wasm-summarize --target wasm32-wasip2
+
+      - name: Test (native), incl. walking-skeleton integration test
+        run: cargo test --workspace

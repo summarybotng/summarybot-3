@@ -1,0 +1,18 @@
+[package]
+name = "host"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain.workspace = true
+repository.workspace = true
+anyhow.workspace = true
+wasmtime = { version = "26", features = ["component-model"] }
+wasmtime-wasi = "26"
+
+[[bin]]
+name = "host"
+path = "src/main.rs"

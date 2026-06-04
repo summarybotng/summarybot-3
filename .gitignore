@@ -1,0 +1,6 @@
+.claude
+.claude-flow
+
+# Rust
+/target
+**/*.rs.bk
