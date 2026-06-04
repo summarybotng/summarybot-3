@@ -33,8 +33,11 @@ Ground-up rewrite of SummaryBot-NG as **Rust + WASM**, "state of the art", expli
 
 ## Known gaps / cautions
 
-- The PRD references ADR numbers up to 118; the repo has ~115 ADR files but some referenced
-  ADRs may have no document (verify before assuming a spec exists).
+- The repo has 115 ADR files spanning ADR-001..118; three numbers were never written:
+  **ADR-113, ADR-115, ADR-116** (no file, no cross-references, absent from git history —
+  skipped numbers, not deletions). They sit in the Confluence/RuVector tail of the log,
+  so any content was likely reserved-then-abandoned there. **None of the three are
+  referenced by `docs/PRD.md`** — every ADR the PRD cites has a backing document.
 - Old repo has a `docs/PRD-rewrite.md` — likely the source our `docs/PRD.md` derived from; worth diffing.
 
 ## Synthesis brief
