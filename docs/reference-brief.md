@@ -212,6 +212,8 @@ Note: numbering is inconsistent in the source (some `NNN`, some `ADR-NNN`); show
 
 \* ADR-077 and ADR-079 are catalogued as low relevance but were **promoted to committed PRD requirements (§8.4 CUR-\*, §6.3 TEN-\*)** — treat as high-priority for the rewrite despite the catalog rating.
 
+\* ADR-081 (import management) and ADR-112 (coverage gap awareness) are catalogued medium but were **promoted to committed v1 requirements (§2.3 WHA-009..019)** and re-derived greenfield in **ADR-121** — treat as high-priority. WhatsApp's push-only/no-API reality makes upload-only collection load-bearing, not optional.
+
 ## Open questions for the user
 
 1. ~~**Identity-linking collision (ADR-066, blocking).**~~ **RESOLVED 2026-06-03: REJECT + admin-mediated claim** (no auto-merge, no silent reassign). PRD WSP-010.

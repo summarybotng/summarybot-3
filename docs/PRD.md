@@ -123,16 +123,29 @@ The current codebase suffers from:
 
 ### 2.3 WhatsApp Integration
 
+*WhatsApp has no historical-fetch API (push-only; live fetch is BLOCKED — §13.2 / ADR-053). The **only** ingestion path is a human exporting a chat (`_chat.txt`, usually zipped) and uploading it. Ingestion is therefore human-initiated, partial, overlapping and snapshot-based, so the system must **solicit, validate, merge, and make gaps legible** rather than fetch. The collection process and coverage-gap awareness below are committed for v1 — see ADR-121 (which supersedes reference ADR-081/112).*
+
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| WHA-001 | API endpoint for chat export ingestion | High |
-| WHA-002 | Parse WhatsApp message format | High |
+| WHA-001 | Upload endpoint for chat-export ingestion, workspace-scoped and authenticated via the identity/session layer (not a static ingest key) | High |
+| WHA-002 | Parse WhatsApp message format (iOS/Android, locale date formats, system messages, `<Media omitted>`) | High |
 | WHA-003 | Handle voice note transcriptions (Whisper) | Medium |
 | WHA-004 | Handle forwarded message markers | Medium |
 | WHA-005 | Preserve reply chains | Medium |
-| WHA-006 | Never expose phone numbers in outputs | Critical |
+| WHA-006 | Never expose phone numbers — anonymized (HMAC-hashed to stable pseudonyms) **at ingest, before storage**; raw PII never persisted | Critical |
 | WHA-007 | List ingested chats with statistics | Medium |
-| WHA-008 | API key authentication for ingest | High |
+| WHA-008 | *(Superseded by WHA-001 — auth is workspace-scoped; the static `INGEST_API_KEY` is removed.)* | — |
+| WHA-009 | Import is a first-class tracked record: uploader attribution, timestamp, original filename, `file_hash`, size, detected format, status lifecycle (folds into the unified reprocessing job type, DAT-004) | High |
+| WHA-010 | File-level dedup via SHA-256 `file_hash`: an identical re-upload is detected and surfaced, not silently re-ingested | High |
+| WHA-011 | Parsing runs as bounded pure compute in the WASM guest; the host unzips and streams `_chat.txt` (§12.0) | Medium |
+| WHA-012 | Message-level dedup via a **synthetic fingerprint** `hash(workspace, chat, timestamp, resolved-identity, content)` — a **documented exception to DAT-005** (WhatsApp exports carry no message ID); re-ingestion stays idempotent | High |
+| WHA-013 | Cross-export identity resolution (contact-name variance, "You" → uploader, phone-hash match): merges are **confidence-gated, reversible, and audit-logged** — no silent merge (cf. WSP-010) | High |
+| WHA-014 | Imports are soft-deletable; message fingerprints are retained so dedup stays correct; a sanitized message view (pseudonyms only) is available for verification | Medium |
+| WHA-015 | Detect join/group events from system messages (group created, member joined/added) to learn the chat predates any export | High |
+| WHA-016 | Coverage-gap calculation, classifying gaps `before_join` / `between_imports` / `after_last`, and distinguishing **"no messages existed"** from **"not yet imported"** (`can_fill`) | High |
+| WHA-017 | Per-chat coverage timeline visualization (covered vs fillable gaps, coverage %) | High |
+| WHA-018 | Contributor tracking: which member contributed which date range | Medium |
+| WHA-019 | Scoped import invitations — request specific members import a **needed date range** with instructions ("here's what's still missing, please contribute it") | High |
 
 ### 2.4 Platform-Agnostic Workspace Model (ADR-066, ADR-078)
 
@@ -518,7 +531,7 @@ services/
 | DAT-002 | All data is workspace-native from creation; `guild_id` lives only in `WorkspaceConnection.platform_id` | Critical |
 | DAT-003 | Historical content is (re)ingested from the source platforms via platform adapters, not imported from the old DB | High |
 | DAT-004 | Reprocessing/backfill is a first-class job type (reuses Job Tracking, §5.3) with progress and resumability | High |
-| DAT-005 | Re-ingestion is idempotent — dedup on platform message ID (never timestamps); re-running a backfill produces no duplicates | High |
+| DAT-005 | Re-ingestion is idempotent — dedup on platform message ID (never timestamps); re-running a backfill produces no duplicates. **Exception**: WhatsApp exports carry no message ID, so they dedup on a synthetic fingerprint instead (WHA-012, ADR-121) | High |
 | DAT-006 | Backfill respects platform API retention limits; gaps beyond retention are recorded, not silently dropped (cf. ADR-072 coverage tracking) | Medium |
 
 **Rationale**: a clean workspace-native schema with no legacy-migration debt. Cost: every workspace must (re)ingest its history from live platform sources, bounded by each platform's API retention window.
@@ -767,9 +780,10 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 ### 12.3 Phase 2 — Platform Adapters, Ingestion & Reprocessing (L)
 
 *Critical-path: greenfield means no seed data, so every workspace depends on this before it has anything to summarize.*
-1. `PlatformAdapter`/`PlatformFetcher` trait → `NormalizedMessage` (ADR-051); Discord + Slack adapters; WhatsApp import.
+1. `PlatformAdapter`/`PlatformFetcher` trait → `NormalizedMessage` (ADR-051); Discord + Slack adapters; WhatsApp collection pipeline (WHA-001..019, ADR-121).
 2. Message processing: cleaning, code blocks, attachments, threads, substantial-vs-trivial (MSG-*).
-3. **Unified reprocessing/backfill** (DAT-003..006) folding together backfill jobs (ADR-068), coverage tracking (ADR-072), and retrospective archive (ADR-006): first-class job type, idempotent (dedup on platform message ID), resumable, retention-bounded with recorded gaps.
+3. **Unified reprocessing/backfill** (DAT-003..006) folding together backfill jobs (ADR-068), coverage tracking (ADR-072), and retrospective archive (ADR-006): first-class job type, idempotent (dedup on platform message ID — synthetic fingerprint for WhatsApp, WHA-012), resumable, retention-bounded with recorded gaps.
+4. **WhatsApp collection & coverage** (ADR-121, supersedes ref ADR-081/112): attributed/idempotent import pipeline, anonymize-on-ingest, confidence-gated reversible identity resolution, and coverage-gap awareness with a per-chat timeline + scoped import invitations ("show people what to contribute").
 
 ### 12.4 Phase 3 — Summarization Pipeline (L)
 
@@ -829,7 +843,7 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 | DATABASE_URL | Yes | SQLite/PostgreSQL connection |
 | JWT_SECRET | Yes | Dashboard JWT secret |
 | REDIS_URL | No | Redis for sessions/events |
-| INGEST_API_KEY | No | WhatsApp ingest auth |
+| ~~INGEST_API_KEY~~ | — | *Removed (ADR-121): WhatsApp ingest is workspace-scoped, authenticated via the identity/session layer* |
 | SMTP_* | No | Email configuration |
 | SLACK_CLIENT_* | No | Slack OAuth |
 | CONFLUENCE_* | No | Confluence integration |
@@ -1101,7 +1115,7 @@ The compounding wiki accumulates content but needs curation:
 | FUT-035 | Summary deduplication | ADR-071 | Proposed |
 | FUT-036 | Email landing pages | ADR-032 | Proposed |
 | FUT-037 | Wiki external sync (Notion, Confluence) | ADR-059 | Proposed |
-| FUT-038 | WhatsApp coverage gap awareness | ADR-112 | Proposed |
+| FUT-038 | WhatsApp coverage gap awareness | ADR-112 | ✅ Promoted → §2.3 WHA-015..019 (ADR-121) |
 | FUT-039 | Google Workspace group-based admin | ADR-050 | Proposed |
 | FUT-040 | Summary deep linking | ADR-015 | Proposed |
 

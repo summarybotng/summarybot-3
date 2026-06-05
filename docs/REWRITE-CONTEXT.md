@@ -30,6 +30,12 @@ Ground-up rewrite of SummaryBot-NG as **Rust + WASM**, "state of the art", expli
 - Promoted to committed requirements (from PRD §13): Platform-Agnostic (§2.4 WSP-*),
   Multi-Tenancy (§6.3 TEN-*), Coherence/Advanced RuVector (§8.3 COH-*), AI Wiki Curator (§8.4 CUR-*).
 - `guild_id` → `workspace_id` rename is intended throughout (WSP-002).
+- WhatsApp collection + coverage-gap awareness **promoted to committed v1 reqs**
+  (PRD §2.3 WHA-009..019, ADR-121, superseding ref ADR-081/112). Driven by the
+  push-only/no-API reality: ingestion is upload-only, so the system must solicit,
+  dedup (synthetic fingerprint — exception to DAT-005), anonymize-on-ingest, and
+  surface coverage gaps with scoped import invitations. v1 consent posture is
+  anonymize-only (no attestation gate); stricter consent deferred to Phase 9.
 
 ## Known gaps / cautions
 
