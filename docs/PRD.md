@@ -147,7 +147,7 @@ The current codebase suffers from:
 | WHA-018 | Contributor tracking: which member contributed which date range | Medium |
 | WHA-019 | Scoped import invitations — request specific members import a **needed date range** with instructions ("here's what's still missing, please contribute it") | High |
 | WHA-020 | Timezone handling: WhatsApp timestamps are local with no offset in the file. Capture the export's **IANA timezone** as upload metadata (defaulted from uploader profile/browser, DST-correct) and normalize every timestamp to a **canonical UTC instant** for fingerprinting, ordering, coverage and storage; retain the original local rendering for display | High |
-| WHA-021 | After the adapter, WhatsApp messages are tracked like any backend source (WSP-006): the synthetic fingerprint is the **canonical message id**, the resolved participant fills `author_id`, and `source_type=whatsapp` is the only WhatsApp-specific field downstream sees. Participant identity is **not** a Ruflo user identity — binding is claim-based (WSP-005/WSP-010), never automatic | High |
+| WHA-021 | After the adapter, WhatsApp messages are tracked like any backend source (WSP-006): the synthetic fingerprint is the **canonical message id**, the resolved participant fills `author_id`, and `source_type=whatsapp` is the only WhatsApp-specific field downstream sees. Participant identity is **not** a SummaryBot identity — binding is claim-based (WSP-005/WSP-010), never automatic | High |
 
 ### 2.4 Platform-Agnostic Workspace Model (ADR-066, ADR-078)
 

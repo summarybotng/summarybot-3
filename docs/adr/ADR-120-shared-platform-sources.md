@@ -13,7 +13,7 @@
 ## Context
 
 A `WorkspaceConnection` maps an external platform source — a Discord guild, a
-Slack team, a WhatsApp export — to a Ruflo workspace (WSP-008). It answers
+Slack team, a WhatsApp export — to a SummaryBot workspace (WSP-008). It answers
 "when content arrives from this source, which workspace owns it?"
 
 The original PRD §7 schema declared `UNIQUE (platform, platform_id)`, meaning a
@@ -27,7 +27,7 @@ Discord-based communities that share one common Slack). The exclusive binding
 makes this impossible.
 
 Note this is a *different* concern from **WSP-010**, which rejects double-binding
-of a platform **user identity** (one person → one Ruflo user). WSP-010 stays
+of a platform **user identity** (one person → one SummaryBot user). WSP-010 stays
 strict; this ADR only relaxes **source connections**.
 
 ## Decision

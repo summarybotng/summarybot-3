@@ -173,9 +173,10 @@ one, even though it has no native ids:
    carries the pseudonym (never phone/contact name — WHA-006).
 3. **`source_type = whatsapp`** is the *only* WhatsApp-specific field downstream
    sees; everything else is the common normalized shape.
-4. **Participant identity is NOT a Ruflo user identity.** A pseudonymous
+4. **Participant identity is NOT a SummaryBot identity.** A pseudonymous
    participant (a per-chat, phone-hash-anchored identity) is deliberately
-   separate from a Ruflo `user_uuid` (WSP-005). Binding the two is **claim-based**
+   separate from a SummaryBot identity (the `user_uuid`, WSP-005). Binding the
+   two is **claim-based**
    — a user may *claim* a participant — following the same no-silent-merge rule as
    WSP-010, never an automatic link. (Auto-linking is unsafe: a phone hash is not
    proof of account control.)
