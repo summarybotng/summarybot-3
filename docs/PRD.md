@@ -173,6 +173,31 @@ The current codebase suffers from:
 
 **Non-Functional**: "Workspace" is the canonical user-facing term; "guild"/"team" appear only inside platform adapters.
 
+### 2.5 On-Demand Summarization & Command Surface (ADR-122)
+
+*The in-chat, end-user surface: a user triggering a summary or managing schedules from **within** the platform (e.g. Discord `/summarize`), as opposed to the web dashboard (§5). On-demand summarization is the **automated** counterpart's sibling — §3 covers scheduled runs; this covers "summarize now." Defined **platform-agnostically** (WSP-006) and rendered natively by each adapter (Discord slash commands, Slack slash commands/shortcuts); platforms with no live command channel (WhatsApp — push-only, §13.2) simply don't expose it. Dashboard-first remains the priority, so this surface is **Medium** unless noted.*
+
+**On-demand summarization (ODS-\*)**
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| ODS-001 | On-demand ("summarize now") is a first-class capability, distinct from scheduling: request a summary for a scope + time range and receive it directly | Medium |
+| ODS-002 | Request-time range selection — last N hours/minutes, message count, or since-last-summary | Medium |
+| ODS-003 | Request-time options — scope (CHANNEL/CATEGORY/WORKSPACE via SCP-\*), mode/length, perspective/persona | Medium |
+| ODS-004 | Long-running requests are acknowledged immediately and delivered when ready (async/defer UX), tracked as a job (ADR-013) | Medium |
+| ODS-005 | Available from **both** the in-chat command surface and the dashboard (§5), sharing one service path | Medium |
+
+**Command & interaction surface (CMD-\*)**
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| CMD-001 | Commands are defined **platform-agnostically** in core; each adapter renders them natively. No platform-specific command logic in core (WSP-006) | High |
+| CMD-002 | Command set: on-demand summarize (ODS-\*), schedule management (create/list/pause/resume/delete/status, mapping to SCH-\*/SCM-\*), and help/status | Medium |
+| CMD-003 | Responses are **private-by-default** where the platform supports it (e.g. Discord ephemeral), with an explicit option to post publicly | Medium |
+| CMD-004 | Scope-selection affordances (channel/category autocomplete or pickers) where the platform supports them; graceful fallback otherwise | Low |
+| CMD-005 | Platforms without a live command channel (WhatsApp) expose no commands; the capability degrades gracefully rather than erroring | Medium |
+| CMD-006 | Every command invocation is permission-checked (PRM-005) and audit-logged (AUD-001) | Medium |
+
 ---
 
 ## 3. Scheduling System
@@ -800,6 +825,7 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 1. Platform-agnostic delivery (§4): `PLATFORM_CHANNEL`/`PLATFORM_DM` resolved against connected platforms (DEL-010), `rich`/markdown/template/json formats with per-platform rich rendering (FMT-001/005).
 2. Capability-gated, admin-enabled destinations (§4.3 DEN-*; DEL-011) — hidden when unconfigured, enforced server-side, encrypted config.
 3. Stored summaries + dashboard storage destination (always-on).
+4. **On-demand summarization + in-chat command surface** (§2.5, ADR-122): platform-agnostic commands rendered per-platform (Discord slash commands), `/summarize` on-demand (scope + range + options, ODS-*), private-by-default async/deferred responses. Reuses the Phase 3 pipeline + this phase's delivery — one service path. (Schedule-management commands ride Phase 6.)
 
 ### 12.6 Phase 5 — Dashboard & Web API (L)
 
@@ -813,6 +839,7 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 1. Persistent scheduler with restore-on-restart, grace period, auto-disable (SCH-*).
 2. Runtime scope resolution (ADR-011): CHANNEL/CATEGORY/WORKSPACE; store scope vs channels-with-content separately.
 3. Rolling periods (ADR-101): append/resummarize/hybrid, the **one-active-summary-per-schedule invariant**, idempotent finalization, per-destination delivery (ADR-108).
+4. **In-chat schedule-management commands** (§2.5 CMD-002, ADR-122): create/list/pause/resume/delete/status rendered per-platform over the scheduler built here.
 
 ### 12.8 Phase 7 — Knowledge: RuVector Phase 1 + Coherence Gate + Wiki (L)
 
