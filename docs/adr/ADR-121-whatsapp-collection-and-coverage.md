@@ -57,6 +57,9 @@ filename, `file_hash`, size, detected format, status). The pipeline:
    replies (WHA-005). This is **bounded pure compute → runs in the WASM guest**:
    the host unzips and streams `_chat.txt`, the guest parses to
    `NormalizedMessage`. (§12.0; consistent with the Phase 2 adapter model.)
+   Timestamps are normalized to a UTC instant here, given the declared export
+   zone as a parse input (§5) — so the parse stays pure but produces canonical
+   instants.
 4. **Anonymize-on-ingest** — phone numbers are HMAC-hashed to stable pseudonyms
    **before** anything is stored; raw PII is never persisted. The HMAC key is a
    secret, so this step is **host-side** (uses the `Secret<T>` wrapper from
@@ -79,15 +82,20 @@ documented exception (in the same spirit as ADR-120's exception to TEN-007).
 The WhatsApp dedup key is a **synthetic fingerprint**:
 
 ```
-fingerprint = hash(workspace_id, chat_id, timestamp, resolved_identity_id, content_hash)
+fingerprint = hash(workspace_id, chat_id, utc_instant, resolved_identity_id, content_hash)
 ```
 
+- `utc_instant` is the timestamp **normalized to UTC** (§6) — *not* the raw local
+  wall-clock from the export. This is what lets the same message from two
+  uploaders in different timezones collapse to one (without it, dedup fails
+  exactly across uploaders, double-counting the overlap that multi-contributor
+  coverage exists to merge).
 - Keyed on the **resolved identity** (§3), not the raw sender name, so the same
   message from two exports (where the sender is "Rob"/"Robert") collapses to one.
-- `content_hash` over the message body guards against same-second collisions.
+- `content_hash` over the message body guards against same-instant collisions.
 - Re-running an import produces no duplicates (idempotent, satisfying the
   *intent* of DAT-005 by a different mechanism). The trade-off — two genuinely
-  distinct messages with identical (time, author, content) merge — is accepted
+  distinct messages with identical (instant, author, content) merge — is accepted
   as vanishingly rare and harmless for summarization.
 
 ### 3. Identity resolution is confidence-gated and reversible
@@ -119,7 +127,60 @@ This is the "show people what we want them to contribute" half, and v1 ships the
   **needed date range**, with instructions — the active "here's what's still
   missing, please contribute it" loop.
 
-### 5. Auth: workspace-scoped, not a static ingest key
+### 5. Timezone normalization (every timestamp → a UTC instant)
+
+WhatsApp export timestamps are rendered in the **exporting device's local
+timezone, with no offset written into the file**. The same message exported by a
+user in London and a user in New York therefore reads as two different
+wall-clock strings. Left raw, this breaks the §2 fingerprint *across uploaders*
+— precisely the overlap multi-contributor coverage is meant to merge — and would
+misorder a WhatsApp chat against Discord/Slack content on a shared timeline.
+
+Decision:
+
+1. **Capture the export timezone as upload metadata.** Since the file lacks it,
+   the upload step records an **IANA timezone** (e.g. `Europe/London`, not a
+   fixed `+01:00`) for the export, defaulted from the uploader's profile /
+   browser timezone and confirmable at upload. IANA (not a fixed offset) so
+   historical messages convert with the **DST-correct** offset for their date.
+2. **Normalize on parse.** Every parsed timestamp is converted to a canonical
+   **UTC instant**, which is what the fingerprint (§2), ordering, coverage ranges
+   and storage all use.
+3. **Keep the original for display fidelity.** The raw local rendering (and the
+   declared zone) are retained alongside the UTC instant, so the UI can show
+   "as it appeared" without losing the canonical instant.
+4. **Wrong-zone resilience.** A mis-declared zone still dedups a user's own
+   re-uploads (same zone each time); it only mis-aligns *cross-uploader*. A
+   future heuristic can flag probable zone skew (same author+content offset by a
+   whole number of hours); out of scope for v1, noted as an open item.
+
+### 6. Message & author identity (tracked like any backend source)
+
+The whole point of the platform-adapter model (WSP-006) is that **after the
+adapter, the rest of the system is platform-blind**. WhatsApp must therefore
+produce a `NormalizedMessage` indistinguishable in shape from a Discord/Slack
+one, even though it has no native ids:
+
+1. **Canonical message id = the synthetic fingerprint (§2).** The same value used
+   for dedup *is* the message's stable id, populating the same `id` slot a
+   Discord/Slack native message id would. So grounded citations (ADR-004), job
+   tracking, summary storage and coverage all reference WhatsApp messages by a
+   stable id, exactly as for live platforms — and a re-import resolves to the
+   *same* id rather than a new row.
+2. **`author_id` = the resolved participant identity (§3).** The canonical
+   per-chat participant (not the raw "Rob"/"Robert"/"You" string) fills
+   `author_id`; the raw export name is retained only as an alias. `author_name`
+   carries the pseudonym (never phone/contact name — WHA-006).
+3. **`source_type = whatsapp`** is the *only* WhatsApp-specific field downstream
+   sees; everything else is the common normalized shape.
+4. **Participant identity is NOT a Ruflo user identity.** A pseudonymous
+   participant (a per-chat, phone-hash-anchored identity) is deliberately
+   separate from a Ruflo `user_uuid` (WSP-005). Binding the two is **claim-based**
+   — a user may *claim* a participant — following the same no-silent-merge rule as
+   WSP-010, never an automatic link. (Auto-linking is unsafe: a phone hash is not
+   proof of account control.)
+
+### 7. Auth: workspace-scoped, not a static ingest key
 
 The reference design used an `INGEST_API_KEY` (WHA-008) and `guild_id`. The
 greenfield build drops both: ingestion is authenticated through the Phase 1

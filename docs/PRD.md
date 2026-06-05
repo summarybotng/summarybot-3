@@ -138,7 +138,7 @@ The current codebase suffers from:
 | WHA-009 | Import is a first-class tracked record: uploader attribution, timestamp, original filename, `file_hash`, size, detected format, status lifecycle (folds into the unified reprocessing job type, DAT-004) | High |
 | WHA-010 | File-level dedup via SHA-256 `file_hash`: an identical re-upload is detected and surfaced, not silently re-ingested | High |
 | WHA-011 | Parsing runs as bounded pure compute in the WASM guest; the host unzips and streams `_chat.txt` (§12.0) | Medium |
-| WHA-012 | Message-level dedup via a **synthetic fingerprint** `hash(workspace, chat, timestamp, resolved-identity, content)` — a **documented exception to DAT-005** (WhatsApp exports carry no message ID); re-ingestion stays idempotent | High |
+| WHA-012 | Message-level dedup via a **synthetic fingerprint** `hash(workspace, chat, utc-instant, resolved-identity, content)` — a **documented exception to DAT-005** (WhatsApp exports carry no message ID); re-ingestion stays idempotent. The fingerprint also serves as the message's canonical id (WHA-021) | High |
 | WHA-013 | Cross-export identity resolution (contact-name variance, "You" → uploader, phone-hash match): merges are **confidence-gated, reversible, and audit-logged** — no silent merge (cf. WSP-010) | High |
 | WHA-014 | Imports are soft-deletable; message fingerprints are retained so dedup stays correct; a sanitized message view (pseudonyms only) is available for verification | Medium |
 | WHA-015 | Detect join/group events from system messages (group created, member joined/added) to learn the chat predates any export | High |
@@ -146,6 +146,8 @@ The current codebase suffers from:
 | WHA-017 | Per-chat coverage timeline visualization (covered vs fillable gaps, coverage %) | High |
 | WHA-018 | Contributor tracking: which member contributed which date range | Medium |
 | WHA-019 | Scoped import invitations — request specific members import a **needed date range** with instructions ("here's what's still missing, please contribute it") | High |
+| WHA-020 | Timezone handling: WhatsApp timestamps are local with no offset in the file. Capture the export's **IANA timezone** as upload metadata (defaulted from uploader profile/browser, DST-correct) and normalize every timestamp to a **canonical UTC instant** for fingerprinting, ordering, coverage and storage; retain the original local rendering for display | High |
+| WHA-021 | After the adapter, WhatsApp messages are tracked like any backend source (WSP-006): the synthetic fingerprint is the **canonical message id**, the resolved participant fills `author_id`, and `source_type=whatsapp` is the only WhatsApp-specific field downstream sees. Participant identity is **not** a Ruflo user identity — binding is claim-based (WSP-005/WSP-010), never automatic | High |
 
 ### 2.4 Platform-Agnostic Workspace Model (ADR-066, ADR-078)
 
