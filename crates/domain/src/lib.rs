@@ -6,12 +6,17 @@
 //! "WASM does bounded/streamed pure compute"; logic never lives in handlers).
 
 mod identity;
+mod message;
 mod secret;
 mod session;
 mod workspace;
 pub use identity::{
     resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,
     LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
+};
+pub use message::{
+    clean_content, extract_code_blocks, Attachment, AttachmentKind, ChannelId, CodeBlock,
+    MessageId, NormalizedMessage,
 };
 pub use secret::Secret;
 pub use session::{
