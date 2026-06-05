@@ -8,6 +8,7 @@ use domain::WorkspaceId;
 use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
+pub mod llm;
 pub use auth::{new_correlation_id, AuthError, AuthService, TokenPair};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};

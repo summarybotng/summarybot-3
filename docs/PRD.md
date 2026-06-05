@@ -814,10 +814,10 @@ This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. P
 
 ### 12.4 Phase 3 — Summarization Pipeline (L)
 
-1. Resilient multi-model retry engine (ADR-024): summary-type-dependent start model, failure-type strategies, hard cost cap.
+1. Resilient multi-model retry engine (ADR-024): summary-type-dependent start model, failure-type strategies, hard cost cap. Builds on the **LLM resilience core** (ADR-123, LEG-001/002/003): wire the async coordinator over the pure token-bucket/circuit-breaker, the failure taxonomy + retry policy, and provider rate-limit parsing; add the priority + auto-retry queues, credit/model pre-checks, and telemetry.
 2. Adaptive token allocation (ADR-095, fixed-point cost math).
 3. Structured extraction (key points, action items, technical terms, participants) + grounded citations with position-index resolution (ADR-004).
-4. Job tracking lifecycle (ADR-013): synchronous record-before-async, RUNNING→PAUSED on restart, persisted errors.
+4. Job tracking lifecycle (ADR-013): synchronous record-before-async, RUNNING→PAUSED on restart, persisted errors; surface classified `failure_reason` (LEG-002), not generic "failed".
 5. **Gates**: brief open Q#5 (cost-cap mid-chain policy), Q#6 (quality-detection robustness).
 
 ### 12.5 Phase 4 — Delivery & Summary Storage (M)
