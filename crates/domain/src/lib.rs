@@ -5,10 +5,39 @@
 //! WASM component. It has no I/O and no platform dependencies (PRD §12.0:
 //! "WASM does bounded/streamed pure compute"; logic never lives in handlers).
 
+mod identity;
 mod workspace;
+pub use identity::{
+    resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,
+    LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
+};
 pub use workspace::{
     Platform, PlatformId, Tenant, TenantId, UserId, Workspace, WorkspaceConnection,
 };
+
+/// Declares a validated, bounded, non-empty string id newtype. Construction via
+/// `parse` is the only way in, so an existing value is guaranteed well-formed
+/// (parse, don't validate). Shared by the workspace and identity models.
+macro_rules! string_id {
+    ($(#[$meta:meta])* $name:ident, $field:literal, $max:expr) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        pub struct $name(String);
+
+        impl $name {
+            pub const MAX_LEN: usize = $max;
+
+            pub fn parse(raw: impl Into<String>) -> Result<Self, $crate::ValidationError> {
+                Ok(Self($crate::parse_id($field, raw, Self::MAX_LEN)?))
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+    };
+}
+pub(crate) use string_id;
 
 /// Validation failures surfaced at system boundaries (PRD §12.0: fail-fast,
 /// newtypes, no silent fallbacks). `field` names the offending input so the

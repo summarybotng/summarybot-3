@@ -7,7 +7,9 @@ use anyhow::Result;
 use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
+mod identity;
 mod workspace;
+pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use workspace::{AttachError, WorkspaceRepository};
 
 /// A summary as persisted, with its assigned row id and owning workspace.
@@ -67,6 +69,27 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_connections_workspace
                 ON workspace_connections(workspace_id);
+            -- One verified identity (provider + subject) binds to exactly one
+            -- user (WSP-010). The PRIMARY KEY enforces that at storage, so a
+            -- second user can never silently claim a bound platform account.
+            CREATE TABLE IF NOT EXISTS identity_links (
+                provider  TEXT    NOT NULL,
+                subject   TEXT    NOT NULL,
+                user_id   TEXT    NOT NULL,
+                linked_at INTEGER NOT NULL,
+                PRIMARY KEY (provider, subject)
+            );
+            CREATE INDEX IF NOT EXISTS idx_identity_links_user
+                ON identity_links(user_id);
+            -- Append-only security ledger (WSP-014): every identity link, claim
+            -- and transfer is recorded. `actor` is NULL for system/anonymous.
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts     INTEGER NOT NULL,
+                actor  TEXT,
+                action TEXT    NOT NULL,
+                detail TEXT    NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,

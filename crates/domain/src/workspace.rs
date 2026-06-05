@@ -6,7 +6,7 @@
 //! platform connections (WSP-007). Time is supplied by the caller (the host
 //! owns the clock) so this crate stays pure.
 
-use crate::{parse_id, ValidationError, WorkspaceId};
+use crate::{string_id, ValidationError, WorkspaceId};
 
 /// A platform a workspace can connect to. Platform-native vocabulary
 /// ("guild"/"team") stays inside adapters; the domain speaks "workspace".
@@ -37,26 +37,6 @@ impl Platform {
             }),
         }
     }
-}
-
-/// Macro to declare a validated, bounded, non-empty string id newtype.
-macro_rules! string_id {
-    ($name:ident, $field:literal, $max:expr) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        pub struct $name(String);
-
-        impl $name {
-            pub const MAX_LEN: usize = $max;
-
-            pub fn parse(raw: impl Into<String>) -> Result<Self, ValidationError> {
-                Ok(Self(parse_id($field, raw, Self::MAX_LEN)?))
-            }
-
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-    };
 }
 
 string_id!(TenantId, "tenant id", 256);
