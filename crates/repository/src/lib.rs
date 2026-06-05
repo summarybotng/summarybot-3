@@ -8,8 +8,10 @@ use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
 mod identity;
+mod session;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
+pub use session::SessionRepository;
 pub use workspace::{AttachError, WorkspaceRepository};
 
 /// A summary as persisted, with its assigned row id and owning workspace.
@@ -90,6 +92,19 @@ impl SqliteRepository {
                 action TEXT    NOT NULL,
                 detail TEXT    NOT NULL
             );
+            -- Refresh-token-backed sessions: the server-side, revocable half of
+            -- auth (PRD §12.2 item 3). Only the refresh-token *hash* is stored
+            -- (UNIQUE — one session per token); raw tokens never touch the DB.
+            CREATE TABLE IF NOT EXISTS sessions (
+                id           TEXT    PRIMARY KEY,
+                user_id      TEXT    NOT NULL,
+                refresh_hash TEXT    NOT NULL UNIQUE,
+                issued_at    INTEGER NOT NULL,
+                expires_at   INTEGER NOT NULL,
+                revoked      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_user
+                ON sessions(user_id);
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,
