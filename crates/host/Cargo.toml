@@ -12,6 +12,14 @@ repository.workspace = true
 anyhow.workspace = true
 wasmtime = { version = "26", features = ["component-model"] }
 wasmtime-wasi = "26"
+# Auth I/O (Phase 1 item 3 host seam): token generation, hashing, HS256 JWT.
+# Vetted pure-Rust crypto — no hand-rolled primitives.
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+getrandom = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [[bin]]
 name = "host"

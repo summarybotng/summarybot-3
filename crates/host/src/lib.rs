@@ -6,6 +6,9 @@
 use anyhow::{Context, Result};
 use domain::WorkspaceId;
 use repository::{StoredSummary, SummaryRepository};
+
+pub mod auth;
+pub use auth::{new_correlation_id, AuthError, AuthService, TokenPair};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
