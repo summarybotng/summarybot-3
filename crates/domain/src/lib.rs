@@ -6,6 +6,7 @@
 //! "WASM does bounded/streamed pure compute"; logic never lives in handlers).
 
 mod coverage;
+mod delivery;
 mod failure;
 mod identity;
 mod job;
@@ -16,6 +17,10 @@ pub mod summarize;
 mod whatsapp;
 mod workspace;
 pub use coverage::{analyze_coverage, CoverageGap, CoverageReport, GapKind, Span};
+pub use delivery::{
+    resolve as resolve_delivery, visible_kinds, DeliveryCapabilities, DeliveryDecision,
+    DeliveryReject, Destination, DestinationKind,
+};
 pub use failure::FailureClass;
 pub use identity::{
     resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,

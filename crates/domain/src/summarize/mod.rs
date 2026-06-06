@@ -14,6 +14,7 @@
 pub mod allocate;
 pub mod cost;
 pub mod extract;
+pub mod format;
 pub mod model;
 
 pub use allocate::{allocate, Allocation};
@@ -22,4 +23,5 @@ pub use extract::{
     finalize, ActionItem, ExtractedSummary, FinishReason, QualityError, RawCitation, RawExtraction,
     ResolvedCitation,
 };
+pub use format::{render, SummaryFormat};
 pub use model::{Model, ModelLadder, NextModel, SummaryLength};
