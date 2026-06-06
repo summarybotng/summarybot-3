@@ -35,20 +35,26 @@ struct Claims {
     exp: i64,
 }
 
-/// Generate a new opaque, URL-safe refresh token (256 bits of entropy).
-pub(super) fn generate_token() -> Result<String, AuthError> {
+/// Generate a new opaque, URL-safe token (256 bits of entropy). Shared by
+/// refresh tokens and invite tokens — both are bearer secrets stored only as a
+/// hash.
+pub(crate) fn generate_token() -> Result<String, AuthError> {
     let mut buf = [0u8; TOKEN_BYTES];
     getrandom::getrandom(&mut buf).map_err(|e| AuthError::Crypto(e.to_string()))?;
     Ok(URL_SAFE_NO_PAD.encode(buf))
 }
 
-/// SHA-256 of a refresh token, hex-encoded — what gets stored and matched. The
-/// raw token never touches the database.
-pub(super) fn hash_token(raw: &str) -> Result<RefreshTokenHash, AuthError> {
+/// SHA-256 of an opaque token, hex-encoded — what gets stored and matched. The
+/// raw token never touches the database. Shared by refresh + invite hashing.
+pub(crate) fn sha256_hex(raw: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(raw.as_bytes());
-    let digest = hasher.finalize();
-    RefreshTokenHash::parse(hex(&digest)).map_err(|e| AuthError::Crypto(e.to_string()))
+    hex(&hasher.finalize())
+}
+
+/// Refresh-token-specific hash: [`sha256_hex`] wrapped in the validated newtype.
+pub(super) fn hash_token(raw: &str) -> Result<RefreshTokenHash, AuthError> {
+    RefreshTokenHash::parse(sha256_hex(raw)).map_err(|e| AuthError::Crypto(e.to_string()))
 }
 
 pub(super) fn new_user_id() -> Result<UserId, AuthError> {

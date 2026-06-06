@@ -12,7 +12,9 @@
 
 mod token;
 pub use token::new_correlation_id;
-use token::{generate_token, hash_token, new_session_id, new_user_id, sign_access, verify_access};
+// Opaque-token primitives shared with the invite service (host owns token I/O).
+pub(crate) use token::{generate_token, sha256_hex};
+use token::{hash_token, new_session_id, new_user_id, sign_access, verify_access};
 
 /// Verify an access token against the signing key, statelessly (no DB). Used by
 /// the web layer's auth middleware (Phase 5), which has the key but shouldn't

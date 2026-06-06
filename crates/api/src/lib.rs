@@ -13,6 +13,7 @@ mod error;
 mod scheduler_driver;
 mod schedules;
 mod summaries;
+mod tenancy;
 
 pub use error::ApiError;
 pub use scheduler_driver::spawn_scheduler;
@@ -112,6 +113,21 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/schedules/:id/resume",
             post(schedules::resume),
         )
+        // Tenancy: members + invites (PRD §6.2/§6.3 TEN-005).
+        .route("/tenants/:tenant/members", get(tenancy::list_members))
+        .route(
+            "/tenants/:tenant/members/:user",
+            put(tenancy::set_member_role).delete(tenancy::remove_member),
+        )
+        .route(
+            "/tenants/:tenant/invites",
+            get(tenancy::list_invites).post(tenancy::create_invite),
+        )
+        .route(
+            "/tenants/:tenant/invites/revoke",
+            post(tenancy::revoke_invite),
+        )
+        .route("/invites/accept", post(tenancy::accept_invite))
         .layer(axum::middleware::from_fn(auth::correlation_id))
         .with_state(state)
 }
@@ -146,7 +162,18 @@ async fn openapi() -> Json<serde_json::Value> {
                 "delete": { "summary": "Delete schedule" }
             },
             "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
-            "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } }
+            "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
+            "/tenants/{tenant}/members": { "get": { "summary": "List tenant members" } },
+            "/tenants/{tenant}/members/{user}": {
+                "put": { "summary": "Set a member's role" },
+                "delete": { "summary": "Remove a member" }
+            },
+            "/tenants/{tenant}/invites": {
+                "get": { "summary": "List invites" },
+                "post": { "summary": "Issue an invite (returns the raw token once)" }
+            },
+            "/tenants/{tenant}/invites/revoke": { "post": { "summary": "Revoke an invite" } },
+            "/invites/accept": { "post": { "summary": "Accept an invite for the caller" } }
         }
     }))
 }

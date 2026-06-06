@@ -9,6 +9,7 @@ use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
 pub mod delivery;
+pub mod invite;
 pub mod llm;
 pub mod platform;
 pub mod schedule_runner;
@@ -17,6 +18,7 @@ pub mod summarize;
 pub mod whatsapp;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use delivery::{Deliverer, DeliveryOutcome, DeliveryReport, DeliveryService};
+pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
 pub use schedule_runner::SummarizingScheduleRunner;
 pub use scheduler::{ScheduleRunner, SchedulerService, TickReport};
