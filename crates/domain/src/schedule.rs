@@ -26,6 +26,37 @@ pub enum ScheduleType {
     Custom,
 }
 
+impl ScheduleType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScheduleType::Once => "once",
+            ScheduleType::FifteenMinutes => "fifteen_minutes",
+            ScheduleType::Hourly => "hourly",
+            ScheduleType::EveryFourHours => "every_four_hours",
+            ScheduleType::Daily => "daily",
+            ScheduleType::Weekly => "weekly",
+            ScheduleType::HalfWeekly => "half_weekly",
+            ScheduleType::Monthly => "monthly",
+            ScheduleType::Custom => "custom",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "once" => ScheduleType::Once,
+            "fifteen_minutes" => ScheduleType::FifteenMinutes,
+            "hourly" => ScheduleType::Hourly,
+            "every_four_hours" => ScheduleType::EveryFourHours,
+            "daily" => ScheduleType::Daily,
+            "weekly" => ScheduleType::Weekly,
+            "half_weekly" => ScheduleType::HalfWeekly,
+            "monthly" => ScheduleType::Monthly,
+            "custom" => ScheduleType::Custom,
+            _ => return None,
+        })
+    }
+}
+
 /// Wall-clock time of day in the schedule's zone (SCH-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TimeOfDay {

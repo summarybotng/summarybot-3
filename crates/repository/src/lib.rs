@@ -9,12 +9,14 @@ use rusqlite::Connection;
 
 mod identity;
 mod job;
+mod schedule;
 mod session;
 mod summary_store;
 mod whatsapp;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
+pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use session::SessionRepository;
 pub use summary_store::{StructuredSummaryRepository, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
@@ -212,6 +214,25 @@ impl SqliteRepository {
                 quote      TEXT,
                 PRIMARY KEY (summary_id, idx)
             );
+            -- Persistent schedules (SCH-005/006): recurrence definition + run
+            -- state, restored on restart.
+            CREATE TABLE IF NOT EXISTS schedules (
+                id                   TEXT PRIMARY KEY,
+                workspace_id         TEXT    NOT NULL,
+                schedule_type        TEXT    NOT NULL,
+                at_hour              INTEGER NOT NULL,
+                at_minute            INTEGER NOT NULL,
+                days                 TEXT    NOT NULL,
+                day_of_month         INTEGER NOT NULL,
+                timezone             TEXT    NOT NULL,
+                once_at              INTEGER,
+                custom_interval_secs INTEGER NOT NULL,
+                enabled              INTEGER NOT NULL,
+                next_run             INTEGER NOT NULL,
+                consecutive_failures INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_schedules_enabled
+                ON schedules(enabled, next_run);
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,
