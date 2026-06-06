@@ -9,6 +9,7 @@ use rusqlite::Connection;
 
 mod identity;
 mod job;
+mod membership;
 mod schedule;
 mod session;
 mod summary_store;
@@ -16,6 +17,7 @@ mod whatsapp;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
+pub use membership::MembershipRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use session::SessionRepository;
 pub use summary_store::{StructuredSummaryRepository, SummaryRecord};
@@ -243,7 +245,28 @@ impl SqliteRepository {
                 word_count    INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_summaries_workspace
-                ON summaries(workspace_id);",
+                ON summaries(workspace_id);
+            -- Tenant memberships (PRD §6.2 TEN-005): one role per (tenant, user).
+            -- Tenant-scoped, like every other row (TEN-007).
+            CREATE TABLE IF NOT EXISTS memberships (
+                tenant_id TEXT NOT NULL,
+                user_id   TEXT NOT NULL,
+                role      TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, user_id)
+            );
+            -- Pending/accepted/revoked invites (PRD §6.3 TEN-005). Only the token
+            -- *hash* is stored (host computes it), like a refresh token.
+            CREATE TABLE IF NOT EXISTS invites (
+                token_hash TEXT    PRIMARY KEY,
+                tenant_id  TEXT    NOT NULL,
+                email      TEXT    NOT NULL,
+                role       TEXT    NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                status     TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_invites_tenant
+                ON invites(tenant_id, created_at);",
         )?;
         Ok(Self { conn })
     }

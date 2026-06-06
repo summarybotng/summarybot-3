@@ -95,6 +95,25 @@ pub enum InviteStatus {
     Revoked,
 }
 
+impl InviteStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            InviteStatus::Pending => "pending",
+            InviteStatus::Accepted => "accepted",
+            InviteStatus::Revoked => "revoked",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "pending" => InviteStatus::Pending,
+            "accepted" => InviteStatus::Accepted,
+            "revoked" => InviteStatus::Revoked,
+            _ => return None,
+        })
+    }
+}
+
 /// An invite to join a tenant. The raw token is shown to the invitee once; only
 /// its hash is stored (host computes it), like a refresh token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +225,18 @@ mod tests {
             assert_eq!(Role::parse(r.as_str()), Some(r));
         }
         assert_eq!(Role::parse("god"), None);
+    }
+
+    #[test]
+    fn invite_status_round_trips() {
+        for s in [
+            InviteStatus::Pending,
+            InviteStatus::Accepted,
+            InviteStatus::Revoked,
+        ] {
+            assert_eq!(InviteStatus::parse(s.as_str()), Some(s));
+        }
+        assert_eq!(InviteStatus::parse("expired"), None);
     }
 
     fn invite(status: InviteStatus, expires_at: i64) -> Invite {
