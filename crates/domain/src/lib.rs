@@ -10,6 +10,7 @@ mod delivery;
 mod failure;
 mod identity;
 mod job;
+mod membership;
 mod message;
 mod rolling;
 mod schedule;
@@ -29,6 +30,10 @@ pub use identity::{
     LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
 };
 pub use job::{InvalidTransition, Job, JobId, JobStatus, JobType};
+pub use membership::{
+    evaluate_accept, AcceptOutcome, AcceptReject, Invite, InviteStatus, Membership, Permission,
+    Role,
+};
 pub use message::{
     clean_content, extract_code_blocks, Attachment, AttachmentKind, ChannelId, CodeBlock,
     MessageId, NormalizedMessage,
