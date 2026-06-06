@@ -5,12 +5,14 @@
 //! WASM component. It has no I/O and no platform dependencies (PRD §12.0:
 //! "WASM does bounded/streamed pure compute"; logic never lives in handlers).
 
+mod coverage;
 mod identity;
 mod message;
 mod secret;
 mod session;
 mod whatsapp;
 mod workspace;
+pub use coverage::{analyze_coverage, CoverageGap, CoverageReport, GapKind, Span};
 pub use identity::{
     resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,
     LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
