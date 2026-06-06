@@ -5,8 +5,10 @@ use crate::auth::AuthUser;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
 use axum::Json;
+use domain::summarize::ExtractedSummary;
 use repository::{StructuredSummaryRepository, SummaryRecord};
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// JSON shape of a stored summary (domain types have no serde, so map here).
 #[derive(Serialize)]
@@ -89,6 +91,67 @@ pub struct ListQuery {
 
 fn default_limit() -> u32 {
     50
+}
+
+/// Body for the no-LLM demo summarize: a batch of message texts.
+#[derive(Deserialize)]
+pub struct CreateSummaryRequest {
+    pub messages: Vec<String>,
+}
+
+/// `POST /workspaces/:ws/summaries` — **demo** on-demand summarize. Uses the
+/// deterministic extractive summarizer (no LLM/key/network) so the full
+/// create→list→pin loop is testable out of the box; the real pipeline
+/// (`SummarizationService` over an LLM) swaps in behind the same route later.
+pub async fn create_summary(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Json(body): Json<CreateSummaryRequest>,
+) -> Result<Json<SummaryDto>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if body.messages.is_empty() {
+        return Err(ApiError::bad_request("messages must not be empty"));
+    }
+    let now = crate::auth::now_secs();
+    let computed = domain::summarize(&domain::SummaryInput {
+        workspace_id: workspace.clone(),
+        messages: body.messages,
+    });
+    let record = SummaryRecord {
+        id: format!("sum_{}", unique_suffix()),
+        channel_id: None,
+        model: "demo-extractive".to_string(),
+        cost_micros: 0,
+        degraded: false,
+        created_at: now,
+        pinned: false,
+        archived: false,
+        tags: vec![],
+        summary: ExtractedSummary {
+            text: computed.text,
+            key_points: vec![],
+            action_items: vec![],
+            technical_terms: vec![],
+            participants: vec![],
+            citations: vec![],
+        },
+    };
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.save_record(&workspace, &record)?;
+    }
+    Ok(Json(SummaryDto::from(record)))
+}
+
+/// A unique-enough id suffix from the clock (nanos).
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
 }
 
 /// `GET /workspaces/:ws/summaries`

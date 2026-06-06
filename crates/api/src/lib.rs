@@ -43,7 +43,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(auth::login))
-        .route("/workspaces/:ws/summaries", get(summaries::list_summaries))
+        .route(
+            "/workspaces/:ws/summaries",
+            get(summaries::list_summaries).post(summaries::create_summary),
+        )
         .route("/workspaces/:ws/summaries/:id", get(summaries::get_summary))
         .route("/workspaces/:ws/summaries/:id/pin", post(summaries::pin))
         .route(
@@ -79,7 +82,10 @@ async fn openapi() -> Json<serde_json::Value> {
         "paths": {
             "/healthz": { "get": { "summary": "Liveness check" } },
             "/auth/login": { "post": { "summary": "Exchange verified provider claims for tokens" } },
-            "/workspaces/{ws}/summaries": { "get": { "summary": "List summaries" } },
+            "/workspaces/{ws}/summaries": {
+                "get": { "summary": "List summaries" },
+                "post": { "summary": "Create a summary (demo: deterministic, no LLM)" }
+            },
             "/workspaces/{ws}/summaries/{id}": { "get": { "summary": "Summary detail" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
@@ -235,6 +241,57 @@ mod tests {
             .unwrap();
         assert_eq!(pinned.status(), StatusCode::OK);
         assert_eq!(body_json(pinned).await["pinned"], true);
+    }
+
+    #[tokio::test]
+    async fn create_summary_then_it_appears_in_the_list() {
+        let (state, token) = seeded_state(); // already has sum_1
+        let app = build_router(state);
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/summaries")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"messages":["hello team","let's ship on friday","sounds good"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let created_json = body_json(created).await;
+        assert_eq!(created_json["model"], "demo-extractive");
+        assert!(created_json["text"].as_str().unwrap().contains("3 msgs"));
+
+        // Now two summaries are listed.
+        let listed = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/summaries")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(listed).await.as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_empty_messages() {
+        let (state, token) = seeded_state();
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/summaries")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"messages":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
