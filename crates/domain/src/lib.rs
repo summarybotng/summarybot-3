@@ -11,6 +11,7 @@ mod failure;
 mod identity;
 mod job;
 mod message;
+mod schedule;
 mod secret;
 mod session;
 pub mod summarize;
@@ -31,6 +32,7 @@ pub use message::{
     clean_content, extract_code_blocks, Attachment, AttachmentKind, ChannelId, CodeBlock,
     MessageId, NormalizedMessage,
 };
+pub use schedule::{evaluate_tick, Schedule, ScheduleType, TickAction, TimeOfDay};
 pub use secret::Secret;
 pub use session::{
     evaluate_refresh, AccessClaims, RefreshOutcome, RefreshReject, RefreshTokenHash, Session,
