@@ -138,6 +138,8 @@ mod tests {
                 once_at: None,
                 custom_interval_secs: 0,
                 enabled: true,
+                channel: None,
+                lookback_secs: 86_400,
             },
             next_run,
             consecutive_failures: failures,

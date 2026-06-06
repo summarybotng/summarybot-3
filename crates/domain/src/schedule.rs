@@ -6,7 +6,7 @@
 //! wait, skip a stale missed run, or auto-disable after repeated failures. The
 //! executor loop (clock, running summaries, persistence) is host-side.
 
-use crate::WorkspaceId;
+use crate::{ChannelId, WorkspaceId};
 use chrono::{Datelike, Duration, TimeZone, Weekday};
 use chrono_tz::Tz;
 
@@ -82,6 +82,12 @@ pub struct Schedule {
     /// Interval (seconds) for `Custom`.
     pub custom_interval_secs: i64,
     pub enabled: bool,
+    /// Scope (ADR-011): the channel this schedule summarizes. `None` means the
+    /// scope isn't set yet (the run is a no-op). Multi-channel CATEGORY/WORKSPACE
+    /// scopes resolve to a channel set via the platform fetcher — a later step.
+    pub channel: Option<ChannelId>,
+    /// How far back from each run to read messages (seconds).
+    pub lookback_secs: i64,
 }
 
 /// Why building a [`Schedule`] from primitive fields failed.
@@ -91,6 +97,7 @@ pub enum ScheduleError {
     BadTimezone(String),
     BadWeekday(u32),
     BadTime { hour: u32, minute: u32 },
+    BadChannel,
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -100,6 +107,7 @@ impl std::fmt::Display for ScheduleError {
             ScheduleError::BadTimezone(z) => write!(f, "unknown timezone: {z}"),
             ScheduleError::BadWeekday(n) => write!(f, "weekday out of range (0-6): {n}"),
             ScheduleError::BadTime { hour, minute } => write!(f, "invalid time {hour}:{minute}"),
+            ScheduleError::BadChannel => write!(f, "invalid channel id"),
         }
     }
 }
@@ -135,6 +143,8 @@ impl Schedule {
         once_at: Option<i64>,
         custom_interval_secs: i64,
         enabled: bool,
+        channel: Option<&str>,
+        lookback_secs: i64,
     ) -> Result<Self, ScheduleError> {
         let schedule_type = ScheduleType::parse(schedule_type)
             .ok_or_else(|| ScheduleError::UnknownType(schedule_type.to_string()))?;
@@ -148,6 +158,11 @@ impl Schedule {
             .iter()
             .map(|&n| weekday_from_num(n).ok_or(ScheduleError::BadWeekday(n)))
             .collect::<Result<Vec<_>, _>>()?;
+        let channel = channel
+            .filter(|c| !c.is_empty())
+            .map(ChannelId::parse)
+            .transpose()
+            .map_err(|_| ScheduleError::BadChannel)?;
         Ok(Self {
             workspace_id,
             schedule_type,
@@ -158,6 +173,8 @@ impl Schedule {
             once_at,
             custom_interval_secs,
             enabled,
+            channel,
+            lookback_secs,
         })
     }
 
@@ -275,6 +292,8 @@ mod tests {
             once_at: None,
             custom_interval_secs: 0,
             enabled: true,
+            channel: None,
+            lookback_secs: 86_400,
         }
     }
 

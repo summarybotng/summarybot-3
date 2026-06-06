@@ -229,7 +229,9 @@ impl SqliteRepository {
                 custom_interval_secs INTEGER NOT NULL,
                 enabled              INTEGER NOT NULL,
                 next_run             INTEGER NOT NULL,
-                consecutive_failures INTEGER NOT NULL
+                consecutive_failures INTEGER NOT NULL,
+                channel              TEXT,
+                lookback_secs        INTEGER NOT NULL DEFAULT 86400
             );
             CREATE INDEX IF NOT EXISTS idx_schedules_enabled
                 ON schedules(enabled, next_run);

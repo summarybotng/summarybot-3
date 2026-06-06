@@ -65,8 +65,9 @@ impl ScheduleRepository for SqliteRepository {
         self.conn.execute(
             "INSERT INTO schedules
                (id, workspace_id, schedule_type, at_hour, at_minute, days, day_of_month,
-                timezone, once_at, custom_interval_secs, enabled, next_run, consecutive_failures)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                timezone, once_at, custom_interval_secs, enabled, next_run, consecutive_failures,
+                channel, lookback_secs)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 stored.id,
                 s.workspace_id.as_str(),
@@ -81,6 +82,8 @@ impl ScheduleRepository for SqliteRepository {
                 s.enabled,
                 stored.next_run,
                 stored.consecutive_failures,
+                s.channel.as_ref().map(|c| c.as_str()),
+                s.lookback_secs,
             ],
         )?;
         Ok(())
@@ -91,7 +94,7 @@ impl ScheduleRepository for SqliteRepository {
             .query_row(
                 "SELECT id, workspace_id, schedule_type, at_hour, at_minute, days, day_of_month,
                         timezone, once_at, custom_interval_secs, enabled, next_run,
-                        consecutive_failures
+                        consecutive_failures, channel, lookback_secs
                  FROM schedules WHERE id = ?1 AND workspace_id = ?2",
                 params![id, workspace.as_str()],
                 row_to_stored,
@@ -104,7 +107,7 @@ impl ScheduleRepository for SqliteRepository {
         let mut stmt = self.conn.prepare(
             "SELECT id, workspace_id, schedule_type, at_hour, at_minute, days, day_of_month,
                     timezone, once_at, custom_interval_secs, enabled, next_run,
-                    consecutive_failures
+                    consecutive_failures, channel, lookback_secs
              FROM schedules WHERE enabled = 1 ORDER BY next_run",
         )?;
         let rows = stmt.query_map([], row_to_stored)?;
@@ -119,7 +122,7 @@ impl ScheduleRepository for SqliteRepository {
         let mut stmt = self.conn.prepare(
             "SELECT id, workspace_id, schedule_type, at_hour, at_minute, days, day_of_month,
                     timezone, once_at, custom_interval_secs, enabled, next_run,
-                    consecutive_failures
+                    consecutive_failures, channel, lookback_secs
              FROM schedules WHERE workspace_id = ?1 ORDER BY next_run",
         )?;
         let rows = stmt.query_map(params![workspace.as_str()], row_to_stored)?;
@@ -177,6 +180,8 @@ fn row_to_stored(row: &rusqlite::Row) -> rusqlite::Result<Result<StoredSchedule>
     let enabled: bool = row.get(10)?;
     let next_run: i64 = row.get(11)?;
     let consecutive_failures: u32 = row.get(12)?;
+    let channel: Option<String> = row.get(13)?;
+    let lookback_secs: i64 = row.get(14)?;
 
     Ok((|| {
         let workspace = WorkspaceId::parse(workspace_raw).map_err(anyhow::Error::new)?;
@@ -192,6 +197,8 @@ fn row_to_stored(row: &rusqlite::Row) -> rusqlite::Result<Result<StoredSchedule>
             once_at,
             custom_interval_secs,
             enabled,
+            channel.as_deref(),
+            lookback_secs,
         )
         .map_err(anyhow::Error::new)?;
         Ok(StoredSchedule {
@@ -224,6 +231,8 @@ mod tests {
             None,
             0,
             enabled,
+            Some("chat-1"),
+            86_400,
         )
         .unwrap();
         StoredSchedule {

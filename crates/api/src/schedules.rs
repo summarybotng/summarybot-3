@@ -31,6 +31,12 @@ pub struct CreateScheduleRequest {
     pub once_at: Option<i64>,
     #[serde(default)]
     pub custom_interval_secs: i64,
+    /// Channel to summarize (ADR-011 scope); omit for a not-yet-scoped schedule.
+    #[serde(default)]
+    pub channel: Option<String>,
+    /// How far back each run reads messages (seconds).
+    #[serde(default = "default_lookback")]
+    pub lookback_secs: i64,
 }
 
 fn default_dom() -> u32 {
@@ -38,6 +44,9 @@ fn default_dom() -> u32 {
 }
 fn default_tz() -> String {
     "UTC".to_string()
+}
+fn default_lookback() -> i64 {
+    86_400
 }
 
 #[derive(Serialize)]
@@ -50,6 +59,8 @@ pub struct ScheduleDto {
     pub day_of_month: u32,
     pub timezone: String,
     pub enabled: bool,
+    pub channel: Option<String>,
+    pub lookback_secs: i64,
     pub next_run: i64,
     pub consecutive_failures: u32,
 }
@@ -65,6 +76,8 @@ impl From<StoredSchedule> for ScheduleDto {
             day_of_month: s.schedule.day_of_month,
             timezone: s.schedule.timezone_name().to_string(),
             enabled: s.schedule.enabled,
+            channel: s.schedule.channel.as_ref().map(|c| c.as_str().to_string()),
+            lookback_secs: s.schedule.lookback_secs,
             next_run: s.next_run,
             consecutive_failures: s.consecutive_failures,
         }
@@ -95,6 +108,8 @@ pub async fn create_schedule(
         body.once_at,
         body.custom_interval_secs,
         true,
+        body.channel.as_deref(),
+        body.lookback_secs,
     )
     .map_err(|e| ApiError::bad_request(e.to_string()))?;
 
