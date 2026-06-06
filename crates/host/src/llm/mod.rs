@@ -12,6 +12,7 @@
 //! - [`failure`] — failure taxonomy + retry policy (LEG-002).
 //! - [`provider`] — provider abstraction + rate-limit header parsing (LEG-003).
 
+pub mod demo;
 pub mod engine;
 pub mod failure;
 pub mod limiter;
@@ -23,6 +24,7 @@ pub mod ratelimit;
 #[cfg(feature = "openrouter")]
 pub use openrouter::OpenRouterClient;
 
+pub use demo::DemoLlmClient;
 pub use engine::{
     Clock, LlmClient, LlmError, LlmRequest, LlmResponse, ResilientLlm, Sleeper, SystemClock,
     ThreadSleeper,

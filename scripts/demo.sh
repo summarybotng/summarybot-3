@@ -32,7 +32,7 @@ TOKEN=$(curl -fsS -X POST "${BASE}/auth/login" \
   | jq -r .access_token)
 echo "    got access token: ${TOKEN:0:24}…"
 
-echo "==> create a summary (demo extractive, no LLM)"
+echo "==> create a summary (real Phase-3 pipeline, deterministic demo client)"
 SUMMARY=$(curl -fsS -X POST "${BASE}/workspaces/${WS}/summaries" \
   -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' \
   -d '{"messages":["morning all","lets ship the release on friday","ill write the changelog","sounds good"]}')

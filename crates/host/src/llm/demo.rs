@@ -1,0 +1,90 @@
+//! A deterministic, no-network [`LlmClient`] for demos/tests/local runs.
+//!
+//! It produces a *structured* (JSON) extraction from the assembled prompt —
+//! participants and key points pulled straight from the numbered messages — so
+//! the full Phase-3 pipeline (validation, citation resolution, storage) runs
+//! end-to-end with no API key. The real [`super::openrouter`] client swaps in
+//! behind the same [`LlmClient`] trait when configured.
+
+use super::engine::{LlmClient, LlmError, LlmRequest, LlmResponse};
+use domain::summarize::FinishReason;
+
+/// Deterministic stand-in for a real model.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DemoLlmClient;
+
+impl LlmClient for DemoLlmClient {
+    fn complete(&self, request: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        let mut participants: Vec<String> = Vec::new();
+        let mut key_points: Vec<String> = Vec::new();
+        // The prompt is "[i] Author: content" per line (see assemble_prompt).
+        for line in request.prompt.lines() {
+            let after = line.split_once("] ").map(|(_, r)| r).unwrap_or(line);
+            if let Some((author, content)) = after.split_once(": ") {
+                let author = author.trim();
+                if !author.is_empty() && !participants.iter().any(|p| p == author) {
+                    participants.push(author.to_string());
+                }
+                let content = content.trim();
+                if key_points.len() < 5 && !content.is_empty() {
+                    key_points.push(content.to_string());
+                }
+            }
+        }
+        let text = if participants.is_empty() {
+            "Summary.".to_string()
+        } else {
+            format!("Discussion among {}.", participants.join(", "))
+        };
+        let body = serde_json::json!({
+            "text": text,
+            "key_points": key_points,
+            "action_items": [],
+            "technical_terms": [],
+            "participants": participants,
+            "citations": [],
+        });
+        Ok(LlmResponse {
+            model: "demo".to_string(),
+            text: body.to_string(),
+            finish_reason: FinishReason::Stop,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::llm::{LlmProvider, RequestPriority};
+
+    fn req(prompt: &str) -> LlmRequest {
+        LlmRequest {
+            provider: LlmProvider::OpenRouter,
+            priority: RequestPriority::Manual,
+            model: "demo".into(),
+            prompt: prompt.into(),
+        }
+    }
+
+    #[test]
+    fn extracts_participants_and_points_from_the_prompt() {
+        let resp = DemoLlmClient
+            .complete(&req(
+                "[0] Alice: ship it friday\n[1] Bob: ill do the changelog",
+            ))
+            .unwrap();
+        assert_eq!(resp.model, "demo");
+        let v: serde_json::Value = serde_json::from_str(&resp.text).unwrap();
+        assert_eq!(v["participants"], serde_json::json!(["Alice", "Bob"]));
+        assert_eq!(v["key_points"][0], "ship it friday");
+        assert_eq!(resp.finish_reason, FinishReason::Stop);
+    }
+
+    #[test]
+    fn empty_prompt_still_valid_json() {
+        let resp = DemoLlmClient.complete(&req("")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&resp.text).unwrap();
+        assert_eq!(v["text"], "Summary.");
+        assert!(v["participants"].as_array().unwrap().is_empty());
+    }
+}

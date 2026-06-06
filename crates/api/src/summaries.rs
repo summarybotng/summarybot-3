@@ -5,7 +5,7 @@ use crate::auth::AuthUser;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
 use axum::Json;
-use domain::summarize::ExtractedSummary;
+use domain::summarize::{Model, ModelLadder, ModelPrice, SummaryLength};
 use repository::{StructuredSummaryRepository, SummaryRecord};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -93,22 +93,37 @@ fn default_limit() -> u32 {
     50
 }
 
-/// Body for the no-LLM demo summarize: a batch of message texts.
+/// Body for on-demand summarize: a batch of message texts (optionally authored).
 #[derive(Deserialize)]
 pub struct CreateSummaryRequest {
     pub messages: Vec<String>,
+    /// Display author for every message (the demo doesn't model per-message
+    /// authorship); defaults to "user".
+    #[serde(default = "default_author")]
+    pub author: String,
 }
 
-/// `POST /workspaces/:ws/summaries` — **demo** on-demand summarize. Uses the
-/// deterministic extractive summarizer (no LLM/key/network) so the full
-/// create→list→pin loop is testable out of the box; the real pipeline
-/// (`SummarizationService` over an LLM) swaps in behind the same route later.
+fn default_author() -> String {
+    "user".to_string()
+}
+
+/// `POST /workspaces/:ws/summaries` — on-demand summarize through the **real
+/// Phase-3 pipeline** (`SummarizationService` → model ladder → structured
+/// extraction + quality validation), using the deterministic [`DemoLlmClient`]
+/// so it runs with no key/network. Swapping in the OpenRouter client (configured
+/// via the `openrouter` feature + an API key) is the only change for live LLMs.
 pub async fn create_summary(
     State(state): State<AppState>,
     user: AuthUser,
     Path(ws): Path<String>,
     Json(body): Json<CreateSummaryRequest>,
 ) -> Result<Json<SummaryDto>, ApiError> {
+    use host::llm::{
+        DemoLlmClient, GlobalRateLimiter, LlmProvider, RateLimitConfig, RequestPriority,
+        ResilientLlm,
+    };
+    use host::{SummarizationService, SummarizeRequest};
+
     user.require_workspace(&ws)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
@@ -116,34 +131,71 @@ pub async fn create_summary(
         return Err(ApiError::bad_request("messages must not be empty"));
     }
     let now = crate::auth::now_secs();
-    let computed = domain::summarize(&domain::SummaryInput {
-        workspace_id: workspace.clone(),
-        messages: body.messages,
-    });
+
+    // Wrap the raw texts as normalized messages for the pipeline.
+    let channel = domain::ChannelId::parse("on-demand").expect("valid channel id");
+    let messages: Vec<domain::NormalizedMessage> = body
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(i, text)| domain::NormalizedMessage {
+            id: domain::MessageId::parse(format!("od_{now}_{i}")).expect("valid id"),
+            platform: domain::Platform::Discord,
+            channel_id: channel.clone(),
+            author_id: body.author.clone(),
+            author_name: body.author.clone(),
+            content: text.clone(),
+            timestamp: now,
+            is_system: false,
+            reply_to: None,
+            attachments: vec![],
+        })
+        .collect();
+
+    let ladder = demo_ladder();
+    let engine = ResilientLlm::new(
+        DemoLlmClient,
+        std::sync::Arc::new(GlobalRateLimiter::new(RateLimitConfig::default())),
+    );
+    let outcome = SummarizationService::new(&engine, &ladder)
+        .summarize(&SummarizeRequest {
+            messages: &messages,
+            length: SummaryLength::Detailed,
+            provider: LlmProvider::OpenRouter,
+            priority: RequestPriority::Manual,
+            cap_micros: i64::MAX,
+        })
+        .map_err(|e| ApiError::bad_request(format!("{e:?}")))?;
+
     let record = SummaryRecord {
         id: format!("sum_{}", unique_suffix()),
-        channel_id: None,
-        model: "demo-extractive".to_string(),
-        cost_micros: 0,
-        degraded: false,
+        channel_id: Some(channel),
+        model: outcome.model,
+        cost_micros: outcome.cost_micros,
+        degraded: outcome.degraded,
         created_at: now,
         pinned: false,
         archived: false,
         tags: vec![],
-        summary: ExtractedSummary {
-            text: computed.text,
-            key_points: vec![],
-            action_items: vec![],
-            technical_terms: vec![],
-            participants: vec![],
-            citations: vec![],
-        },
+        summary: outcome.summary,
     };
     {
         let repo = state.repo.lock().expect("repo mutex");
         repo.save_record(&workspace, &record)?;
     }
     Ok(Json(SummaryDto::from(record)))
+}
+
+/// A single-model ladder for the demo/on-demand path.
+fn demo_ladder() -> ModelLadder {
+    ModelLadder::new(vec![Model {
+        name: "demo".to_string(),
+        price: ModelPrice {
+            input_micros_per_ktoken: 0,
+            output_micros_per_ktoken: 0,
+        },
+        context_tokens: 200_000,
+    }])
 }
 
 /// A unique-enough id suffix from the clock (nanos).

@@ -289,8 +289,9 @@ mod tests {
             .unwrap();
         assert_eq!(created.status(), StatusCode::OK);
         let created_json = body_json(created).await;
-        assert_eq!(created_json["model"], "demo-extractive");
-        assert!(created_json["text"].as_str().unwrap().contains("3 msgs"));
+        // Real pipeline output: structured, via the demo client.
+        assert_eq!(created_json["model"], "demo");
+        assert!(!created_json["key_points"].as_array().unwrap().is_empty());
 
         // Now two summaries are listed.
         let listed = app
