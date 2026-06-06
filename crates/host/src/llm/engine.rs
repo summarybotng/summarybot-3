@@ -62,6 +62,15 @@ pub trait LlmClient {
     fn complete(&self, request: &LlmRequest) -> Result<LlmResponse, LlmError>;
 }
 
+/// Blanket impl so a shared `Arc<dyn LlmClient + Send + Sync>` (held in
+/// `AppState`) is itself an [`LlmClient`] — one process-wide client can back
+/// both the on-demand endpoint and the scheduler without cloning the backend.
+impl<T: LlmClient + ?Sized> LlmClient for Arc<T> {
+    fn complete(&self, request: &LlmRequest) -> Result<LlmResponse, LlmError> {
+        (**self).complete(request)
+    }
+}
+
 /// Monotonic-ish millisecond clock (injected for determinism).
 pub trait Clock {
     fn now_ms(&self) -> i64;

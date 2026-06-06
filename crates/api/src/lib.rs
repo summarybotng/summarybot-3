@@ -20,22 +20,50 @@ pub use scheduler_driver::spawn_scheduler;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use domain::Secret;
+use host::llm::{DemoLlmClient, GlobalRateLimiter, LlmClient, RateLimitConfig};
 use repository::SqliteRepository;
 use std::sync::{Arc, Mutex};
 
 /// Shared application state. The repo is behind a `Mutex` because rusqlite's
 /// `Connection` is `Send` but not `Sync`; SQLite serializes writes anyway.
+///
+/// The LLM client and rate limiter are **process-wide and shared**: every
+/// request and every scheduler tick goes through the one `limiter` (so the
+/// LEG-001 budget is global, not per-request) and the one configured `llm`
+/// backend (demo by default; OpenRouter when configured — see `main.rs`).
 #[derive(Clone)]
 pub struct AppState {
     pub repo: Arc<Mutex<SqliteRepository>>,
     pub signing_key: Arc<Secret<Vec<u8>>>,
+    pub llm: Arc<dyn LlmClient + Send + Sync>,
+    pub limiter: Arc<GlobalRateLimiter>,
 }
 
 impl AppState {
+    /// Default state: the deterministic [`DemoLlmClient`] and a fresh shared
+    /// limiter (no key/network). Used by tests and the default build.
     pub fn new(repo: SqliteRepository, signing_key: Secret<Vec<u8>>) -> Self {
+        Self::with_llm(
+            repo,
+            signing_key,
+            Arc::new(DemoLlmClient),
+            Arc::new(GlobalRateLimiter::new(RateLimitConfig::default())),
+        )
+    }
+
+    /// State with an explicit LLM backend + shared limiter (the server picks
+    /// these from config in `main.rs`).
+    pub fn with_llm(
+        repo: SqliteRepository,
+        signing_key: Secret<Vec<u8>>,
+        llm: Arc<dyn LlmClient + Send + Sync>,
+        limiter: Arc<GlobalRateLimiter>,
+    ) -> Self {
         Self {
             repo: Arc::new(Mutex::new(repo)),
             signing_key: Arc::new(signing_key),
+            llm,
+            limiter,
         }
     }
 }

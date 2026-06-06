@@ -109,19 +109,18 @@ fn default_author() -> String {
 
 /// `POST /workspaces/:ws/summaries` — on-demand summarize through the **real
 /// Phase-3 pipeline** (`SummarizationService` → model ladder → structured
-/// extraction + quality validation), using the deterministic [`DemoLlmClient`]
-/// so it runs with no key/network. Swapping in the OpenRouter client (configured
-/// via the `openrouter` feature + an API key) is the only change for live LLMs.
+/// extraction + quality validation), over the **process-wide shared** LLM
+/// backend and rate limiter held in [`AppState`]. That backend is the
+/// deterministic demo client by default (no key/network) and the OpenRouter
+/// client when the server is configured for it (`main.rs`); this handler is
+/// unchanged either way.
 pub async fn create_summary(
     State(state): State<AppState>,
     user: AuthUser,
     Path(ws): Path<String>,
     Json(body): Json<CreateSummaryRequest>,
 ) -> Result<Json<SummaryDto>, ApiError> {
-    use host::llm::{
-        DemoLlmClient, GlobalRateLimiter, LlmProvider, RateLimitConfig, RequestPriority,
-        ResilientLlm,
-    };
+    use host::llm::{LlmProvider, RequestPriority, ResilientLlm};
     use host::{SummarizationService, SummarizeRequest};
 
     user.require_workspace(&ws)?;
@@ -153,10 +152,8 @@ pub async fn create_summary(
         .collect();
 
     let ladder = demo_ladder();
-    let engine = ResilientLlm::new(
-        DemoLlmClient,
-        std::sync::Arc::new(GlobalRateLimiter::new(RateLimitConfig::default())),
-    );
+    // Process-wide shared backend + limiter (LEG-001 budget is global).
+    let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
     let outcome = SummarizationService::new(&engine, &ladder)
         .summarize(&SummarizeRequest {
             messages: &messages,

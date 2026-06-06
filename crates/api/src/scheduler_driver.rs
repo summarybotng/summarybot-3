@@ -7,27 +7,24 @@
 //! ones, advances/skips/disables — SCH-005/006). The per-tick work is the
 //! testable [`run_one_tick`]; only the interval loop is untested glue.
 //!
-//! The LLM client is the deterministic [`DemoLlmClient`] (no key/network); the
-//! OpenRouter client swaps in behind the same trait once configured.
+//! The LLM backend and rate limiter come from the shared [`AppState`]: the
+//! deterministic demo client by default, or OpenRouter when the server is
+//! configured for it (`main.rs`) — the same one the on-demand endpoint uses.
 
 use crate::auth::now_secs;
 use crate::summaries::demo_ladder;
 use crate::AppState;
 use domain::summarize::ModelLadder;
-use host::llm::{DemoLlmClient, GlobalRateLimiter, RateLimitConfig, ResilientLlm};
+use host::llm::{LlmClient, ResilientLlm};
 use host::{SchedulerService, SummarizingScheduleRunner, TickReport};
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Spawn the background scheduler loop. Returns immediately; the task runs until
 /// the server exits.
 pub fn spawn_scheduler(state: AppState, interval_secs: u64) {
     tokio::spawn(async move {
-        // Built once; reused every tick.
-        let engine = ResilientLlm::new(
-            DemoLlmClient,
-            Arc::new(GlobalRateLimiter::new(RateLimitConfig::default())),
-        );
+        // Built once over the shared backend + limiter; reused every tick.
+        let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
         let ladder = demo_ladder();
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
         loop {
@@ -45,9 +42,9 @@ pub fn spawn_scheduler(state: AppState, interval_secs: u64) {
 
 /// One scheduler pass against the shared state. Sync (the repo is sync, and the
 /// demo LLM does no I/O); no `await` is held across the repo lock.
-pub(crate) fn run_one_tick(
+pub(crate) fn run_one_tick<C: LlmClient>(
     state: &AppState,
-    engine: &ResilientLlm<DemoLlmClient>,
+    engine: &ResilientLlm<C>,
     ladder: &ModelLadder,
     now: i64,
 ) -> anyhow::Result<TickReport> {
@@ -61,10 +58,12 @@ mod tests {
     use super::*;
     use domain::summarize::{Model, ModelPrice};
     use domain::{ChannelId, NormalizedMessage, Platform, Schedule, WorkspaceId};
+    use host::llm::{DemoLlmClient, GlobalRateLimiter, RateLimitConfig};
     use repository::{
         ScheduleRepository, SqliteRepository, StoredSchedule, StructuredSummaryRepository,
         WhatsAppRepository,
     };
+    use std::sync::Arc;
 
     fn engine() -> ResilientLlm<DemoLlmClient> {
         ResilientLlm::new(
