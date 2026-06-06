@@ -1,46 +1,13 @@
-//! LLM failure classification + retry policy (LEG-002).
+//! LLM retry policy + HTTP failure classification (LEG-002).
 //!
-//! Pure: maps provider signals to a stable taxonomy and decides — without any
-//! I/O or clock — whether and when a failed request should be retried. The host
-//! adapter applies the decision (the actual waiting/requeue is its job).
+//! The taxonomy itself ([`FailureClass`]) is pure and shared, so it lives in the
+//! domain; this host module maps provider/HTTP signals onto it and owns the
+//! retry-timing policy. Pure (no I/O/clock) — the host adapter applies the
+//! decision (the actual waiting/requeue is its job).
 
-/// Stable classification of an LLM request failure (LEG-002 #1). Drives whether
-/// a job auto-retries and what `failure_reason` the API surfaces (LEG-002 #3),
-/// so a rate limit no longer looks like a generic failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FailureClass {
-    /// 429 — too many requests; transient, retryable.
-    RateLimited,
-    /// Out of credits / billing cap reached; permanent until topped up.
-    QuotaExceeded,
-    /// Malformed request, unknown model, etc.; retrying won't help.
-    InvalidRequest,
-    /// 5xx / provider outage; transient, retryable.
-    ServiceUnavailable,
-    /// Anything unclassified; treated as permanent (don't hammer blindly).
-    Unknown,
-}
-
-impl FailureClass {
-    /// Stable string for API responses / telemetry (LEG-002 #3).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            FailureClass::RateLimited => "rate_limited",
-            FailureClass::QuotaExceeded => "quota_exceeded",
-            FailureClass::InvalidRequest => "invalid_request",
-            FailureClass::ServiceUnavailable => "service_unavailable",
-            FailureClass::Unknown => "unknown",
-        }
-    }
-
-    /// Transient classes auto-retry (LEG-002 #2); permanent ones do not.
-    pub fn is_retryable(self) -> bool {
-        matches!(
-            self,
-            FailureClass::RateLimited | FailureClass::ServiceUnavailable
-        )
-    }
-}
+// FailureClass is the shared pure taxonomy (domain); re-exported so existing
+// `llm::FailureClass` call sites keep working.
+pub use domain::FailureClass;
 
 /// Classify from an HTTP status code. A coarse first pass; a provider adapter
 /// may refine using the response body (e.g. distinguishing a 429 that is really
