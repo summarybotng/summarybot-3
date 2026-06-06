@@ -1,0 +1,17 @@
+[package]
+name = "domain"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# WhatsApp timestamp parsing + DST-correct IANA normalization (WHA-020).
+# default-features off keeps the crate clock-free (it stays pure / wasm-safe);
+# we only parse and convert, never read "now".
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+chrono-tz = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+proptest.workspace = true

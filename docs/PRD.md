@@ -58,7 +58,7 @@ The current codebase suffers from:
 | SUM-004 | Extract action items with assignee, priority, deadline | Critical | |
 | SUM-005 | Extract technical terms with definitions | High | |
 | SUM-006 | Analyze participant contributions | High | Message counts, contribution scores |
-| SUM-007 | Support custom system prompts per guild | High | ADR-034 |
+| SUM-007 | Support custom system prompts per workspace | High | ADR-034 |
 | SUM-008 | Support perspectives (general, developer, executive, support) | Medium | |
 | SUM-009 | Include grounded citations [N] linking to source messages | High | ADR-004 |
 | SUM-010 | Extract knowledge units for RuVector storage | Medium | ADR-090 |
@@ -66,11 +66,13 @@ The current codebase suffers from:
 | SUM-012 | Track generation metrics (attempts, cost, latency) | Medium | |
 | SUM-013 | Cache summaries with hash-based invalidation | Medium | |
 | SUM-014 | Respect minimum message threshold (default 5) | High | |
-| SUM-015 | Handle prompt length optimization for token limits | High | |
+| SUM-015 | Handle prompt length optimization for token limits | High |
+| SUM-016 | On cost-cap exhaustion mid-chain, return the last usable attempt as a **best-effort partial**, flagged degraded/incomplete with cost+attempt metadata (never silently drop) | High |
+| SUM-017 | Detect malformed/low-quality output by **structural validation** (response JSON schema + finish_reason), not fragile marker strings | High | |
 
 **Non-Functional Requirements**:
 - Response time: < 30 seconds for < 1000 messages
-- Cost cap per generation: Configurable (default $0.50)
+- Cost cap per generation: Configurable **per-workspace** (default $0.50), with optional per-request override
 - Max retry attempts: Configurable (default 5)
 
 ### 1.2 Message Processing
@@ -121,16 +123,80 @@ The current codebase suffers from:
 
 ### 2.3 WhatsApp Integration
 
+*WhatsApp has no historical-fetch API (push-only; live fetch is BLOCKED — §13.2 / ADR-053). The **only** ingestion path is a human exporting a chat (`_chat.txt`, usually zipped) and uploading it. Ingestion is therefore human-initiated, partial, overlapping and snapshot-based, so the system must **solicit, validate, merge, and make gaps legible** rather than fetch. The collection process and coverage-gap awareness below are committed for v1 — see ADR-121 (which supersedes reference ADR-081/112).*
+
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| WHA-001 | API endpoint for chat export ingestion | High |
-| WHA-002 | Parse WhatsApp message format | High |
+| WHA-001 | Upload endpoint for chat-export ingestion, workspace-scoped and authenticated via the identity/session layer (not a static ingest key) | High |
+| WHA-002 | Parse WhatsApp message format (iOS/Android, locale date formats, system messages, `<Media omitted>`) | High |
 | WHA-003 | Handle voice note transcriptions (Whisper) | Medium |
 | WHA-004 | Handle forwarded message markers | Medium |
 | WHA-005 | Preserve reply chains | Medium |
-| WHA-006 | Never expose phone numbers in outputs | Critical |
+| WHA-006 | Never expose phone numbers — anonymized (HMAC-hashed to stable pseudonyms) **at ingest, before storage**; raw PII never persisted | Critical |
 | WHA-007 | List ingested chats with statistics | Medium |
-| WHA-008 | API key authentication for ingest | High |
+| WHA-008 | *(Superseded by WHA-001 — auth is workspace-scoped; the static `INGEST_API_KEY` is removed.)* | — |
+| WHA-009 | Import is a first-class tracked record: uploader attribution, timestamp, original filename, `file_hash`, size, detected format, status lifecycle (folds into the unified reprocessing job type, DAT-004) | High |
+| WHA-010 | File-level dedup via SHA-256 `file_hash`: an identical re-upload is detected and surfaced, not silently re-ingested | High |
+| WHA-011 | Parsing runs as bounded pure compute in the WASM guest; the host unzips and streams `_chat.txt` (§12.0) | Medium |
+| WHA-012 | Message-level dedup via a **synthetic fingerprint** `hash(workspace, chat, utc-instant, resolved-identity, content)` — a **documented exception to DAT-005** (WhatsApp exports carry no message ID); re-ingestion stays idempotent. The fingerprint also serves as the message's canonical id (WHA-021) | High |
+| WHA-013 | Cross-export identity resolution (contact-name variance, "You" → uploader, phone-hash match): merges are **confidence-gated, reversible, and audit-logged** — no silent merge (cf. WSP-010) | High |
+| WHA-014 | Imports are soft-deletable; message fingerprints are retained so dedup stays correct; a sanitized message view (pseudonyms only) is available for verification | Medium |
+| WHA-015 | Detect join/group events from system messages (group created, member joined/added) to learn the chat predates any export | High |
+| WHA-016 | Coverage-gap calculation, classifying gaps `before_join` / `between_imports` / `after_last`, and distinguishing **"no messages existed"** from **"not yet imported"** (`can_fill`) | High |
+| WHA-017 | Per-chat coverage timeline visualization (covered vs fillable gaps, coverage %) | High |
+| WHA-018 | Contributor tracking: which member contributed which date range | Medium |
+| WHA-019 | Scoped import invitations — request specific members import a **needed date range** with instructions ("here's what's still missing, please contribute it") | High |
+| WHA-020 | Timezone handling: WhatsApp timestamps are local with no offset in the file. Capture the export's **IANA timezone** as upload metadata (defaulted from uploader profile/browser, DST-correct) and normalize every timestamp to a **canonical UTC instant** for fingerprinting, ordering, coverage and storage; retain the original local rendering for display | High |
+| WHA-021 | After the adapter, WhatsApp messages are tracked like any backend source (WSP-006): the synthetic fingerprint is the **canonical message id**, the resolved participant fills `author_id`, and `source_type=whatsapp` is the only WhatsApp-specific field downstream sees. Participant identity is **not** a SummaryBot identity — binding is claim-based (WSP-005/WSP-010), never automatic | High |
+
+### 2.4 Platform-Agnostic Workspace Model (ADR-066, ADR-078)
+
+*Promoted from Future Requirements §13.1. Foundational for the rewrite: the system is no longer Discord-centric. The `workspace_id` is the primary tenant key; platform connections (Discord/Slack/WhatsApp) are optional attachments to a workspace.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| WSP-001 | Authenticate without Discord (email magic link, Google SSO) | Critical |
+| WSP-002 | Use `workspace_id` as the primary tenant key throughout (replaces `guild_id`) | Critical |
+| WSP-003 | Support workspaces with Slack-only connections | High |
+| WSP-004 | Support cross-platform workspaces (Discord + Slack + WhatsApp in one) | High |
+| WSP-005 | Unified user identity across linked platforms | High |
+| WSP-006 | Platform adapter pattern for all fetchers/deliverers (no platform hardcoded in core) | Critical |
+| WSP-007 | Optional platform connections — a workspace may have zero bots attached | High |
+| WSP-008 | Map external platform IDs (guild_id, team_id) to workspaces via a connection table. A source may map to **many** workspaces (see WSP-015) | Critical |
+| WSP-009 | Workspace creation is **explicit**: user creates a named workspace, then attaches platform connections (no auto-create on connect) | High |
+| WSP-010 | Linking a platform account already bound to another user is **rejected**; transfer requires verification / admin-mediated claim (no auto-merge, no silent reassign) | Critical |
+| WSP-011 | Provide a **claim/transfer workflow** for a contested platform identity: a claim record (requester, current owner, status: pending/approved/denied/expired) with request/list/approve/deny API + admin UI | High |
+| WSP-012 | **Self-service first**: completing the platform's own OAuth for the contested account is proof of control and **auto-approves** the transfer (no human needed) — covers the common "same person, two logins" case | High |
+| WSP-013 | Disputes that can't be self-verified escalate to a human approver: a **tenant admin** for same-tenant collisions, a **platform operator** for cross-tenant collisions (system-level role, ADR-119) | High |
+| WSP-014 | On transfer, atomically move only the **authentication identity** by default; transferring owned workspaces/schedules is a separate explicit step. Every claim and transfer is **audit-logged** (security boundary) | High |
+| WSP-015 | A platform **source** (guild/team) may connect to **multiple workspaces, including across tenants** — shared sources are supported (e.g. several Discord-based tenants sharing one Slack). No global uniqueness on (platform, platform_id); a channel may be summarized independently by each subscribing workspace. Distinct from WSP-010 (which governs *user identity*, not source connections). See ADR-120 | High |
+
+**Non-Functional**: "Workspace" is the canonical user-facing term; "guild"/"team" appear only inside platform adapters.
+
+### 2.5 On-Demand Summarization & Command Surface (ADR-122)
+
+*The in-chat, end-user surface: a user triggering a summary or managing schedules from **within** the platform (e.g. Discord `/summarize`), as opposed to the web dashboard (§5). On-demand summarization is the **automated** counterpart's sibling — §3 covers scheduled runs; this covers "summarize now." Defined **platform-agnostically** (WSP-006) and rendered natively by each adapter (Discord slash commands, Slack slash commands/shortcuts); platforms with no live command channel (WhatsApp — push-only, §13.2) simply don't expose it. Dashboard-first remains the priority, so this surface is **Medium** unless noted.*
+
+**On-demand summarization (ODS-\*)**
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| ODS-001 | On-demand ("summarize now") is a first-class capability, distinct from scheduling: request a summary for a scope + time range and receive it directly | Medium |
+| ODS-002 | Request-time range selection — last N hours/minutes, message count, or since-last-summary | Medium |
+| ODS-003 | Request-time options — scope (CHANNEL/CATEGORY/WORKSPACE via SCP-\*), mode/length, perspective/persona | Medium |
+| ODS-004 | Long-running requests are acknowledged immediately and delivered when ready (async/defer UX), tracked as a job (ADR-013) | Medium |
+| ODS-005 | Available from **both** the in-chat command surface and the dashboard (§5), sharing one service path | Medium |
+
+**Command & interaction surface (CMD-\*)**
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| CMD-001 | Commands are defined **platform-agnostically** in core; each adapter renders them natively. No platform-specific command logic in core (WSP-006) | High |
+| CMD-002 | Command set: on-demand summarize (ODS-\*), schedule management (create/list/pause/resume/delete/status, mapping to SCH-\*/SCM-\*), and help/status | Medium |
+| CMD-003 | Responses are **private-by-default** where the platform supports it (e.g. Discord ephemeral), with an explicit option to post publicly | Medium |
+| CMD-004 | Scope-selection affordances (channel/category autocomplete or pickers) where the platform supports them; graceful fallback otherwise | Low |
+| CMD-005 | Platforms without a live command channel (WhatsApp) expose no commands; the capability degrades gracefully rather than erroring | Medium |
+| CMD-006 | Every command invocation is permission-checked (PRM-005) and audit-logged (AUD-001) | Medium |
 
 ---
 
@@ -160,7 +226,7 @@ The current codebase suffers from:
 |----|-------------|----------|
 | SCP-001 | CHANNEL scope: Single or multiple channels | Critical |
 | SCP-002 | CATEGORY scope: All channels in category | High |
-| SCP-003 | GUILD scope: All accessible channels | High |
+| SCP-003 | WORKSPACE scope: All accessible channels across the workspace's connected platforms | High |
 | SCP-004 | Support excluded_channel_ids | High |
 | SCP-005 | Runtime channel resolution | High |
 | SCP-006 | Category mode: combined or individual | Medium |
@@ -189,10 +255,12 @@ The current codebase suffers from:
 
 ### 4.1 Delivery Destinations
 
+*Delivery is platform-agnostic: a destination targets whichever platforms the workspace has connected. "Deliver to chat" means deliver to the connected platform's channel/DM (Discord channel, Slack channel, Slack DM, …), not Discord specifically. A destination is only offered when its platform connection or configuration exists (see §4.3 DEN-003).*
+
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| DEL-001 | DISCORD_CHANNEL: Deliver to text channel | Critical |
-| DEL-002 | DISCORD_DM: Deliver via direct message | Medium |
+| DEL-001 | PLATFORM_CHANNEL: Deliver to a channel on a connected chat platform (Discord text channel, Slack channel) | Critical |
+| DEL-002 | PLATFORM_DM: Deliver via direct message on a connected chat platform (Discord DM, Slack DM) | Medium |
 | DEL-003 | WEBHOOK: POST to external URL | High |
 | DEL-004 | EMAIL: Send via SMTP | Medium |
 | DEL-005 | DASHBOARD: Store for web viewing | Critical |
@@ -200,15 +268,37 @@ The current codebase suffers from:
 | DEL-007 | Support multiple destinations per schedule | High |
 | DEL-008 | Enable/disable individual destinations | High |
 | DEL-009 | Track delivery results | High |
+| DEL-010 | Resolve chat destinations against the workspace's connected platforms; deliver to each connected platform (e.g. Discord channel AND Slack DM if both connected) | High |
+| DEL-011 | Only offer destinations whose platform is connected/configured; hide the rest (e.g. no Confluence option when Confluence not configured, no Slack DM when Slack not connected) | High |
 
 ### 4.2 Delivery Formats
 
+*Format is a render intent, not a platform binding. `rich` resolves to each connected platform's native rich format (Discord embed, Slack Block Kit, …) via its adapter; the adapter falls back to `markdown` if it has no rich representation.*
+
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| FMT-001 | embed: Discord rich embed | High |
+| FMT-001 | rich: Platform-native rich format, rendered per connected platform (Discord embed, Slack Block Kit) | High |
 | FMT-002 | markdown: Plain markdown | High |
 | FMT-003 | template: ADR-014 with thread creation | Medium |
 | FMT-004 | json: Raw JSON for webhooks | Low |
+| FMT-005 | Adapter selects the native rich renderer for its platform; fall back to markdown when no rich format exists | Medium |
+
+### 4.3 Destination Enablement & Pluggability
+
+*Destinations are pluggable capabilities. A workspace admin opts each optional destination in; the UI only surfaces what is enabled and configured. Confluence is the driving example, but the rule applies to all optional destinations.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| DEN-001 | Each delivery destination is a pluggable capability behind a common trait (`DeliveryDestination`) | High |
+| DEN-002 | Workspace admins enable/disable optional destinations per workspace (Confluence, Email, Webhook, Drive) | High |
+| DEN-003 | Disabled/unconfigured destinations are hidden everywhere in the UI — not shown greyed-out (capability-gated UI) | High |
+| DEN-004 | Enabling a destination requires its configuration to be valid before it becomes selectable (e.g. Confluence base URL + service-account token) | High |
+| DEN-005 | Dashboard and Discord are always-available core destinations and are not hidden | Medium |
+| DEN-006 | Destination availability is enforced server-side, not just in the UI — a disabled destination is rejected by the API | Critical |
+| DEN-007 | Only workspace admins may change destination enablement (ties to PRM-001 ADMIN level) | High |
+| DEN-008 | Per-workspace destination config (credentials) is encrypted at rest (ADR-099: AES-256-GCM) | Critical |
+
+> **Anti-pattern caution (from `docs/reference-brief.md`):** the old system shipped DB schema for webhook/email/Confluence/Drive before working delivery code. A destination counts as "enabled" only when it actually delivers and survives restart — never expose a stubbed destination in the admin UI.
 
 ---
 
@@ -239,7 +329,7 @@ The current codebase suffers from:
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| SCM-001 | List schedules for guild | Critical |
+| SCM-001 | List schedules for workspace | Critical |
 | SCM-002 | Create schedule with wizard | Critical |
 | SCM-003 | Update schedule | High |
 | SCM-004 | Delete schedule | High |
@@ -269,7 +359,7 @@ The current codebase suffers from:
 |----|-------------|----------|
 | AUTH-001 | Discord OAuth2 login | Critical |
 | AUTH-002 | JWT token with expiration | Critical |
-| AUTH-003 | Validate guild access | Critical |
+| AUTH-003 | Validate workspace access | Critical |
 | AUTH-004 | Check admin status for management | High |
 | AUTH-005 | API key auth for integrations | Medium |
 
@@ -284,6 +374,22 @@ The current codebase suffers from:
 | PRM-005 | Command-level checks | High |
 | PRM-006 | Permission caching | Medium |
 | PRM-007 | Optional enforcement flag | High |
+| PRM-008 | **Platform operator**: a system-level role *orthogonal* to the per-workspace levels above (not a fifth value). It is the only role with cross-tenant authority — used to approve cross-tenant identity claims (WSP-013). Assigned **out-of-band via deployment config only** (e.g. an operator-id list); never grantable through the in-app UI. See ADR-119 | High |
+
+### 6.3 Multi-Tenancy (ADR-079)
+
+*Promoted from Future Requirements §13.3. Required for white-label / hosted deployments. A tenant owns one or more workspaces.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| TEN-001 | Custom subdomains per tenant (acme.summarybot.app) | High |
+| TEN-002 | Custom domains with DNS verification | Medium |
+| TEN-003 | Tenant branding (logo, colors, app name) | Medium |
+| TEN-004 | Tenant member management (invites, roles) | High |
+| TEN-005 | Workspace linking to tenants | High |
+| TEN-006 | Tenant-scoped OAuth redirects | High |
+| TEN-007 | Tenant-level data isolation enforced at the repository layer. **Documented exception**: an explicitly shared platform source may feed workspaces in different tenants (WSP-015, ADR-120) — the same source content then lands in each subscribing tenant by design | Critical |
+| TEN-008 | Billing entity is the **tenant**; a tenant owns unlimited workspaces under its plan (not per-workspace billing) | High |
 
 ---
 
@@ -291,12 +397,39 @@ The current codebase suffers from:
 
 ### 7.1 Core Data Models
 
+> **Workspace-native, greenfield (WSP-002)**: `workspace_id` is the primary tenant key across all models below. `guild_id` exists **nowhere** except `WorkspaceConnection.platform_id`. This is a **greenfield build — there is NO migration of the old system's data and no back-compat columns.** A workspace may attach zero or more platform connections. Historical content is **re-ingested from the source platforms** through the platform adapters (keyed to workspaces from the start), not migrated from the legacy database. See §7.3.
+
+#### Workspace & Tenancy (ADR-066, ADR-079)
+```rust
+struct Tenant {
+    id: String,
+    name: String,
+    subdomain: Option<String>,      // TEN-001
+    custom_domain: Option<String>,  // TEN-002
+    branding: Branding,             // TEN-003
+}
+
+struct Workspace {
+    id: String,                     // primary tenant key (replaces guild_id)
+    tenant_id: String,
+    name: String,
+    owner_user_id: String,
+    created_at: DateTime,
+}
+
+struct WorkspaceConnection {
+    workspace_id: String,
+    platform: Platform,             // Discord | Slack | WhatsApp
+    platform_id: String,            // guild_id, team_id, etc. (unique per platform)
+}
+```
+
 #### SummaryResult
 ```python
 class SummaryResult:
     id: str                           # UUID
     channel_id: str
-    guild_id: str
+    workspace_id: str
     start_time: datetime
     end_time: datetime
     message_count: int
@@ -315,7 +448,7 @@ class SummaryResult:
 ```python
 class StoredSummary:
     id: str
-    guild_id: str
+    workspace_id: str
     source_channel_ids: List[str]
     schedule_id: Optional[str]
     schedule_name_snapshot: Optional[str]  # ADR-109
@@ -338,7 +471,7 @@ class StoredSummary:
 class ScheduledTask:
     id: str
     name: str
-    guild_id: str
+    workspace_id: str
     channel_ids: List[str]
     schedule_type: ScheduleType
     schedule_time: Optional[str]
@@ -362,7 +495,7 @@ class ScheduledTask:
 ```python
 class SummaryJob:
     id: str
-    guild_id: str
+    workspace_id: str
     job_type: JobType
     status: JobStatus
     scope: Optional[str]
@@ -396,10 +529,10 @@ class ProcessedMessage:
 | SummaryRepository | SummaryResult | Exists |
 | StoredSummaryRepository | StoredSummary | Exists |
 | TaskRepository | ScheduledTask, TaskResult | Exists |
-| ConfigRepository | GuildConfig | Exists |
+| ConfigRepository | WorkspaceConfig | Exists |
 | ErrorRepository | ErrorLog | Exists |
 | SummaryJobRepository | SummaryJob | Exists |
-| PromptTemplateRepository | GuildPromptTemplate | Exists |
+| PromptTemplateRepository | WorkspacePromptTemplate | Exists |
 | FeedRepository | FeedConfig | Exists |
 | IngestRepository | IngestDocument | Exists |
 
@@ -415,6 +548,21 @@ services/
 └── confluence_service.py       # Confluence publishing
 ```
 
+> The "Exists" column above refers to the **legacy** system (reference-only). The rewrite reimplements these repositories workspace-native in Rust; nothing is carried over as-is.
+
+### 7.3 Data Strategy: Greenfield & Reprocessing
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| DAT-001 | Greenfield build — no migration of the legacy database, no back-compat `guild_id` columns | Critical |
+| DAT-002 | All data is workspace-native from creation; `guild_id` lives only in `WorkspaceConnection.platform_id` | Critical |
+| DAT-003 | Historical content is (re)ingested from the source platforms via platform adapters, not imported from the old DB | High |
+| DAT-004 | Reprocessing/backfill is a first-class job type (reuses Job Tracking, §5.3) with progress and resumability | High |
+| DAT-005 | Re-ingestion is idempotent — dedup on platform message ID (never timestamps); re-running a backfill produces no duplicates. **Exception**: WhatsApp exports carry no message ID, so they dedup on a synthetic fingerprint instead (WHA-012, ADR-121) | High |
+| DAT-006 | Backfill respects platform API retention limits; gaps beyond retention are recorded, not silently dropped (cf. ADR-072 coverage tracking) | Medium |
+
+**Rationale**: a clean workspace-native schema with no legacy-migration debt. Cost: every workspace must (re)ingest its history from live platform sources, bounded by each platform's API retention window.
+
 ---
 
 ## 8. Knowledge Management
@@ -428,6 +576,8 @@ services/
 | KNO-003 | Store in vector database | Medium |
 | KNO-004 | Track ingestion status | Low |
 | KNO-005 | Query by semantic similarity | Low |
+| KNO-006 | Vector search via RuVector's **native Rust crate** (no FFI/sidecar); fall back to a Rust-native vector lib only if the crate proves unviable | Medium |
+| KNO-007 | Embeddings from a **local self-hosted** model (e.g. bge-small / all-MiniLM via candle); model + version pinned, as a change invalidates all stored vectors | Medium |
 
 ### 8.2 Wiki Synthesis (ADR-067)
 
@@ -437,6 +587,32 @@ services/
 | WIK-002 | Track ingestion status | Low |
 | WIK-003 | Regenerate wiki pages | Low |
 
+### 8.3 Coherence Gate & Advanced RuVector (ADR-052)
+
+*Promoted from Future Requirements §13.4 (RuVector Phases 2–4 + coherence gate).*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| COH-001 | Coherence gate: validate generated claims against source messages to prevent hallucination | High |
+| COH-002 | GNN-based conversation topology modeling (thread/reply graph) | Medium |
+| COH-003 | Cross-session agent memory persisted via RuVector | Medium |
+| COH-004 | Self-learning query optimization (SONA) for semantic search | Low |
+| COH-005 | Provenance tracking: every claim links to its source segment | High |
+
+### 8.4 AI Wiki Curator Agent (ADR-077)
+
+*Promoted from Future Requirements §13.5. Automates quality maintenance of the compounding wiki.*
+
+| ID | Requirement | Priority |
+|----|-------------|----------|
+| CUR-001 | Curator agent runs on schedule against the wiki | Medium |
+| CUR-002 | Topic merging for similar/duplicate topics (e.g. "auth" vs "authentication") | Medium |
+| CUR-003 | Quality scoring for wiki pages, flag sparse/stale content | Medium |
+| CUR-004 | Automated bidirectional cross-reference linking | Low |
+| CUR-005 | Contradiction detection and resolution across pages | Medium |
+| CUR-006 | Content pruning of stale pages | Low |
+| CUR-007 | Knowledge gap detection (missing topics) | Low |
+
 ---
 
 ## 9. External Integrations
@@ -445,7 +621,7 @@ services/
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| CFL-001 | Per-guild Confluence configuration | Medium |
+| CFL-001 | Per-workspace Confluence configuration | Medium |
 | CFL-002 | Publish as Confluence pages | Medium |
 | CFL-003 | Template-based titles | Medium |
 | CFL-004 | Add labels (scope, category, channels) | Low |
@@ -480,7 +656,7 @@ services/
 | ERR-001 | Capture errors with type, severity, context | High |
 | ERR-002 | Error types: SUMMARIZATION, PERMISSION, SCHEDULE, FALLBACK | High |
 | ERR-003 | Severity levels: INFO, WARNING, ERROR, CRITICAL | High |
-| ERR-004 | Query by guild, type, severity | High |
+| ERR-004 | Query by workspace, type, severity | High |
 | ERR-005 | Resolve with notes | Medium |
 | ERR-006 | Bulk resolve by type | Low |
 | ERR-007 | Auto-cleanup old errors | Low |
@@ -603,40 +779,87 @@ src/
 
 ## 12. Implementation Roadmap
 
-### Phase 1: Foundation (Week 1-2)
+This is a **greenfield Rust/WASM build**, not a refactor of the legacy system. Phases are sequenced by dependency, not calendar; sizing is indicative (S ≈ days, M ≈ 1-2 wks, L ≈ 3-4 wks). Each phase ships behind tests and is independently demoable.
 
-1. Set up new directory structure
-2. Migrate domain models to `domain/`
-3. Create service layer interfaces
-4. Replace in-memory state with repository calls
-5. Add missing tests for critical paths
+### 12.0 Architecture Principles
 
-### Phase 2: Route Decomposition (Week 3-4)
+- **Server host + WASM compute (decided).** A native Rust server owns all I/O (platform APIs, DB, LLM) and orchestration (retry, cost cap); WASM components (`wasm32-*`, WIT / component model) are sandboxed **pure-compute** units — summarize, extract, ground, dedup, coherence-gate — invoked with **bounded, streamed inputs**. This sidesteps WASM memory ceilings (resolves open Q#11). Edge/browser/offline (rvLite) execution is explicitly post-v1.
+- **No god files** (>500 lines), thin handlers → services → repositories, business logic never in handlers.
+- **No in-memory state** in handlers; all state is loaded-from-storage (mandatory under WASM's ephemeral instances).
+- **Workspace-native & tenant-isolated** from day one; isolation (TEN-007) enforced at the repository layer.
+- **TDD throughout**; `proptest` for all boundary validation. Coverage gates: 80% overall, 95% critical paths.
+- **Cross-cutting from commit #1**: audit logging (ADR-045), correlation IDs (`tracing`), secrets via Vault, UTC everywhere, fail-fast validation (newtypes, no silent fallbacks).
 
-1. Split `summaries.py` (5,574 lines → 6 modules)
-2. Split `archive.py` (4,051 lines → 5 modules)
-3. Split `wiki.py` (2,277 lines → 4 modules)
-4. Extract business logic to services
+### 12.1 Phase 0 — Toolchain & Architecture Spike (M)
 
-### Phase 3: Service Layer (Week 5-6)
+1. Cargo workspace, `wasm32` target, build/test/CI harness, `proptest`.
+2. Implement the **decided** boundary (§12.0): native host owns I/O + orchestration, WASM does bounded/streamed pure compute. Define the typed host↔WASM interface (WIT).
+3. Host runtime choice (e.g. wasmtime) and the host I/O interface.
+4. Walking skeleton: one trivial request through host → WASM service → repository → DB.
 
-1. Implement `SummaryService`
-2. Implement `ScheduleService`
-3. Implement `DeliveryService`
-4. Implement `JobService`
+### 12.2 Phase 1 — Core Domain, Persistence & Identity (L)
 
-### Phase 4: Testing & Stabilization (Week 7-8)
+1. Workspace / Tenant / WorkspaceConnection models; repository layer with tenant isolation (TEN-007, DAT-001/002).
+2. Pluggable identity behind `dyn IdentityProvider` — ship **≥2 providers** (Discord OAuth + email magic link or Google SSO) to prove the abstraction (WSP-001).
+3. JWT (short-lived) + refresh-token revocation; session store (DB/Redis), audit log, correlation IDs, secrets.
+4. **Gates**: brief open Q#1 (identity-link collision) and Q#2 (workspace auto-create vs explicit) must be answered here.
 
-1. Add unit tests for all services
-2. Add integration tests for repositories
-3. Add API contract tests
-4. Fix migration numbering gaps
+### 12.3 Phase 2 — Platform Adapters, Ingestion & Reprocessing (L)
 
-### Phase 5: Knowledge Management (Week 9-10)
+*Critical-path: greenfield means no seed data, so every workspace depends on this before it has anything to summarize.*
+1. `PlatformAdapter`/`PlatformFetcher` trait → `NormalizedMessage` (ADR-051); Discord + Slack adapters; WhatsApp collection pipeline (WHA-001..019, ADR-121).
+2. Message processing: cleaning, code blocks, attachments, threads, substantial-vs-trivial (MSG-*).
+3. **Unified reprocessing/backfill** (DAT-003..006) folding together backfill jobs (ADR-068), coverage tracking (ADR-072), and retrospective archive (ADR-006): first-class job type, idempotent (dedup on platform message ID — synthetic fingerprint for WhatsApp, WHA-012), resumable, retention-bounded with recorded gaps.
+4. **WhatsApp collection & coverage** (ADR-121, supersedes ref ADR-081/112): attributed/idempotent import pipeline, anonymize-on-ingest, confidence-gated reversible identity resolution, and coverage-gap awareness with a per-chat timeline + scoped import invitations ("show people what to contribute").
 
-1. Refactor RuVector integration
-2. Implement coherence gate properly
-3. Add wiki synthesis tests
+### 12.4 Phase 3 — Summarization Pipeline (L)
+
+1. Resilient multi-model retry engine (ADR-024): summary-type-dependent start model, failure-type strategies, hard cost cap. Builds on the **LLM resilience core** (ADR-123, LEG-001/002/003): wire the async coordinator over the pure token-bucket/circuit-breaker, the failure taxonomy + retry policy, and provider rate-limit parsing; add the priority + auto-retry queues, credit/model pre-checks, and telemetry.
+2. Adaptive token allocation (ADR-095, fixed-point cost math).
+3. Structured extraction (key points, action items, technical terms, participants) + grounded citations with position-index resolution (ADR-004).
+4. Job tracking lifecycle (ADR-013): synchronous record-before-async, RUNNING→PAUSED on restart, persisted errors; surface classified `failure_reason` (LEG-002), not generic "failed".
+5. **Gates**: brief open Q#5 (cost-cap mid-chain policy), Q#6 (quality-detection robustness).
+
+### 12.5 Phase 4 — Delivery & Summary Storage (M)
+
+1. Platform-agnostic delivery (§4): `PLATFORM_CHANNEL`/`PLATFORM_DM` resolved against connected platforms (DEL-010), `rich`/markdown/template/json formats with per-platform rich rendering (FMT-001/005).
+2. Capability-gated, admin-enabled destinations (§4.3 DEN-*; DEL-011) — hidden when unconfigured, enforced server-side, encrypted config.
+3. Stored summaries + dashboard storage destination (always-on).
+4. **On-demand summarization + in-chat command surface** (§2.5, ADR-122): platform-agnostic commands rendered per-platform (Discord slash commands), `/summarize` on-demand (scope + range + options, ODS-*), private-by-default async/deferred responses. Reuses the Phase 3 pipeline + this phase's delivery — one service path. (Schedule-management commands ride Phase 6.)
+
+### 12.6 Phase 5 — Dashboard & Web API (L)
+
+1. OpenAPI-first thin API over services (workspace-scoped routes).
+2. Summary management: list/filter/search/detail, pin/archive/tag, push, bulk ops (§5.1).
+3. Schedule management API + creation wizard (§5.2, ADR-089).
+4. Real-time updates via SSE/WebSocket (no in-memory queues — Redis pub/sub or equivalent).
+
+### 12.7 Phase 6 — Scheduling & Rolling Summaries (M)
+
+1. Persistent scheduler with restore-on-restart, grace period, auto-disable (SCH-*).
+2. Runtime scope resolution (ADR-011): CHANNEL/CATEGORY/WORKSPACE; store scope vs channels-with-content separately.
+3. Rolling periods (ADR-101): append/resummarize/hybrid, the **one-active-summary-per-schedule invariant**, idempotent finalization, per-destination delivery (ADR-108).
+4. **In-chat schedule-management commands** (§2.5 CMD-002, ADR-122): create/list/pause/resume/delete/status rendered per-platform over the scheduler built here.
+
+### 12.8 Phase 7 — Knowledge: RuVector Phase 1 + Coherence Gate + Wiki (L)
+
+1. **Lock the embedding model first** (brief open Q#8) — clustering breaks if it changes later.
+2. RuVector semantic search + FTS5 dual-index (target <100ms p99); confirm RuVector Rust API vs FFI (brief open Q#7).
+3. Inline knowledge-unit extraction (≤20/summary), multi-layer dedup (ADR-118), **Coherence Gate (COH-001, now HIGH)**.
+4. Wiki: auto-ingestion (ADR-067), dual-tab pages (ADR-063), emergent structure (ADR-090); AI Wiki Curator (§8.4 CUR-*) with confidence-gated, reversible actions.
+
+### 12.9 Phase 8 — Multi-Tenancy & White-Label (M)
+
+1. Tenants, subdomains + custom domains (DNS verification), branding, member management/invites, tenant-scoped OAuth (TEN-001..006).
+2. **Gate**: brief open Q#3 (billing model) before exposing tenant self-service.
+
+### 12.10 Phase 9 — Hardening & Launch (M)
+
+1. Coverage gates met (80%/95%), perf benchmarks (<30s summary for <1000 msgs; <100ms p99 search).
+2. Security review (tenant isolation, encrypted secrets, JWT revocation), GDPR soft-delete + verified cascade.
+3. Observability, load testing, runbooks.
+
+> **Cross-platform summaries** (brief open Q#9) and the future RuVector phases (GNN/SONA/rvLite, §8.3 COH-002..004) are explicitly **post-v1** unless promoted.
 
 ---
 
@@ -649,7 +872,7 @@ src/
 | DATABASE_URL | Yes | SQLite/PostgreSQL connection |
 | JWT_SECRET | Yes | Dashboard JWT secret |
 | REDIS_URL | No | Redis for sessions/events |
-| INGEST_API_KEY | No | WhatsApp ingest auth |
+| ~~INGEST_API_KEY~~ | — | *Removed (ADR-121): WhatsApp ingest is workspace-scoped, authenticated via the identity/session layer* |
 | SMTP_* | No | Email configuration |
 | SLACK_CLIENT_* | No | Slack OAuth |
 | CONFLUENCE_* | No | Confluence integration |
@@ -659,18 +882,18 @@ src/
 ## Appendix B: API Endpoint Summary
 
 ### Summary Management
-- `GET /guilds/{guild_id}/summaries` - List
-- `GET /guilds/{guild_id}/summaries/{id}` - Detail
-- `POST /guilds/{guild_id}/summaries/generate` - Generate
-- `POST /guilds/{guild_id}/summaries/{id}/push` - Push
-- `DELETE /guilds/{guild_id}/summaries/{id}` - Delete
+- `GET /workspaces/{workspace_id}/summaries` - List
+- `GET /workspaces/{workspace_id}/summaries/{id}` - Detail
+- `POST /workspaces/{workspace_id}/summaries/generate` - Generate
+- `POST /workspaces/{workspace_id}/summaries/{id}/push` - Push
+- `DELETE /workspaces/{workspace_id}/summaries/{id}` - Delete
 
 ### Schedule Management
-- `GET /guilds/{guild_id}/schedules` - List
-- `POST /guilds/{guild_id}/schedules` - Create
-- `PATCH /guilds/{guild_id}/schedules/{id}` - Update
-- `DELETE /guilds/{guild_id}/schedules/{id}` - Delete
-- `POST /guilds/{guild_id}/schedules/{id}/execute` - Trigger
+- `GET /workspaces/{workspace_id}/schedules` - List
+- `POST /workspaces/{workspace_id}/schedules` - Create
+- `PATCH /workspaces/{workspace_id}/schedules/{id}` - Update
+- `DELETE /workspaces/{workspace_id}/schedules/{id}` - Delete
+- `POST /workspaces/{workspace_id}/schedules/{id}/execute` - Trigger
 
 ### Archive
 - `GET /archive/sources` - List sources
@@ -678,13 +901,13 @@ src/
 - `GET /archive/jobs/{id}` - Job status
 
 ### Wiki
-- `GET /guilds/{guild_id}/wiki/pages` - List pages
-- `GET /guilds/{guild_id}/wiki/search` - Search
-- `POST /guilds/{guild_id}/wiki/pages/{path}/synthesize` - Synthesize
+- `GET /workspaces/{workspace_id}/wiki/pages` - List pages
+- `GET /workspaces/{workspace_id}/wiki/search` - Search
+- `POST /workspaces/{workspace_id}/wiki/pages/{path}/synthesize` - Synthesize
 
 ### RuVector
-- `GET /ruvector/guilds/{guild_id}/search` - Semantic search
-- `GET /ruvector/guilds/{guild_id}/graph` - Knowledge graph
+- `GET /ruvector/workspaces/{workspace_id}/search` - Semantic search
+- `GET /ruvector/workspaces/{workspace_id}/graph` - Knowledge graph
 
 ---
 
@@ -724,7 +947,7 @@ This section captures features that were discussed, planned, or documented in AD
 
 ### 13.1 Platform-Agnostic Architecture (ADR-066)
 
-**Status**: Proposed (Never Implemented)
+**Status**: ✅ PROMOTED to §2.4 (committed requirements WSP-001..008)
 **Priority**: HIGH - Critical for enterprise adoption
 **Stakeholder Request**: "Allow organizations that don't run Discord to use the system (e.g., Slack-only)"
 
@@ -768,7 +991,10 @@ CREATE TABLE workspace_connections (
     workspace_id TEXT NOT NULL,
     platform TEXT NOT NULL,  -- discord, slack, whatsapp
     platform_id TEXT NOT NULL,  -- guild_id, team_id, etc.
-    UNIQUE (platform, platform_id)
+    -- A platform source (e.g. a shared Slack team) MAY feed multiple workspaces,
+    -- including across tenants (ADR-120). Uniqueness is per-workspace only;
+    -- there is NO global UNIQUE(platform, platform_id).
+    UNIQUE (workspace_id, platform, platform_id)
 );
 ```
 
@@ -810,7 +1036,7 @@ WhatsApp Cloud API is **push-only** - you receive webhooks but cannot query "giv
 
 ### 13.3 Subdomain Multi-Tenancy (ADR-079)
 
-**Status**: Proposed (Partial Implementation)
+**Status**: ✅ PROMOTED to §6.3 (committed requirements TEN-001..007)
 **Priority**: HIGH - Required for white-label deployments
 
 #### Requirements
@@ -828,7 +1054,7 @@ WhatsApp Cloud API is **push-only** - you receive webhooks but cannot query "giv
 
 ### 13.4 RuVector Full Integration Vision (ADR-052)
 
-**Status**: Proposed (Partial - Only basic vector search implemented)
+**Status**: ✅ PROMOTED to §8.3 (committed requirements COH-001..005)
 **Priority**: MEDIUM - Advanced knowledge features
 
 #### Proposed Phases
@@ -855,7 +1081,7 @@ WhatsApp Cloud API is **push-only** - you receive webhooks but cannot query "giv
 
 ### 13.5 AI Wiki Curator Agent (ADR-077)
 
-**Status**: Proposed (Not Implemented)
+**Status**: ✅ PROMOTED to §8.4 (committed requirements CUR-001..007)
 **Priority**: MEDIUM - Quality automation
 
 #### Problem Statement
@@ -918,7 +1144,7 @@ The compounding wiki accumulates content but needs curation:
 | FUT-035 | Summary deduplication | ADR-071 | Proposed |
 | FUT-036 | Email landing pages | ADR-032 | Proposed |
 | FUT-037 | Wiki external sync (Notion, Confluence) | ADR-059 | Proposed |
-| FUT-038 | WhatsApp coverage gap awareness | ADR-112 | Proposed |
+| FUT-038 | WhatsApp coverage gap awareness | ADR-112 | ✅ Promoted → §2.3 WHA-015..019 (ADR-121) |
 | FUT-039 | Google Workspace group-based admin | ADR-050 | Proposed |
 | FUT-040 | Summary deep linking | ADR-015 | Proposed |
 
@@ -957,7 +1183,7 @@ See Appendix C for key implemented ADRs.
 
 | ADR | Title | Priority |
 |-----|-------|----------|
-| ADR-052 | RuVector Integration Vision | Medium |
+| ADR-052 | RuVector Integration Vision | Medium → ✅ Committed (§8.3) |
 | ADR-055 | Knowledge Base Agents | Low |
 | ADR-056 | Compounding Wiki Standard | Medium |
 | ADR-057 | Compounding Wiki RuVector | Medium |
@@ -966,12 +1192,12 @@ See Appendix C for key implemented ADRs.
 | ADR-060 | Wiki Curation Model | Low |
 | ADR-061 | Wiki Population Strategies | Low |
 | ADR-063 | Wiki Page Tabs | Low |
-| ADR-066 | Platform-Agnostic Architecture | **High** |
+| ADR-066 | Platform-Agnostic Architecture | **High** → ✅ Committed (§2.4) |
 | ADR-071 | Summary Deduplication | Medium |
 | ADR-072 | Content Coverage Tracking | Medium |
-| ADR-077 | AI Wiki Curator Agent | Medium |
-| ADR-078 | Platform Agnostic UX | High |
-| ADR-079 | Subdomain Multi-Tenancy | **High** |
+| ADR-077 | AI Wiki Curator Agent | Medium → ✅ Committed (§8.4) |
+| ADR-078 | Platform Agnostic UX | High → ✅ Committed (§2.4) |
+| ADR-079 | Subdomain Multi-Tenancy | **High** → ✅ Committed (§6.3) |
 | ADR-080 | Wiki Perspective Filtering | Low |
 | ADR-088 | Unified Scheduling UX | Medium |
 | ADR-096 | Adaptive Summary Granularity | Low |

@@ -1,0 +1,17 @@
+[package]
+name = "wasm-summarize"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Sandboxed pure-compute component. Built for wasm32-wasip2, which emits a
+# WebAssembly *component* directly (no external tooling needed):
+#   cargo build -p wasm-summarize --target wasm32-wasip2
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+domain.workspace = true
+wit-bindgen = "0.36"

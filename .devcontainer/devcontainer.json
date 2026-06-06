@@ -1,0 +1,25 @@
+{
+  "name": "Ruflo Dev Environment",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+
+  "features": {
+    "ghcr.io/tailscale/codespace/tailscale": {},
+    "ghcr.io/devcontainers/features/python:1": {},
+    "ghcr.io/devcontainers/features/rust:1": {}
+  },
+
+  "runArgs": [
+    "--device=/dev/net/tun"
+  ],
+
+  "postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash && npm install ruflo",
+  "postStartCommand": "npx ruflo init --force",
+
+
+  "forwardPorts": [],
+
+  "remoteEnv": {
+    "ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+    "TAILNET_URL": "${localEnv:TAILNET_URL}"
+  }
+}

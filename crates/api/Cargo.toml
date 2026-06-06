@@ -1,0 +1,26 @@
+[package]
+name = "api"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+domain.workspace = true
+repository.workspace = true
+host = { path = "../host" }
+anyhow.workspace = true
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# Tower's ServiceExt::oneshot drives the router in tests without a real socket.
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[[bin]]
+name = "api"
+path = "src/main.rs"
