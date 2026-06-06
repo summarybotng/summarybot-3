@@ -39,5 +39,8 @@ jobs:
       - name: Build the sandboxed WASM component
         run: cargo build -p wasm-summarize --target wasm32-wasip2
 
+      - name: Clippy the feature-gated OpenRouter client (else it rots)
+        run: cargo clippy -p host --features openrouter -- -D warnings
+
       - name: Test (native), incl. walking-skeleton integration test
         run: cargo test --workspace
