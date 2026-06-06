@@ -8,6 +8,7 @@
 mod coverage;
 mod failure;
 mod identity;
+mod job;
 mod message;
 mod secret;
 mod session;
@@ -20,6 +21,7 @@ pub use identity::{
     resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,
     LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
 };
+pub use job::{InvalidTransition, Job, JobId, JobStatus, JobType};
 pub use message::{
     clean_content, extract_code_blocks, Attachment, AttachmentKind, ChannelId, CodeBlock,
     MessageId, NormalizedMessage,

@@ -8,10 +8,12 @@ use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
 mod identity;
+mod job;
 mod session;
 mod whatsapp;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
+pub use job::JobRepository;
 pub use session::SessionRepository;
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
@@ -151,6 +153,22 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_messages_channel_time
                 ON messages(workspace_id, channel_id, timestamp);
+            -- Job lifecycle (ADR-013): recorded before async work, updated
+            -- through Pending→Running→Completed/Failed; Running→Paused on restart.
+            CREATE TABLE IF NOT EXISTS jobs (
+                id               TEXT PRIMARY KEY,
+                workspace_id     TEXT    NOT NULL,
+                job_type         TEXT    NOT NULL,
+                status           TEXT    NOT NULL,
+                progress_current INTEGER NOT NULL,
+                progress_total   INTEGER NOT NULL,
+                cost_micros      INTEGER NOT NULL,
+                failure_reason   TEXT,
+                created_at       INTEGER NOT NULL,
+                updated_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_jobs_workspace_status
+                ON jobs(workspace_id, status);
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,
