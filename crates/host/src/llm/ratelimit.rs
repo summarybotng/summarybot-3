@@ -6,12 +6,17 @@
 //! [`TokenBucket`] + [`CircuitBreaker`] per process replaces V1's per-job
 //! clients that competed for quota blind to each other.
 
-/// Relative request priority (LEG-001 #4): manual/on-demand requests outrank
-/// scheduled ones, so scheduled work yields under pressure. The actual priority
-/// queue lives in the host coordinator; this is the shared vocabulary.
+/// Relative request priority (LEG-001 #4, SPARC `03-rate-limiter`): manual
+/// (on-demand) outranks normal, which outranks low/background (scheduled) — so
+/// under pressure scheduled work yields to a user waiting on a summary. Ordered
+/// ascending, so `Manual > Normal > Low`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RequestPriority {
-    Scheduled,
+    /// Background/scheduled jobs.
+    Low,
+    /// Standard requests.
+    Normal,
+    /// User-initiated, on-demand — never made to wait behind the others.
     Manual,
 }
 
@@ -48,8 +53,15 @@ impl TokenBucket {
 
     /// Try to spend one token at `now_ms`. Returns `true` if granted.
     pub fn try_acquire(&mut self, now_ms: i64) -> bool {
+        self.try_acquire_reserving(0.0, now_ms)
+    }
+
+    /// Spend one token only if at least `reserve` tokens would remain — used to
+    /// hold headroom for higher-priority requests (LEG-001 #4). `reserve = 0` is
+    /// the plain acquire.
+    pub fn try_acquire_reserving(&mut self, reserve: f64, now_ms: i64) -> bool {
         self.refill(now_ms);
-        if self.tokens >= 1.0 {
+        if self.tokens >= 1.0 + reserve {
             self.tokens -= 1.0;
             true
         } else {
@@ -57,16 +69,39 @@ impl TokenBucket {
         }
     }
 
-    /// Milliseconds until the next token is available (0 if one is available
-    /// now). The host uses this to schedule the wait instead of busy-polling.
-    pub fn time_until_available_ms(&self, now_ms: i64) -> i64 {
+    /// Current available tokens at `now_ms` (read-only) — for status/telemetry.
+    pub fn available(&self, now_ms: i64) -> f64 {
         let mut probe = self.clone();
         probe.refill(now_ms);
-        if probe.tokens >= 1.0 {
+        probe.tokens
+    }
+
+    pub fn capacity(&self) -> f64 {
+        self.capacity
+    }
+
+    /// Empty the bucket at `now_ms` — a proactive slowdown after a rate-limit
+    /// response (LEG-001 #2 adaptive backoff): subsequent requests must wait for
+    /// fresh refill rather than burst straight back into the limit.
+    pub fn drain(&mut self, now_ms: i64) {
+        self.refill(now_ms);
+        self.tokens = 0.0;
+    }
+
+    /// Milliseconds until `target` tokens are available (0 if already). The host
+    /// uses this to schedule the wait instead of busy-polling.
+    pub fn time_until_ms(&self, target: f64, now_ms: i64) -> i64 {
+        let available = self.available(now_ms);
+        if available >= target {
             0
         } else {
-            ((1.0 - probe.tokens) / probe.refill_per_ms).ceil() as i64
+            ((target - available) / self.refill_per_ms).ceil() as i64
         }
+    }
+
+    /// Milliseconds until the next single token is available.
+    pub fn time_until_available_ms(&self, now_ms: i64) -> i64 {
+        self.time_until_ms(1.0, now_ms)
     }
 }
 
@@ -87,37 +122,59 @@ pub enum CircuitState {
 #[derive(Debug, Clone)]
 pub struct CircuitBreaker {
     failure_threshold: u32,
+    success_threshold: u32,
     cooldown_ms: i64,
     consecutive_failures: u32,
+    consecutive_successes: u32,
     open_until_ms: i64,
     state: CircuitState,
 }
 
 impl CircuitBreaker {
     /// Open after `failure_threshold` consecutive rate limits; stay open for
-    /// `cooldown_ms`.
+    /// `cooldown_ms`. By default a single half-open success closes the circuit;
+    /// raise that with [`CircuitBreaker::with_success_threshold`].
     pub fn new(failure_threshold: u32, cooldown_ms: i64) -> Self {
         Self {
             failure_threshold: failure_threshold.max(1),
+            success_threshold: 1,
             cooldown_ms,
             consecutive_failures: 0,
+            consecutive_successes: 0,
             open_until_ms: 0,
             state: CircuitState::Closed,
         }
+    }
+
+    /// Require `n` consecutive half-open successes before closing (SPARC default
+    /// 2) — so one lucky probe doesn't prematurely declare recovery.
+    pub fn with_success_threshold(mut self, n: u32) -> Self {
+        self.success_threshold = n.max(1);
+        self
     }
 
     pub fn state(&self) -> CircuitState {
         self.state
     }
 
+    /// Milliseconds until an open circuit will admit a probe (0 if not open).
+    pub fn retry_after_ms(&self, now_ms: i64) -> i64 {
+        if self.state == CircuitState::Open {
+            (self.open_until_ms - now_ms).max(0)
+        } else {
+            0
+        }
+    }
+
     /// Whether a request may proceed at `now_ms`. An open circuit transitions to
-    /// half-open (and allows a single probe) once its cooldown has elapsed.
+    /// half-open (and allows a probe) once its cooldown has elapsed.
     pub fn allows(&mut self, now_ms: i64) -> bool {
         match self.state {
             CircuitState::Closed | CircuitState::HalfOpen => true,
             CircuitState::Open => {
                 if now_ms >= self.open_until_ms {
                     self.state = CircuitState::HalfOpen;
+                    self.consecutive_successes = 0;
                     true
                 } else {
                     false
@@ -126,10 +183,23 @@ impl CircuitBreaker {
         }
     }
 
-    /// A request succeeded: reset failures and close the circuit.
+    /// A request succeeded. In half-open, count toward recovery and close once
+    /// `success_threshold` is reached; otherwise just reset the failure run.
     pub fn on_success(&mut self) {
-        self.consecutive_failures = 0;
-        self.state = CircuitState::Closed;
+        match self.state {
+            CircuitState::HalfOpen => {
+                self.consecutive_successes += 1;
+                if self.consecutive_successes >= self.success_threshold {
+                    self.state = CircuitState::Closed;
+                    self.consecutive_failures = 0;
+                    self.consecutive_successes = 0;
+                }
+            }
+            _ => {
+                self.consecutive_failures = 0;
+                self.state = CircuitState::Closed;
+            }
+        }
     }
 
     /// A request was rate-limited. Trips the circuit when the threshold is hit,
@@ -190,8 +260,20 @@ mod tests {
     }
 
     #[test]
-    fn priority_orders_manual_above_scheduled() {
-        assert!(RequestPriority::Manual > RequestPriority::Scheduled);
+    fn priority_orders_manual_above_normal_above_low() {
+        assert!(RequestPriority::Manual > RequestPriority::Normal);
+        assert!(RequestPriority::Normal > RequestPriority::Low);
+    }
+
+    #[test]
+    fn half_open_requires_success_threshold_to_close() {
+        let mut cb = CircuitBreaker::new(1, 10_000).with_success_threshold(2);
+        cb.on_rate_limit(0, None); // trips (threshold 1)
+        assert!(cb.allows(10_000)); // → half-open
+        cb.on_success(); // 1 of 2 — still half-open
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        cb.on_success(); // 2 of 2 — closes
+        assert_eq!(cb.state(), CircuitState::Closed);
     }
 
     #[test]

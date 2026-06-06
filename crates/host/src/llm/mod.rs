@@ -13,9 +13,11 @@
 //! - [`provider`] — provider abstraction + rate-limit header parsing (LEG-003).
 
 pub mod failure;
+pub mod limiter;
 pub mod provider;
 pub mod ratelimit;
 
 pub use failure::{classify_http_status, FailureClass, RetryDecision, RetryPolicy};
+pub use limiter::{AcquireDecision, GlobalRateLimiter, RateLimitConfig, RateLimitStatus};
 pub use provider::{LlmProvider, RateLimitSnapshot};
 pub use ratelimit::{CircuitBreaker, CircuitState, RequestPriority, TokenBucket};
