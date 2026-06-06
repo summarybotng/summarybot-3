@@ -9,9 +9,11 @@ use rusqlite::Connection;
 
 mod identity;
 mod session;
+mod whatsapp;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use session::SessionRepository;
+pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
 
 /// A summary as persisted, with its assigned row id and owning workspace.
@@ -105,6 +107,50 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_user
                 ON sessions(user_id);
+            -- WhatsApp ingestion (PRD §2.3, ADR-121). Imports are attributed and
+            -- file-hash-deduped per (workspace, chat) (WHA-009/010).
+            CREATE TABLE IF NOT EXISTS whatsapp_imports (
+                id            TEXT PRIMARY KEY,
+                workspace_id  TEXT    NOT NULL,
+                chat_id       TEXT    NOT NULL,
+                file_hash     TEXT    NOT NULL,
+                uploader      TEXT    NOT NULL,
+                imported_at   INTEGER NOT NULL,
+                format        TEXT    NOT NULL,
+                message_count INTEGER NOT NULL,
+                date_start    INTEGER NOT NULL,
+                date_end      INTEGER NOT NULL,
+                UNIQUE (workspace_id, chat_id, file_hash)
+            );
+            -- Resolved per-chat participant identities (WHA-013). phone_hash is
+            -- unique per chat; aliases are newline-delimited display names.
+            CREATE TABLE IF NOT EXISTS whatsapp_participants (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                chat_id      TEXT NOT NULL,
+                phone_hash   TEXT,
+                pseudonym    TEXT NOT NULL,
+                aliases      TEXT NOT NULL DEFAULT '',
+                UNIQUE (workspace_id, chat_id, phone_hash)
+            );
+            -- Normalized messages keyed by fingerprint id, so re-ingest is
+            -- idempotent (WHA-012). One generic attachment slot for now.
+            CREATE TABLE IF NOT EXISTS messages (
+                id              TEXT PRIMARY KEY,
+                workspace_id    TEXT    NOT NULL,
+                platform        TEXT    NOT NULL,
+                channel_id      TEXT    NOT NULL,
+                author_id       TEXT    NOT NULL,
+                author_name     TEXT    NOT NULL,
+                content         TEXT    NOT NULL,
+                timestamp       INTEGER NOT NULL,
+                is_system       INTEGER NOT NULL,
+                reply_to        TEXT,
+                attachment_kind TEXT,
+                attachment_name TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_messages_channel_time
+                ON messages(workspace_id, channel_id, timestamp);
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,

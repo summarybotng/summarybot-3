@@ -9,10 +9,12 @@ use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
 pub mod llm;
+pub mod whatsapp;
 pub use auth::{new_correlation_id, AuthError, AuthService, TokenPair};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
+pub use whatsapp::{IngestContext, IngestSummary, WhatsAppIngestor};
 
 // Host-side bindings generated from the same WIT contract the guest exports.
 mod bindings {
