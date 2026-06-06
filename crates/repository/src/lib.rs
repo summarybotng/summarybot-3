@@ -49,6 +49,12 @@ impl SqliteRepository {
         Self::with_connection(conn)
     }
 
+    /// Open (creating if absent) a file-backed database and apply the schema.
+    pub fn open(path: &str) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        Self::with_connection(conn)
+    }
+
     pub fn with_connection(conn: Connection) -> Result<Self> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tenants (

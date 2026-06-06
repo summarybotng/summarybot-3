@@ -13,7 +13,7 @@ pub mod llm;
 pub mod platform;
 pub mod summarize;
 pub mod whatsapp;
-pub use auth::{new_correlation_id, AuthError, AuthService, TokenPair};
+pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use delivery::{Deliverer, DeliveryOutcome, DeliveryReport, DeliveryService};
 pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
 pub use summarize::{SummarizationService, SummarizeError, SummarizeRequest, SummaryOutcome};

@@ -14,6 +14,17 @@ mod token;
 pub use token::new_correlation_id;
 use token::{generate_token, hash_token, new_session_id, new_user_id, sign_access, verify_access};
 
+/// Verify an access token against the signing key, statelessly (no DB). Used by
+/// the web layer's auth middleware (Phase 5), which has the key but shouldn't
+/// take a repo lock just to validate a JWT.
+pub fn verify_token(
+    token: &str,
+    key: &Secret<Vec<u8>>,
+    now: i64,
+) -> Result<AccessClaims, AuthError> {
+    verify_access(token, key.expose_secret(), now)
+}
+
 use domain::{
     evaluate_refresh, resolve_link, AccessClaims, IdentityLink, IdentityProvider, LinkIntent,
     LinkOutcome, ProviderClaims, RefreshOutcome, RefreshReject, Secret, Session, SessionId, UserId,

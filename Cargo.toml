@@ -7,7 +7,7 @@ resolver = "2"
 members = ["crates/*"]
 # The wasm guest is built explicitly for wasm32-wasip2; exclude it from the
 # default native build/test set so `cargo build` / `cargo test` stay green.
-default-members = ["crates/domain", "crates/repository", "crates/host"]
+default-members = ["crates/domain", "crates/repository", "crates/host", "crates/api"]
 
 [workspace.package]
 edition = "2021"
