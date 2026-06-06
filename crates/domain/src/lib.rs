@@ -9,6 +9,7 @@ mod identity;
 mod message;
 mod secret;
 mod session;
+mod whatsapp;
 mod workspace;
 pub use identity::{
     resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,
@@ -22,6 +23,10 @@ pub use secret::Secret;
 pub use session::{
     evaluate_refresh, AccessClaims, RefreshOutcome, RefreshReject, RefreshTokenHash, Session,
     SessionId,
+};
+pub use whatsapp::{
+    parse_export, ChatEvent, ChatEventKind, DateOrder, ParsedExport, RawWhatsAppMessage,
+    WhatsAppFormat,
 };
 pub use workspace::{
     Platform, PlatformId, Tenant, TenantId, UserId, Workspace, WorkspaceConnection,
