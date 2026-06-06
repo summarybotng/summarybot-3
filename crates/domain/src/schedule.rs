@@ -84,7 +84,93 @@ pub struct Schedule {
     pub enabled: bool,
 }
 
+/// Why building a [`Schedule`] from primitive fields failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduleError {
+    UnknownType(String),
+    BadTimezone(String),
+    BadWeekday(u32),
+    BadTime { hour: u32, minute: u32 },
+}
+
+impl std::fmt::Display for ScheduleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ScheduleError::UnknownType(t) => write!(f, "unknown schedule type: {t}"),
+            ScheduleError::BadTimezone(z) => write!(f, "unknown timezone: {z}"),
+            ScheduleError::BadWeekday(n) => write!(f, "weekday out of range (0-6): {n}"),
+            ScheduleError::BadTime { hour, minute } => write!(f, "invalid time {hour}:{minute}"),
+        }
+    }
+}
+
+impl std::error::Error for ScheduleError {}
+
+/// Map Mon=0..Sun=6 to a `Weekday`.
+pub(crate) fn weekday_from_num(n: u32) -> Option<Weekday> {
+    Some(match n {
+        0 => Weekday::Mon,
+        1 => Weekday::Tue,
+        2 => Weekday::Wed,
+        3 => Weekday::Thu,
+        4 => Weekday::Fri,
+        5 => Weekday::Sat,
+        6 => Weekday::Sun,
+        _ => return None,
+    })
+}
+
 impl Schedule {
+    /// Build a schedule from primitive fields (parsing type/timezone/weekdays), so
+    /// callers — the web API, the repository — don't touch chrono types directly.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build(
+        workspace_id: WorkspaceId,
+        schedule_type: &str,
+        hour: u32,
+        minute: u32,
+        day_numbers: &[u32],
+        day_of_month: u32,
+        timezone: &str,
+        once_at: Option<i64>,
+        custom_interval_secs: i64,
+        enabled: bool,
+    ) -> Result<Self, ScheduleError> {
+        let schedule_type = ScheduleType::parse(schedule_type)
+            .ok_or_else(|| ScheduleError::UnknownType(schedule_type.to_string()))?;
+        if hour > 23 || minute > 59 {
+            return Err(ScheduleError::BadTime { hour, minute });
+        }
+        let timezone: Tz = timezone
+            .parse()
+            .map_err(|_| ScheduleError::BadTimezone(timezone.to_string()))?;
+        let days = day_numbers
+            .iter()
+            .map(|&n| weekday_from_num(n).ok_or(ScheduleError::BadWeekday(n)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            workspace_id,
+            schedule_type,
+            at: TimeOfDay { hour, minute },
+            days,
+            day_of_month,
+            timezone,
+            once_at,
+            custom_interval_secs,
+            enabled,
+        })
+    }
+
+    /// Weekdays as Mon=0..Sun=6 numbers (for storage/serialization).
+    pub fn day_numbers(&self) -> Vec<u32> {
+        self.days.iter().map(|d| d.num_days_from_monday()).collect()
+    }
+
+    /// IANA timezone name (e.g. `"Europe/London"`).
+    pub fn timezone_name(&self) -> &'static str {
+        self.timezone.name()
+    }
+
     /// The next fire time strictly after `after` (unix seconds), or `None` if the
     /// schedule has no future run (a past `Once`, or a misconfiguration).
     pub fn next_run(&self, after: i64) -> Option<i64> {

@@ -10,6 +10,7 @@
 
 mod auth;
 mod error;
+mod schedules;
 mod summaries;
 
 pub use error::ApiError;
@@ -65,6 +66,22 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/summaries/:id/tags",
             put(summaries::set_tags),
         )
+        .route(
+            "/workspaces/:ws/schedules",
+            get(schedules::list_schedules).post(schedules::create_schedule),
+        )
+        .route(
+            "/workspaces/:ws/schedules/:id",
+            get(schedules::get_schedule).delete(schedules::delete_schedule),
+        )
+        .route(
+            "/workspaces/:ws/schedules/:id/pause",
+            post(schedules::pause),
+        )
+        .route(
+            "/workspaces/:ws/schedules/:id/resume",
+            post(schedules::resume),
+        )
         .layer(axum::middleware::from_fn(auth::correlation_id))
         .with_state(state)
 }
@@ -89,7 +106,17 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/summaries/{id}": { "get": { "summary": "Summary detail" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
-            "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } }
+            "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } },
+            "/workspaces/{ws}/schedules": {
+                "get": { "summary": "List schedules" },
+                "post": { "summary": "Create a schedule" }
+            },
+            "/workspaces/{ws}/schedules/{id}": {
+                "get": { "summary": "Schedule detail" },
+                "delete": { "summary": "Delete schedule" }
+            },
+            "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
+            "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } }
         }
     }))
 }
@@ -287,6 +314,91 @@ mod tests {
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(r#"{"messages":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn schedule_create_list_pause_delete() {
+        let (state, token) = seeded_state();
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        // Create a daily 09:00 UTC schedule.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/schedules")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"schedule_type":"daily","hour":9,"minute":0,"timezone":"UTC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let cj = body_json(created).await;
+        let id = cj["id"].as_str().unwrap().to_string();
+        assert_eq!(cj["schedule_type"], "daily");
+        assert!(cj["next_run"].as_i64().unwrap() > 0);
+        assert_eq!(cj["enabled"], true);
+
+        // Pause → disabled.
+        let paused = app
+            .clone()
+            .oneshot(
+                Request::post(format!("/workspaces/ws-1/schedules/{id}/pause"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(paused).await["enabled"], false);
+
+        // List shows it.
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::get("/workspaces/ws-1/schedules")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(listed).await.as_array().unwrap().len(), 1);
+
+        // Delete → 204, then 404 on re-delete.
+        let deleted = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/workspaces/ws-1/schedules/{id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn schedule_create_rejects_bad_timezone() {
+        let (state, token) = seeded_state();
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/schedules")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"schedule_type":"daily","hour":9,"timezone":"Mars/Olympus"}"#,
+                    ))
                     .unwrap(),
             )
             .await

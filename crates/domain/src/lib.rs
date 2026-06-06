@@ -36,7 +36,7 @@ pub use message::{
 pub use rolling::{
     decide_rolling, AccumulationStrategy, PeriodWindow, RollingAction, RollingPeriod, RollingState,
 };
-pub use schedule::{evaluate_tick, Schedule, ScheduleType, TickAction, TimeOfDay};
+pub use schedule::{evaluate_tick, Schedule, ScheduleError, ScheduleType, TickAction, TimeOfDay};
 pub use secret::Secret;
 pub use session::{
     evaluate_refresh, AccessClaims, RefreshOutcome, RefreshReject, RefreshTokenHash, Session,

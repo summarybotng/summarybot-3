@@ -8,9 +8,8 @@
 //! recurrence definition.
 
 use crate::SqliteRepository;
-use anyhow::{anyhow, Context, Result};
-use chrono::Weekday;
-use domain::{Schedule, ScheduleType, TimeOfDay, WorkspaceId};
+use anyhow::{Context, Result};
+use domain::{Schedule, WorkspaceId};
 use rusqlite::{params, OptionalExtension};
 
 /// A persisted schedule: its recurrence definition + execution state.
@@ -28,6 +27,8 @@ pub trait ScheduleRepository {
     fn get_schedule(&self, workspace: &WorkspaceId, id: &str) -> Result<Option<StoredSchedule>>;
     /// All enabled schedules (restart restore, SCH-006).
     fn list_enabled(&self) -> Result<Vec<StoredSchedule>>;
+    /// All schedules for a workspace (the management API list).
+    fn list_for_workspace(&self, workspace: &WorkspaceId) -> Result<Vec<StoredSchedule>>;
     /// Persist execution state after a tick (new `next_run`, failure count,
     /// and possibly auto-disabled).
     fn update_runtime(
@@ -37,37 +38,25 @@ pub trait ScheduleRepository {
         consecutive_failures: u32,
         enabled: bool,
     ) -> Result<()>;
+    /// Pause/resume a schedule (the management API). Returns whether a row changed.
+    fn set_enabled(&self, workspace: &WorkspaceId, id: &str, enabled: bool) -> Result<bool>;
+    /// Delete a schedule. Returns whether a row was removed.
+    fn delete_schedule(&self, workspace: &WorkspaceId, id: &str) -> Result<bool>;
 }
 
-/// Weekdays → "0,3" (Mon=0). Inverse parses the same.
-fn join_days(days: &[Weekday]) -> String {
+/// Weekday numbers (Mon=0) → "0,3"; the inverse parses to a `Vec<u32>`.
+fn join_days(days: &[u32]) -> String {
     days.iter()
-        .map(|d| d.num_days_from_monday().to_string())
+        .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",")
 }
 
-fn parse_days(s: &str) -> Result<Vec<Weekday>> {
+fn parse_day_numbers(s: &str) -> Result<Vec<u32>> {
     s.split(',')
         .filter(|p| !p.is_empty())
-        .map(|p| {
-            let n: u8 = p.parse().context("bad weekday number")?;
-            weekday_from_mon(n).ok_or_else(|| anyhow!("weekday out of range: {n}"))
-        })
+        .map(|p| p.parse::<u32>().context("bad weekday number"))
         .collect()
-}
-
-fn weekday_from_mon(n: u8) -> Option<Weekday> {
-    Some(match n {
-        0 => Weekday::Mon,
-        1 => Weekday::Tue,
-        2 => Weekday::Wed,
-        3 => Weekday::Thu,
-        4 => Weekday::Fri,
-        5 => Weekday::Sat,
-        6 => Weekday::Sun,
-        _ => return None,
-    })
 }
 
 impl ScheduleRepository for SqliteRepository {
@@ -84,9 +73,9 @@ impl ScheduleRepository for SqliteRepository {
                 s.schedule_type.as_str(),
                 s.at.hour,
                 s.at.minute,
-                join_days(&s.days),
+                join_days(&s.day_numbers()),
                 s.day_of_month,
-                s.timezone.name(),
+                s.timezone_name(),
                 s.once_at,
                 s.custom_interval_secs,
                 s.enabled,
@@ -126,6 +115,21 @@ impl ScheduleRepository for SqliteRepository {
         Ok(out)
     }
 
+    fn list_for_workspace(&self, workspace: &WorkspaceId) -> Result<Vec<StoredSchedule>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, workspace_id, schedule_type, at_hour, at_minute, days, day_of_month,
+                    timezone, once_at, custom_interval_secs, enabled, next_run,
+                    consecutive_failures
+             FROM schedules WHERE workspace_id = ?1 ORDER BY next_run",
+        )?;
+        let rows = stmt.query_map(params![workspace.as_str()], row_to_stored)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r??);
+        }
+        Ok(out)
+    }
+
     fn update_runtime(
         &self,
         id: &str,
@@ -139,6 +143,22 @@ impl ScheduleRepository for SqliteRepository {
             params![id, next_run, consecutive_failures, enabled],
         )?;
         Ok(())
+    }
+
+    fn set_enabled(&self, workspace: &WorkspaceId, id: &str, enabled: bool) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE schedules SET enabled = ?3 WHERE id = ?1 AND workspace_id = ?2",
+            params![id, workspace.as_str(), enabled],
+        )?;
+        Ok(n > 0)
+    }
+
+    fn delete_schedule(&self, workspace: &WorkspaceId, id: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "DELETE FROM schedules WHERE id = ?1 AND workspace_id = ?2",
+            params![id, workspace.as_str()],
+        )?;
+        Ok(n > 0)
     }
 }
 
@@ -159,23 +179,21 @@ fn row_to_stored(row: &rusqlite::Row) -> rusqlite::Result<Result<StoredSchedule>
     let consecutive_failures: u32 = row.get(12)?;
 
     Ok((|| {
-        let schedule = Schedule {
-            workspace_id: WorkspaceId::parse(workspace_raw).map_err(anyhow::Error::new)?,
-            schedule_type: ScheduleType::parse(&type_raw)
-                .ok_or_else(|| anyhow!("unknown schedule_type: {type_raw}"))?,
-            at: TimeOfDay {
-                hour: at_hour,
-                minute: at_minute,
-            },
-            days: parse_days(&days_raw)?,
+        let workspace = WorkspaceId::parse(workspace_raw).map_err(anyhow::Error::new)?;
+        let days = parse_day_numbers(&days_raw)?;
+        let schedule = Schedule::build(
+            workspace,
+            &type_raw,
+            at_hour,
+            at_minute,
+            &days,
             day_of_month,
-            timezone: tz_raw
-                .parse()
-                .map_err(|_| anyhow!("bad timezone: {tz_raw}"))?,
+            &tz_raw,
             once_at,
             custom_interval_secs,
             enabled,
-        };
+        )
+        .map_err(anyhow::Error::new)?;
         Ok(StoredSchedule {
             id,
             schedule,
@@ -194,22 +212,23 @@ mod tests {
     }
 
     fn stored(id: &str, enabled: bool, next_run: i64) -> StoredSchedule {
+        // Weekly, Mon+Thu 09:30 Europe/London — built through the public ctor.
+        let schedule = Schedule::build(
+            WorkspaceId::parse("ws-1").unwrap(),
+            "weekly",
+            9,
+            30,
+            &[0, 3],
+            1,
+            "Europe/London",
+            None,
+            0,
+            enabled,
+        )
+        .unwrap();
         StoredSchedule {
             id: id.into(),
-            schedule: Schedule {
-                workspace_id: WorkspaceId::parse("ws-1").unwrap(),
-                schedule_type: ScheduleType::Weekly,
-                at: TimeOfDay {
-                    hour: 9,
-                    minute: 30,
-                },
-                days: vec![Weekday::Mon, Weekday::Thu],
-                day_of_month: 1,
-                timezone: chrono_tz::Europe::London,
-                once_at: None,
-                custom_interval_secs: 0,
-                enabled,
-            },
+            schedule,
             next_run,
             consecutive_failures: 0,
         }
@@ -225,17 +244,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(got.id, "sch_1");
-        assert_eq!(got.schedule.schedule_type, ScheduleType::Weekly);
-        assert_eq!(
-            got.schedule.at,
-            TimeOfDay {
-                hour: 9,
-                minute: 30
-            }
-        );
-        assert_eq!(got.schedule.days, vec![Weekday::Mon, Weekday::Thu]);
-        assert_eq!(got.schedule.timezone, chrono_tz::Europe::London);
+        assert_eq!(got.schedule.day_numbers(), vec![0, 3]);
+        assert_eq!(got.schedule.timezone_name(), "Europe/London");
         assert_eq!(got.next_run, 1_000);
+    }
+
+    #[test]
+    fn list_for_workspace_delete_and_pause() {
+        let repo = repo();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.create_schedule(&stored("a", true, 1_000)).unwrap();
+        repo.create_schedule(&stored("b", false, 2_000)).unwrap();
+        // list_for_workspace returns both (enabled and disabled).
+        assert_eq!(repo.list_for_workspace(&ws).unwrap().len(), 2);
+        // Pause then resume.
+        assert!(repo.set_enabled(&ws, "a", false).unwrap());
+        assert!(repo.list_enabled().unwrap().is_empty());
+        assert!(repo.set_enabled(&ws, "a", true).unwrap());
+        assert_eq!(repo.list_enabled().unwrap().len(), 1);
+        // Delete.
+        assert!(repo.delete_schedule(&ws, "b").unwrap());
+        assert_eq!(repo.list_for_workspace(&ws).unwrap().len(), 1);
+        assert!(!repo.delete_schedule(&ws, "b").unwrap()); // already gone
     }
 
     #[test]

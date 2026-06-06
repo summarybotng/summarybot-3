@@ -52,6 +52,25 @@ echo "==> list summaries"
 curl -fsS "${BASE}/workspaces/${WS}/summaries" \
   -H "authorization: Bearer ${TOKEN}" | jq 'map({id, pinned, tags, text})'
 
+echo "==> create a daily 09:00 UTC schedule"
+SCHED=$(curl -fsS -X POST "${BASE}/workspaces/${WS}/schedules" \
+  -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' \
+  -d '{"schedule_type":"daily","hour":9,"minute":0,"timezone":"UTC"}')
+SCHED_ID=$(echo "${SCHED}" | jq -r .id)
+echo "    ${SCHED_ID}: $(echo "${SCHED}" | jq -c '{schedule_type, hour, timezone, next_run, enabled}')"
+
+echo "==> pause the schedule"
+curl -fsS -X POST "${BASE}/workspaces/${WS}/schedules/${SCHED_ID}/pause" \
+  -H "authorization: Bearer ${TOKEN}" | jq '{id, enabled}'
+
+echo "==> list schedules"
+curl -fsS "${BASE}/workspaces/${WS}/schedules" \
+  -H "authorization: Bearer ${TOKEN}" | jq 'map({id, schedule_type, enabled})'
+
+echo "==> delete the schedule (expect 204)"
+echo "    status: $(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+  "${BASE}/workspaces/${WS}/schedules/${SCHED_ID}" -H "authorization: Bearer ${TOKEN}")"
+
 echo "==> auth is enforced (no token → 401)"
 echo "    status: $(curl -s -o /dev/null -w '%{http_code}' "${BASE}/workspaces/${WS}/summaries")"
 
