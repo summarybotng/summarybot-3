@@ -12,6 +12,7 @@
 
 use super::engine::{LlmClient, LlmError, LlmRequest, LlmResponse};
 use super::{classify_http_status, FailureClass, LlmProvider};
+use domain::summarize::FinishReason;
 use domain::Secret;
 
 const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -89,9 +90,19 @@ fn parse_success(request: &LlmRequest, response: ureq::Response) -> Result<LlmRe
             retry_after_secs: None,
             detail: "response missing choices[0].message.content".to_string(),
         })?;
+    let finish_reason = match value
+        .pointer("/choices/0/finish_reason")
+        .and_then(|v| v.as_str())
+    {
+        Some("stop") => FinishReason::Stop,
+        Some("length") => FinishReason::Length,
+        Some("content_filter") => FinishReason::ContentFilter,
+        _ => FinishReason::Other,
+    };
     Ok(LlmResponse {
         model: request.model.clone(),
         text: text.to_string(),
+        finish_reason,
     })
 }
 

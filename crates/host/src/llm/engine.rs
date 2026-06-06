@@ -16,6 +16,7 @@ use super::{
     AcquireDecision, FailureClass, GlobalRateLimiter, LlmProvider, RequestPriority, RetryDecision,
     RetryPolicy,
 };
+use domain::summarize::FinishReason;
 use std::sync::Arc;
 
 /// A bounded LLM request (simplified; the real shape carries messages/params).
@@ -27,11 +28,13 @@ pub struct LlmRequest {
     pub prompt: String,
 }
 
-/// A successful completion.
+/// A successful completion. `finish_reason` is the structural signal the
+/// summarizer's quality gate uses (Q#6) to detect truncation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmResponse {
     pub model: String,
     pub text: String,
+    pub finish_reason: FinishReason,
 }
 
 /// A classified LLM failure (LEG-002). `retry_after_secs` is the server hint, if
@@ -239,6 +242,7 @@ mod tests {
         Ok(LlmResponse {
             model: "m".into(),
             text: text.into(),
+            finish_reason: FinishReason::Stop,
         })
     }
     fn err(class: FailureClass, retry_after: Option<i64>) -> Result<LlmResponse, LlmError> {
