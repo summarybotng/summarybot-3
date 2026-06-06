@@ -20,6 +20,12 @@ base64 = "0.22"
 getrandom = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Concrete OpenRouter HTTP client (LEG-003). Optional + feature-gated: the
+# default build/test stay network-free; enable with `--features openrouter`.
+ureq = { version = "2", optional = true, features = ["json"] }
+
+[features]
+openrouter = ["dep:ureq"]
 
 [dev-dependencies]
 # Tests construct parsed WhatsApp input, which needs an IANA zone for parse_export.
