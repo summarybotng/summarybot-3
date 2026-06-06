@@ -185,7 +185,10 @@ impl SqliteRepository {
                 text            TEXT    NOT NULL,
                 key_points      TEXT    NOT NULL,
                 technical_terms TEXT    NOT NULL,
-                participants    TEXT    NOT NULL
+                participants    TEXT    NOT NULL,
+                pinned          INTEGER NOT NULL DEFAULT 0,
+                archived        INTEGER NOT NULL DEFAULT 0,
+                tags            TEXT    NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_summary_records_workspace
                 ON summary_records(workspace_id, created_at);

@@ -132,6 +132,9 @@ mod tests {
             cost_micros: 1_000,
             degraded: false,
             created_at: 1,
+            pinned: false,
+            archived: false,
+            tags: vec![],
             summary: ExtractedSummary {
                 text: "We shipped.".into(),
                 key_points: vec!["Launched".into()],
