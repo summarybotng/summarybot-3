@@ -11,6 +11,7 @@ mod failure;
 mod identity;
 mod job;
 mod message;
+mod rolling;
 mod schedule;
 mod secret;
 mod session;
@@ -31,6 +32,9 @@ pub use job::{InvalidTransition, Job, JobId, JobStatus, JobType};
 pub use message::{
     clean_content, extract_code_blocks, Attachment, AttachmentKind, ChannelId, CodeBlock,
     MessageId, NormalizedMessage,
+};
+pub use rolling::{
+    decide_rolling, AccumulationStrategy, PeriodWindow, RollingAction, RollingPeriod, RollingState,
 };
 pub use schedule::{evaluate_tick, Schedule, ScheduleType, TickAction, TimeOfDay};
 pub use secret::Secret;
