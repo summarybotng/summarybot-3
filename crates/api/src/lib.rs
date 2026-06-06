@@ -10,10 +10,12 @@
 
 mod auth;
 mod error;
+mod scheduler_driver;
 mod schedules;
 mod summaries;
 
 pub use error::ApiError;
+pub use scheduler_driver::spawn_scheduler;
 
 use axum::routing::{get, post, put};
 use axum::{Json, Router};

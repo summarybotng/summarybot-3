@@ -3,7 +3,7 @@
 //! tested there via `oneshot`; this is the thin async runtime around it.
 
 use anyhow::{Context, Result};
-use api::{build_router, AppState};
+use api::{build_router, spawn_scheduler, AppState};
 use domain::Secret;
 use repository::SqliteRepository;
 use std::env;
@@ -16,8 +16,17 @@ async fn main() -> Result<()> {
         .context("SECRET_KEY is required (HS256 signing key for access tokens)")?;
     let db_path = env::var("DATABASE_URL").unwrap_or_else(|_| "summarybot.db".to_string());
 
+    let scheduler_secs: u64 = env::var("SCHEDULER_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
+
     let repo = open_db(&db_path)?;
     let state = AppState::new(repo, Secret::new(secret.into_bytes()));
+
+    // Background scheduler: fire due schedules on an interval (SCH-005/006).
+    spawn_scheduler(state.clone(), scheduler_secs);
+
     let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(&bind)

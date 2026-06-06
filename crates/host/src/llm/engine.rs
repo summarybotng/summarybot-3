@@ -99,8 +99,9 @@ pub struct ResilientLlm<C: LlmClient> {
     client: C,
     limiter: Arc<GlobalRateLimiter>,
     policy: RetryPolicy,
-    clock: Box<dyn Clock>,
-    sleeper: Box<dyn Sleeper>,
+    // Send + Sync so a ResilientLlm can live in a tokio task (the scheduler driver).
+    clock: Box<dyn Clock + Send + Sync>,
+    sleeper: Box<dyn Sleeper + Send + Sync>,
     /// Max time to wait for a rate-limit/circuit slot before failing the attempt.
     acquire_timeout_ms: i64,
 }
@@ -123,7 +124,11 @@ impl<C: LlmClient> ResilientLlm<C> {
     }
 
     /// Override clock + sleeper (tests inject deterministic ones).
-    pub fn with_time(mut self, clock: Box<dyn Clock>, sleeper: Box<dyn Sleeper>) -> Self {
+    pub fn with_time(
+        mut self,
+        clock: Box<dyn Clock + Send + Sync>,
+        sleeper: Box<dyn Sleeper + Send + Sync>,
+    ) -> Self {
         self.clock = clock;
         self.sleeper = sleeper;
         self

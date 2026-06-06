@@ -186,8 +186,9 @@ pub async fn create_summary(
     Ok(Json(SummaryDto::from(record)))
 }
 
-/// A single-model ladder for the demo/on-demand path.
-fn demo_ladder() -> ModelLadder {
+/// A single-model ladder for the demo/on-demand path (shared with the scheduler
+/// driver).
+pub(crate) fn demo_ladder() -> ModelLadder {
     ModelLadder::new(vec![Model {
         name: "demo".to_string(),
         price: ModelPrice {
