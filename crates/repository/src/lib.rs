@@ -10,11 +10,13 @@ use rusqlite::Connection;
 mod identity;
 mod job;
 mod session;
+mod summary_store;
 mod whatsapp;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
 pub use session::SessionRepository;
+pub use summary_store::{StructuredSummaryRepository, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
 
@@ -169,6 +171,38 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_jobs_workspace_status
                 ON jobs(workspace_id, status);
+            -- Structured summaries (PRD §4/§5.1): the always-on dashboard sink.
+            -- Lists are newline-joined columns; action items + citations are
+            -- child tables (citations keep the grounding message-id link).
+            CREATE TABLE IF NOT EXISTS summary_records (
+                id              TEXT PRIMARY KEY,
+                workspace_id    TEXT    NOT NULL,
+                channel_id      TEXT,
+                model           TEXT    NOT NULL,
+                cost_micros     INTEGER NOT NULL,
+                degraded        INTEGER NOT NULL,
+                created_at      INTEGER NOT NULL,
+                text            TEXT    NOT NULL,
+                key_points      TEXT    NOT NULL,
+                technical_terms TEXT    NOT NULL,
+                participants    TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_summary_records_workspace
+                ON summary_records(workspace_id, created_at);
+            CREATE TABLE IF NOT EXISTS summary_action_items (
+                summary_id TEXT    NOT NULL,
+                idx        INTEGER NOT NULL,
+                text       TEXT    NOT NULL,
+                assignee   TEXT,
+                PRIMARY KEY (summary_id, idx)
+            );
+            CREATE TABLE IF NOT EXISTS summary_citations (
+                summary_id TEXT    NOT NULL,
+                idx        INTEGER NOT NULL,
+                message_id TEXT    NOT NULL,
+                quote      TEXT,
+                PRIMARY KEY (summary_id, idx)
+            );
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,
