@@ -67,6 +67,12 @@ impl SqliteRepository {
                 subdomain     TEXT,
                 custom_domain TEXT
             );
+            -- A subdomain/custom domain routes to at most one tenant (TEN-006).
+            -- Partial unique so many tenants can leave them unset (NULL).
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_subdomain
+                ON tenants(subdomain) WHERE subdomain IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_tenants_custom_domain
+                ON tenants(custom_domain) WHERE custom_domain IS NOT NULL;
             CREATE TABLE IF NOT EXISTS workspaces (
                 id            TEXT PRIMARY KEY,
                 tenant_id     TEXT    NOT NULL,

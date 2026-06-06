@@ -42,7 +42,7 @@ pub use message::{
 pub use rolling::{
     decide_rolling, AccumulationStrategy, PeriodWindow, RollingAction, RollingPeriod, RollingState,
 };
-pub use routing::{route_host, HostRoute};
+pub use routing::{normalize_subdomain, route_host, HostRoute};
 pub use schedule::{evaluate_tick, Schedule, ScheduleError, ScheduleType, TickAction, TimeOfDay};
 pub use secret::Secret;
 pub use session::{

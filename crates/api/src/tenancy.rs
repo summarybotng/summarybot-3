@@ -17,9 +17,11 @@ use crate::{ApiError, AppState};
 use axum::extract::{Host, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use domain::{AcceptOutcome, Membership, Permission, Role, TenantId, UserId};
+use domain::{
+    normalize_subdomain, AcceptOutcome, Membership, Permission, Role, Tenant, TenantId, UserId,
+};
 use host::{resolve_tenant_by_host, InviteService};
-use repository::{MembershipRepository, SqliteRepository};
+use repository::{MembershipRepository, SqliteRepository, WorkspaceRepository};
 use serde::{Deserialize, Serialize};
 
 /// JSON shape of a membership.
@@ -274,6 +276,96 @@ pub async fn accept_invite(
     }))
 }
 
+/// Body for provisioning a tenant.
+#[derive(Deserialize)]
+pub struct CreateTenantRequest {
+    pub id: String,
+    pub name: String,
+    /// Optional subdomain (TEN-001); validated/normalized if present.
+    #[serde(default)]
+    pub subdomain: Option<String>,
+    /// Optional custom domain (TEN-002).
+    #[serde(default)]
+    pub custom_domain: Option<String>,
+}
+
+/// Normalize a custom domain: trim + lowercase, reject obviously-invalid forms.
+/// Full hostname validation (public-suffix, DNS) is a later concern.
+fn normalize_custom_domain(raw: &str) -> Option<String> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.is_empty() || !s.contains('.') || s.contains([' ', ':', '/', '@']) {
+        return None;
+    }
+    Some(s)
+}
+
+/// `POST /tenants` — provision a tenant and make the caller its Owner (TEN-001).
+/// This is the bootstrap: every other tenant operation needs an existing member,
+/// so creation grants the creator `Owner`. The id, subdomain, and custom domain
+/// must each be free (409 on conflict). Authenticated; no prior membership
+/// required.
+pub async fn provision_tenant(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<CreateTenantRequest>,
+) -> Result<Json<TenantDto>, ApiError> {
+    let id = TenantId::parse(body.id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let subdomain = match body
+        .subdomain
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(
+            normalize_subdomain(raw)
+                .ok_or_else(|| ApiError::bad_request(format!("invalid subdomain: {raw}")))?,
+        ),
+        None => None,
+    };
+    let custom_domain = match body
+        .custom_domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(
+            normalize_custom_domain(raw)
+                .ok_or_else(|| ApiError::bad_request(format!("invalid custom domain: {raw}")))?,
+        ),
+        None => None,
+    };
+    let tenant = Tenant::new(
+        id.clone(),
+        body.name,
+        subdomain.clone(),
+        custom_domain.clone(),
+    )
+    .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let repo = state.repo.lock().expect("repo mutex");
+    // Pre-check uniqueness for clean 409s (the partial-unique indexes are the
+    // race-proof backstop). The repo is single-writer under the mutex.
+    if repo.get_tenant(&id)?.is_some() {
+        return Err(ApiError::Conflict(format!(
+            "tenant {} already exists",
+            id.as_str()
+        )));
+    }
+    if let Some(sub) = &subdomain {
+        if repo.find_tenant_by_subdomain(sub)?.is_some() {
+            return Err(ApiError::Conflict(format!("subdomain {sub} is taken")));
+        }
+    }
+    if let Some(dom) = &custom_domain {
+        if repo.find_tenant_by_custom_domain(dom)?.is_some() {
+            return Err(ApiError::Conflict(format!("custom domain {dom} is taken")));
+        }
+    }
+    repo.create_tenant(&tenant)?;
+    repo.upsert_membership(&Membership::new(id, user.0.sub.clone(), Role::Owner))?;
+    Ok(Json(TenantDto::from(tenant)))
+}
+
 /// Public tenant identity resolved from the request host (TEN-006).
 #[derive(Serialize)]
 pub struct TenantDto {
@@ -423,6 +515,119 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A fresh state with one logged-in user holding no membership.
+    fn state_with_user(subject: &str) -> (AppState, String) {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = Secret::new(b"provision-test-key".to_vec());
+        let token = {
+            let svc = AuthService::new(&repo, &key);
+            svc.login(
+                &DiscordProvider,
+                &ProviderClaims {
+                    subject: subject.into(),
+                    email: None,
+                },
+                vec![],
+                now_secs(),
+            )
+            .unwrap()
+            .access_token
+        };
+        (AppState::new(repo, key), token)
+    }
+
+    #[tokio::test]
+    async fn provision_tenant_makes_caller_owner() {
+        let (state, token) = state_with_user("founder");
+        let app = build_router(state);
+
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"id":"acme","name":"Acme Inc","subdomain":"Acme"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let cj = body_json(created).await;
+        assert_eq!(cj["id"], "acme");
+        assert_eq!(cj["subdomain"], "acme"); // normalized to lowercase
+
+        // The creator is now Owner → can list members (a non-member would 403).
+        let listed = app
+            .oneshot(
+                Request::get("/tenants/acme/members")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let lj = body_json(listed).await;
+        assert_eq!(lj.as_array().unwrap().len(), 1);
+        assert_eq!(lj[0]["role"], "owner");
+    }
+
+    #[tokio::test]
+    async fn provision_rejects_duplicate_subdomain() {
+        let (state, token) = state_with_user("founder");
+        let app = build_router(state);
+        let mk = |id: &str, sub: &str| {
+            Request::post("/tenants")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"id":"{id}","name":"X","subdomain":"{sub}"}}"#
+                )))
+                .unwrap()
+        };
+        let first = app.clone().oneshot(mk("t-a", "shared")).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        // Different id, same subdomain → 409.
+        let second = app.oneshot(mk("t-b", "shared")).await.unwrap();
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn provision_rejects_invalid_subdomain() {
+        let (state, token) = state_with_user("founder");
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"id":"t-bad","name":"X","subdomain":"not valid"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn provision_requires_auth() {
+        let (state, _) = state_with_user("founder");
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/tenants")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"t-x","name":"X"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

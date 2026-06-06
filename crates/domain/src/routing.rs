@@ -64,6 +64,27 @@ pub fn route_host(host: &str, base_domain: &str) -> Option<HostRoute> {
     Some(HostRoute::CustomDomain(host))
 }
 
+/// Validate + normalize a tenant subdomain label (TEN-001): 1–63 chars of ASCII
+/// lowercase letters, digits, and hyphens, with no leading/trailing hyphen.
+/// `www` is reserved (it routes to the apex, [`HostRoute::Apex`]). Returns the
+/// normalized (trimmed, lowercased) label, or `None` if invalid.
+pub fn normalize_subdomain(raw: &str) -> Option<String> {
+    let s = raw.trim().to_ascii_lowercase();
+    if s.is_empty() || s.len() > 63 || s == "www" {
+        return None;
+    }
+    if s.starts_with('-') || s.ends_with('-') {
+        return None;
+    }
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return None;
+    }
+    Some(s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +144,21 @@ mod tests {
         assert_eq!(route_host("   ", BASE), None);
         assert_eq!(route_host("[::1]:8080", BASE), None);
         assert_eq!(route_host("acme.summarybot.app", ""), None);
+    }
+
+    #[test]
+    fn subdomain_validation() {
+        assert_eq!(normalize_subdomain("Acme"), Some("acme".into()));
+        assert_eq!(normalize_subdomain("  team-1 "), Some("team-1".into()));
+        assert_eq!(normalize_subdomain("a"), Some("a".into()));
+        // Reserved / invalid.
+        assert_eq!(normalize_subdomain("www"), None);
+        assert_eq!(normalize_subdomain(""), None);
+        assert_eq!(normalize_subdomain("-lead"), None);
+        assert_eq!(normalize_subdomain("trail-"), None);
+        assert_eq!(normalize_subdomain("has space"), None);
+        assert_eq!(normalize_subdomain("under_score"), None);
+        assert_eq!(normalize_subdomain(&"x".repeat(64)), None);
     }
 
     #[test]
