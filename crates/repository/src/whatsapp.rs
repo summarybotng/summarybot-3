@@ -89,6 +89,15 @@ pub trait WhatsAppRepository {
         workspace: &WorkspaceId,
         id: &MessageId,
     ) -> Result<Option<NormalizedMessage>>;
+    /// List a channel's messages in the inclusive UTC range `[start, end]`,
+    /// oldest first — what the summarizer reads for a scope/period.
+    fn list_messages(
+        &self,
+        workspace: &WorkspaceId,
+        channel: &ChannelId,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<NormalizedMessage>>;
 }
 
 impl WhatsAppRepository for SqliteRepository {
@@ -309,6 +318,67 @@ impl WhatsAppRepository for SqliteRepository {
             )
             .transpose()
     }
+
+    fn list_messages(
+        &self,
+        workspace: &WorkspaceId,
+        channel: &ChannelId,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<NormalizedMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, platform, author_id, author_name, content, timestamp,
+                    is_system, reply_to, attachment_kind, attachment_name
+             FROM messages
+             WHERE workspace_id = ?1 AND channel_id = ?2 AND timestamp BETWEEN ?3 AND ?4
+             ORDER BY timestamp",
+        )?;
+        let rows = stmt.query_map(
+            params![workspace.as_str(), channel.as_str(), start, end],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, bool>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            },
+        )?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, platform, author_id, author_name, content, ts, sys, reply, ak, an) = row?;
+            let attachments = ak
+                .map(|k| {
+                    vec![Attachment {
+                        kind: parse_attachment_kind(&k),
+                        filename: an,
+                    }]
+                })
+                .unwrap_or_default();
+            out.push(NormalizedMessage {
+                id: MessageId::parse(id).map_err(anyhow::Error::new)?,
+                platform: Platform::parse(&platform).map_err(anyhow::Error::new)?,
+                channel_id: channel.clone(),
+                author_id,
+                author_name,
+                content,
+                timestamp: ts,
+                is_system: sys,
+                reply_to: reply
+                    .map(MessageId::parse)
+                    .transpose()
+                    .map_err(anyhow::Error::new)?,
+                attachments,
+            });
+        }
+        Ok(out)
+    }
 }
 
 fn attachment_kind_str(kind: AttachmentKind) -> &'static str {
@@ -488,5 +558,36 @@ mod tests {
         };
         repo.save_message(&ws, &m).unwrap();
         assert_eq!(repo.get_message(&ws, &m.id).unwrap().unwrap(), m);
+    }
+
+    #[test]
+    fn list_messages_filters_by_channel_and_range_oldest_first() {
+        let repo = repo();
+        let ws = ws();
+        let msg = |id: &str, chan: &str, ts: i64| NormalizedMessage {
+            id: MessageId::parse(id).unwrap(),
+            platform: Platform::WhatsApp,
+            channel_id: ChannelId::parse(chan).unwrap(),
+            author_id: "p1".into(),
+            author_name: "P".into(),
+            content: "hi".into(),
+            timestamp: ts,
+            is_system: false,
+            reply_to: None,
+            attachments: vec![],
+        };
+        repo.save_message(&ws, &msg("a", "c1", 100)).unwrap();
+        repo.save_message(&ws, &msg("b", "c1", 300)).unwrap();
+        repo.save_message(&ws, &msg("c", "c1", 500)).unwrap(); // out of range
+        repo.save_message(&ws, &msg("d", "c2", 200)).unwrap(); // other channel
+
+        let c1 = ChannelId::parse("c1").unwrap();
+        let got: Vec<String> = repo
+            .list_messages(&ws, &c1, 0, 400)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id.as_str().to_string())
+            .collect();
+        assert_eq!(got, vec!["a".to_string(), "b".to_string()]); // c/d excluded, ordered
     }
 }
