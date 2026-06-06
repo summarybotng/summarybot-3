@@ -15,6 +15,7 @@ pub mod platform;
 pub mod schedule_runner;
 pub mod scheduler;
 pub mod summarize;
+pub mod tenant_routing;
 pub mod whatsapp;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use delivery::{Deliverer, DeliveryOutcome, DeliveryReport, DeliveryService};
@@ -23,6 +24,7 @@ pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, Platfor
 pub use schedule_runner::SummarizingScheduleRunner;
 pub use scheduler::{ScheduleRunner, SchedulerService, TickReport};
 pub use summarize::{SummarizationService, SummarizeError, SummarizeRequest, SummaryOutcome};
+pub use tenant_routing::resolve_tenant_by_host;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};

@@ -28,7 +28,10 @@ async fn main() -> Result<()> {
     // endpoint and the scheduler (LEG-001 budget is global).
     let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
     let llm = select_llm();
-    let state = AppState::with_llm(repo, Secret::new(secret.into_bytes()), llm, limiter);
+    // Product base domain for host→tenant routing (TEN-006).
+    let base_domain = env::var("BASE_DOMAIN").unwrap_or_else(|_| "summarybot.app".to_string());
+    let state = AppState::with_llm(repo, Secret::new(secret.into_bytes()), llm, limiter)
+        .with_base_domain(base_domain);
 
     // Background scheduler: fire due schedules on an interval (SCH-005/006).
     spawn_scheduler(state.clone(), scheduler_secs);

@@ -14,11 +14,11 @@
 
 use crate::auth::{now_secs, AuthUser};
 use crate::{ApiError, AppState};
-use axum::extract::{Path, State};
+use axum::extract::{Host, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use domain::{AcceptOutcome, Membership, Permission, Role, TenantId, UserId};
-use host::InviteService;
+use host::{resolve_tenant_by_host, InviteService};
 use repository::{MembershipRepository, SqliteRepository};
 use serde::{Deserialize, Serialize};
 
@@ -274,6 +274,43 @@ pub async fn accept_invite(
     }))
 }
 
+/// Public tenant identity resolved from the request host (TEN-006).
+#[derive(Serialize)]
+pub struct TenantDto {
+    pub id: String,
+    pub name: String,
+    pub subdomain: Option<String>,
+    pub custom_domain: Option<String>,
+}
+
+impl From<domain::Tenant> for TenantDto {
+    fn from(t: domain::Tenant) -> Self {
+        TenantDto {
+            id: t.id.as_str().to_string(),
+            name: t.name,
+            subdomain: t.subdomain,
+            custom_domain: t.custom_domain,
+        }
+    }
+}
+
+/// `GET /tenant` — resolve the tenant for the request's `Host` header (TEN-006:
+/// subdomain under the base domain, or a tenant's custom domain). Unauthenticated
+/// on purpose: the login/branding surface needs the tenant *before* auth. The
+/// apex/marketing host or an unknown host is a 404 (no tenant context).
+pub async fn resolve_tenant(
+    State(state): State<AppState>,
+    Host(host): Host,
+) -> Result<Json<TenantDto>, ApiError> {
+    let tenant = {
+        let repo = state.repo.lock().expect("repo mutex");
+        resolve_tenant_by_host(&*repo, &host, &state.base_domain)?
+    };
+    tenant
+        .map(|t| Json(TenantDto::from(t)))
+        .ok_or(ApiError::NotFound)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +376,53 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    #[tokio::test]
+    async fn resolves_tenant_from_subdomain_host() {
+        use repository::WorkspaceRepository;
+        let repo = SqliteRepository::in_memory().unwrap();
+        repo.create_tenant(
+            &domain::Tenant::new(
+                TenantId::parse("t-acme").unwrap(),
+                "Acme",
+                Some("acme".into()),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // Default base domain is summarybot.app.
+        let state = AppState::new(repo, Secret::new(b"k".to_vec()));
+
+        let resp = build_router(state)
+            .oneshot(
+                Request::get("/tenant")
+                    .header("host", "acme.summarybot.app")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["id"], "t-acme");
+        assert_eq!(json["subdomain"], "acme");
+    }
+
+    #[tokio::test]
+    async fn apex_host_has_no_tenant() {
+        let (state, _, _) = state_with_owner("t1");
+        let resp = build_router(state)
+            .oneshot(
+                Request::get("/tenant")
+                    .header("host", "www.summarybot.app")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

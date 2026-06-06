@@ -38,7 +38,13 @@ pub struct AppState {
     pub signing_key: Arc<Secret<Vec<u8>>>,
     pub llm: Arc<dyn LlmClient + Send + Sync>,
     pub limiter: Arc<GlobalRateLimiter>,
+    /// Product base domain for host→tenant routing (TEN-006); subdomains under
+    /// it resolve to tenants, anything else is a custom domain.
+    pub base_domain: Arc<str>,
 }
+
+/// Default product base domain when unconfigured.
+const DEFAULT_BASE_DOMAIN: &str = "summarybot.app";
 
 impl AppState {
     /// Default state: the deterministic [`DemoLlmClient`] and a fresh shared
@@ -65,7 +71,14 @@ impl AppState {
             signing_key: Arc::new(signing_key),
             llm,
             limiter,
+            base_domain: Arc::from(DEFAULT_BASE_DOMAIN),
         }
+    }
+
+    /// Override the product base domain used for host→tenant routing (TEN-006).
+    pub fn with_base_domain(mut self, base_domain: impl Into<String>) -> Self {
+        self.base_domain = Arc::from(base_domain.into());
+        self
     }
 }
 
@@ -113,7 +126,8 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/schedules/:id/resume",
             post(schedules::resume),
         )
-        // Tenancy: members + invites (PRD §6.2/§6.3 TEN-005).
+        // Tenancy: host→tenant resolution (TEN-006), members + invites.
+        .route("/tenant", get(tenancy::resolve_tenant))
         .route("/tenants/:tenant/members", get(tenancy::list_members))
         .route(
             "/tenants/:tenant/members/:user",
@@ -163,6 +177,7 @@ async fn openapi() -> Json<serde_json::Value> {
             },
             "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
             "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
+            "/tenant": { "get": { "summary": "Resolve the tenant for the request host (TEN-006)" } },
             "/tenants/{tenant}/members": { "get": { "summary": "List tenant members" } },
             "/tenants/{tenant}/members/{user}": {
                 "put": { "summary": "Set a member's role" },

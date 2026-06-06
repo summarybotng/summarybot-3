@@ -56,6 +56,12 @@ impl From<anyhow::Error> for AttachError {
 /// Storage boundary for workspaces. Every workspace read is tenant-scoped.
 pub trait WorkspaceRepository {
     fn create_tenant(&self, tenant: &Tenant) -> Result<()>;
+    /// Fetch a tenant by id.
+    fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>>;
+    /// Resolve a tenant by its subdomain (TEN-001/TEN-006). Case-insensitive.
+    fn find_tenant_by_subdomain(&self, subdomain: &str) -> Result<Option<Tenant>>;
+    /// Resolve a tenant by its custom domain (TEN-002/TEN-006). Case-insensitive.
+    fn find_tenant_by_custom_domain(&self, domain: &str) -> Result<Option<Tenant>>;
     /// Persist an explicitly-created workspace (WSP-009).
     fn create_workspace(&self, workspace: &Workspace) -> Result<()>;
     /// Fetch a workspace only if it belongs to `tenant` (TEN-007).
@@ -84,6 +90,29 @@ where
     f(raw).map_err(anyhow::Error::new)
 }
 
+impl SqliteRepository {
+    /// Shared tenant lookup: one `WHERE` clause + its bound params. Rebuilds the
+    /// validated [`Tenant`] from the row (defense in depth — never trust storage).
+    fn query_tenant(
+        &self,
+        where_clause: &str,
+        params: impl rusqlite::Params,
+    ) -> Result<Option<Tenant>> {
+        let sql = format!("SELECT id, name, subdomain, custom_domain FROM tenants {where_clause}");
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut rows = stmt.query(params)?;
+        match rows.next()? {
+            Some(row) => Ok(Some(Tenant {
+                id: parse_field(TenantId::parse, row.get::<_, String>(0)?)?,
+                name: row.get(1)?,
+                subdomain: row.get(2)?,
+                custom_domain: row.get(3)?,
+            })),
+            None => Ok(None),
+        }
+    }
+}
+
 impl WorkspaceRepository for SqliteRepository {
     fn create_tenant(&self, tenant: &Tenant) -> Result<()> {
         self.conn.execute(
@@ -97,6 +126,26 @@ impl WorkspaceRepository for SqliteRepository {
             ],
         )?;
         Ok(())
+    }
+
+    fn get_tenant(&self, id: &TenantId) -> Result<Option<Tenant>> {
+        self.query_tenant("WHERE id = ?1", params![id.as_str()])
+    }
+
+    fn find_tenant_by_subdomain(&self, subdomain: &str) -> Result<Option<Tenant>> {
+        // Stored values come from the boundary; match case-insensitively so a
+        // host header's casing never misses (subdomains are case-insensitive).
+        self.query_tenant(
+            "WHERE subdomain IS NOT NULL AND lower(subdomain) = lower(?1)",
+            params![subdomain],
+        )
+    }
+
+    fn find_tenant_by_custom_domain(&self, domain: &str) -> Result<Option<Tenant>> {
+        self.query_tenant(
+            "WHERE custom_domain IS NOT NULL AND lower(custom_domain) = lower(?1)",
+            params![domain],
+        )
     }
 
     fn create_workspace(&self, workspace: &Workspace) -> Result<()> {
@@ -308,5 +357,57 @@ mod tests {
             .resolve_workspaces(Platform::Discord, &PlatformId::parse("nope").unwrap())
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn resolves_tenant_by_subdomain_and_custom_domain() {
+        let repo = repo();
+        repo.create_tenant(
+            &Tenant::new(
+                TenantId::parse("t1").unwrap(),
+                "Acme",
+                Some("acme".into()),
+                Some("chat.acme.com".into()),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        // By subdomain (case-insensitive).
+        assert_eq!(
+            repo.find_tenant_by_subdomain("ACME")
+                .unwrap()
+                .unwrap()
+                .id
+                .as_str(),
+            "t1"
+        );
+        // By custom domain.
+        assert_eq!(
+            repo.find_tenant_by_custom_domain("chat.acme.com")
+                .unwrap()
+                .unwrap()
+                .id
+                .as_str(),
+            "t1"
+        );
+        // Misses return None, and a NULL column never matches.
+        assert!(repo.find_tenant_by_subdomain("other").unwrap().is_none());
+        assert!(repo
+            .get_tenant(&TenantId::parse("t1").unwrap())
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn tenant_without_subdomain_is_never_matched_by_null() {
+        let repo = repo();
+        repo.create_tenant(
+            &Tenant::new(TenantId::parse("t2").unwrap(), "Bare", None, None).unwrap(),
+        )
+        .unwrap();
+        // Looking up an empty/absent subdomain must not match the NULL row.
+        assert!(repo.find_tenant_by_subdomain("").unwrap().is_none());
+        assert!(repo.find_tenant_by_custom_domain("").unwrap().is_none());
     }
 }
