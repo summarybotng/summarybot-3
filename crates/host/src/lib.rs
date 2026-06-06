@@ -9,8 +9,10 @@ use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
 pub mod llm;
+pub mod platform;
 pub mod whatsapp;
 pub use auth::{new_correlation_id, AuthError, AuthService, TokenPair};
+pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
