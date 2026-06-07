@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useAuth } from '../auth'
 import { ApiError } from '../api'
-import type { WhatsappImport } from '../types'
+import type { Summary, WhatsappImport } from '../types'
 
 // WhatsApp export ingestion (WHA-001). The browser sends the chosen file as the
 // raw request body; the server unzips, parses, anonymizes, dedups and stores.
@@ -17,6 +17,9 @@ export function Whatsapp() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<WhatsappImport | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [summarizing, setSummarizing] = useState(false)
+  const [summary, setSummary] = useState<Summary | null>(null)
+  const [summaryNote, setSummaryNote] = useState<string | null>(null)
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
@@ -24,6 +27,8 @@ export function Whatsapp() {
     setBusy(true)
     setErr(null)
     setResult(null)
+    setSummary(null)
+    setSummaryNote(null)
     try {
       // Locale fallback for genuinely ambiguous dates (US → month/day).
       const locale = Intl.DateTimeFormat().resolvedOptions().locale
@@ -37,6 +42,27 @@ export function Whatsapp() {
       )
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Summarize the most recent slice of the imported chat (bounded so the local
+  // model's context isn't blown; full-history map-reduce is future work).
+  async function summarizeNow() {
+    if (!client || !result) return
+    setSummarizing(true)
+    setSummary(null)
+    setSummaryNote(null)
+    try {
+      const now = Math.floor(Date.now() / 1000)
+      // Window: the last ~3 days of the chat's activity, relative to now.
+      const lookback = result.date_end ? now - result.date_end + 3 * 86400 : 31_536_000
+      const r = await client.summarizeChannelNow(result.chat_id, Math.max(lookback, 86400))
+      if (r.produced && r.summary) setSummary(r.summary)
+      else setSummaryNote('No summary produced — no substantial messages in the recent window.')
+    } catch {
+      setSummaryNote('Summarize failed.')
+    } finally {
+      setSummarizing(false)
     }
   }
 
@@ -94,10 +120,34 @@ export function Whatsapp() {
             <span className="font-medium">#{result.chat_id}</span>
             {result.duplicates > 0 && <> ({result.duplicates} duplicates skipped)</>} ·{' '}
             {result.new_participants} participants · {result.format} export.
-            <div className="mt-1 text-xs text-slate-500">
-              Now summarize it: create a schedule scoped to <code>#{result.chat_id}</code>, or
-              trigger one with “Run now”.
+            <div className="mt-2">
+              <button
+                onClick={() => void summarizeNow()}
+                disabled={summarizing}
+                className="rounded-lg bg-accent px-4 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50"
+              >
+                {summarizing ? 'Summarizing…' : 'Summarize now'}
+              </button>
+              <span className="ml-2 text-xs text-slate-500">most recent activity</span>
             </div>
+          </div>
+        )}
+
+        {summaryNote && <p className="mt-3 text-sm text-slate-600">{summaryNote}</p>}
+        {summary && (
+          <div className="mt-4 rounded-lg border border-slate-200 p-3">
+            <p className="text-sm text-slate-800">{summary.text}</p>
+            {summary.key_points.length > 0 && (
+              <ul className="mt-2 list-disc pl-5 text-sm text-slate-600">
+                {summary.key_points.map((k, i) => (
+                  <li key={i}>{k}</li>
+                ))}
+              </ul>
+            )}
+            <p className="mt-2 text-xs text-slate-400">
+              {summary.model}
+              {summary.degraded && ' · degraded'} · saved to Summaries
+            </p>
           </div>
         )}
       </div>

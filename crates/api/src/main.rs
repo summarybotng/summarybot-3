@@ -100,7 +100,17 @@ fn select_llm() -> Arc<dyn LlmClient + Send + Sync> {
             "LLM backend: HTTP {base}{}",
             if key.is_some() { " (+key)" } else { "" }
         );
-        return Arc::new(HttpLlmClient::new(base, key));
+        let mut client = HttpLlmClient::new(base, key);
+        // Best-effort context-window bump for a local Ollama (its default ~4k
+        // truncates large prompts). Note: Ollama's `/v1` endpoint ignores this —
+        // the prompt instruction is placed last so it survives truncation anyway.
+        if let Some(n) = env::var("LLM_NUM_CTX")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+        {
+            client = client.with_num_ctx(n);
+        }
+        return Arc::new(client);
     }
     match env::var("OPENROUTER_API_KEY") {
         Ok(key) if !key.trim().is_empty() => {

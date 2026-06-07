@@ -211,6 +211,29 @@ export class Client {
     return this.json<ScheduleRun[]>(`/workspaces/${this.ws()}/schedules/${id}/runs`)
   }
 
+  /**
+   * Summarize a channel's recent messages now, without leaving a schedule
+   * behind: create an ephemeral schedule scoped to the channel, trigger it, then
+   * delete it. Reuses the tested schedule endpoints.
+   */
+  async summarizeChannelNow(
+    chat: string,
+    lookbackSecs: number,
+  ): Promise<{ produced: boolean; summary: Summary | null }> {
+    const sched = await this.createSchedule({
+      schedule_type: 'daily',
+      hour: 9,
+      timezone: 'UTC',
+      channel: chat,
+      lookback_secs: lookbackSecs,
+    })
+    try {
+      return await this.triggerSchedule(sched.id)
+    } finally {
+      await this.deleteSchedule(sched.id).catch(() => {})
+    }
+  }
+
   /** Upload a WhatsApp export (.zip or _chat.txt) as the raw request body. */
   importWhatsapp(
     chat: string,

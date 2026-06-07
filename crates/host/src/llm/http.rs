@@ -26,6 +26,14 @@ pub struct HttpLlmClient {
     api_key: Option<Secret<String>>,
     /// Optional per-call timeout (seconds); `None` uses the agent default.
     timeout_secs: Option<u64>,
+    /// Ollama-only `options.num_ctx` (context window) — best-effort. Set this for
+    /// a local Ollama whose default (~4k) truncates a large prompt. NOTE: Ollama's
+    /// OpenAI-compatible `/v1/chat/completions` endpoint *ignores* this field
+    /// (only its native `/api/*` reads it), so the durable defense against
+    /// truncation is putting the JSON instruction last in the prompt (see
+    /// `summarize::assemble_prompt`). Kept for the providers/endpoints that honor
+    /// it; omitted from the request when `None` so hosted providers are unaffected.
+    num_ctx: Option<u32>,
 }
 
 impl HttpLlmClient {
@@ -36,7 +44,16 @@ impl HttpLlmClient {
             base_url: base_url.into(),
             api_key,
             timeout_secs: Some(60),
+            num_ctx: None,
         }
+    }
+
+    /// Set the Ollama context window (`options.num_ctx`) — best-effort; honored
+    /// by Ollama's native `/api/*` but ignored by its OpenAI-compatible `/v1`.
+    /// No effect on non-Ollama providers beyond an extra field.
+    pub fn with_num_ctx(mut self, num_ctx: u32) -> Self {
+        self.num_ctx = Some(num_ctx);
+        self
     }
 
     /// Convenience: the hosted OpenRouter endpoint with a key.
@@ -65,10 +82,14 @@ impl HttpLlmClient {
 
 impl LlmClient for HttpLlmClient {
     fn complete(&self, request: &LlmRequest) -> Result<LlmResponse, LlmError> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": request.model,
             "messages": [{ "role": "user", "content": request.prompt }],
         });
+        if let Some(n) = self.num_ctx {
+            // Ollama reads options.num_ctx; other providers ignore/omit it.
+            body["options"] = serde_json::json!({ "num_ctx": n });
+        }
         let mut req = self
             .agent()
             .post(&self.endpoint())

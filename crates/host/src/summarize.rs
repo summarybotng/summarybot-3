@@ -298,13 +298,23 @@ fn output_budget(length: SummaryLength) -> i64 {
     }
 }
 
-/// Build the summarization prompt: an instruction + the exact JSON schema we
-/// parse, then the numbered messages (the `[i]` prefix is the citation index).
-/// The deterministic demo client ignores the instruction (it only reads `[i]`
-/// lines); a real model needs it to produce the structured output.
+/// Build the summarization prompt: the numbered messages first (the `[i]` prefix
+/// is the citation index), then the instruction + the exact JSON schema we parse.
+///
+/// The instruction goes **last** deliberately. A local Ollama served over its
+/// OpenAI-compatible `/v1` endpoint ignores `options.num_ctx` and silently
+/// truncates a prompt that exceeds its (small, ~4k) default context — dropping
+/// the *oldest* tokens. With the instruction at the end it survives truncation;
+/// only the earliest messages are lost, which is a graceful degradation. The
+/// deterministic demo client ignores the instruction (it only reads `[i]` lines);
+/// a real model needs it to produce the structured output.
 fn assemble_prompt(messages: &[&NormalizedMessage]) -> String {
-    let mut s = String::from(
-        "You are a summarization engine. Read the numbered chat messages below and \
+    let mut s = String::from("Numbered chat messages:\n");
+    for (i, m) in messages.iter().enumerate() {
+        s.push_str(&format!("[{i}] {}: {}\n", m.author_name, m.content));
+    }
+    s.push_str(
+        "\nYou are a summarization engine. Read the numbered chat messages above and \
          reply with ONLY a single minified JSON object — no prose, no markdown code \
          fences — of exactly this shape:\n\
          {\"text\":\"<concise prose summary>\",\"key_points\":[\"...\"],\
@@ -312,11 +322,8 @@ fn assemble_prompt(messages: &[&NormalizedMessage]) -> String {
          \"technical_terms\":[\"...\"],\"participants\":[\"...\"],\
          \"citations\":[{\"message_index\":0,\"quote\":\"<verbatim snippet>\"}]}\n\
          Set message_index from a message's [index] prefix. Use empty arrays for \
-         anything you can't fill. Messages:\n",
+         anything you can't fill.",
     );
-    for (i, m) in messages.iter().enumerate() {
-        s.push_str(&format!("[{i}] {}: {}\n", m.author_name, m.content));
-    }
     s
 }
 
