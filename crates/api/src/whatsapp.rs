@@ -24,7 +24,8 @@ pub struct ImportQuery {
     /// IANA timezone the export's local timestamps are in (default UTC).
     #[serde(default = "default_tz")]
     pub tz: String,
-    /// `dmy` (default, most of the world) or `mdy` (US).
+    /// Locale **hint** for ambiguous dates only — `dmy` (default) or `mdy`.
+    /// The order is inferred from the data when possible; this is the fallback.
     #[serde(default)]
     pub date_order: Option<String>,
 }

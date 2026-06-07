@@ -119,6 +119,46 @@ pub fn parse_export(raw: &str, zone: Tz, order: DateOrder) -> ParsedExport {
     }
 }
 
+/// Infer the date-component order from the export itself (WHA-020): scan header
+/// dates and return the order the moment one is **unambiguous** — a first
+/// component > 12 can't be a month (→ Day/Month), a second > 12 can't be a day
+/// in MM/DD (→ Month/Day). ISO `YYYY-MM-DD` carries its own order, so it's
+/// skipped here. `None` when every date is ambiguous (all components ≤ 12) —
+/// the caller then falls back to a locale default.
+pub fn detect_date_order(raw: &str) -> Option<DateOrder> {
+    for line in raw.lines() {
+        let line = sanitize_line(line);
+        let head = line.strip_prefix('[').unwrap_or(&line);
+        let Some((date_str, rest)) = head.split_once(',') else {
+            continue;
+        };
+        // Cheap header guard: a real stamp is followed by a time (a digit).
+        if !rest
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+        {
+            continue;
+        }
+        let parts: Option<Vec<i64>> = date_str
+            .split(['/', '.', '-'])
+            .map(|p| p.trim().parse::<i64>().ok())
+            .collect();
+        let Some(parts) = parts else { continue };
+        if parts.len() != 3 || parts[0] >= 1000 {
+            continue; // not a 3-part numeric date, or ISO (handled by parse)
+        }
+        if parts[0] > 12 {
+            return Some(DateOrder::DayMonthYear);
+        }
+        if parts[1] > 12 {
+            return Some(DateOrder::MonthDayYear);
+        }
+    }
+    None
+}
+
 /// Strip the directional/zero-width marks WhatsApp injects and normalize the
 /// no-break spaces it puts before AM/PM, so downstream parsing sees plain text.
 fn sanitize_line(line: &str) -> String {

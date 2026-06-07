@@ -52,8 +52,8 @@ pub use session::{
     SessionId,
 };
 pub use whatsapp::{
-    parse_export, ChatEvent, ChatEventKind, DateOrder, ParsedExport, RawWhatsAppMessage,
-    WhatsAppFormat,
+    detect_date_order, parse_export, ChatEvent, ChatEventKind, DateOrder, ParsedExport,
+    RawWhatsAppMessage, WhatsAppFormat,
 };
 pub use workspace::{
     Platform, PlatformId, Tenant, TenantId, UserId, Workspace, WorkspaceConnection,

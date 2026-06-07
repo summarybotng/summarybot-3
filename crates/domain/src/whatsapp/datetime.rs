@@ -45,9 +45,16 @@ fn parse_date(s: &str, order: DateOrder) -> Option<NaiveDate> {
     if parts.len() != 3 {
         return None;
     }
-    let (day, month, year) = match order {
-        DateOrder::DayMonthYear => (parts[0], parts[1], parts[2]),
-        DateOrder::MonthDayYear => (parts[1], parts[0], parts[2]),
+    // A 4-digit first component means ISO `YYYY-MM-DD` (common in newer iOS/
+    // Android exports), which the declared day/month order can't express — so it
+    // overrides the order.
+    let (day, month, year) = if parts[0] >= 1000 {
+        (parts[2], parts[1], parts[0])
+    } else {
+        match order {
+            DateOrder::DayMonthYear => (parts[0], parts[1], parts[2]),
+            DateOrder::MonthDayYear => (parts[1], parts[0], parts[2]),
+        }
     };
     let year = if (0..100).contains(&year) {
         year + 2000
@@ -58,7 +65,10 @@ fn parse_date(s: &str, order: DateOrder) -> Option<NaiveDate> {
 }
 
 fn parse_time(s: &str) -> Option<NaiveTime> {
-    let up = s.to_uppercase();
+    // Normalize the meridiem: WhatsApp writes it as `AM`, `am`, or `a.m.`/`p.m.`
+    // (often after a narrow no-break space, already turned into a space by
+    // sanitize_line). Dropping `.` collapses `A.M.` → `AM`.
+    let up = s.to_uppercase().replace('.', "");
     let (digits, pm) = if let Some(p) = up.strip_suffix("AM") {
         (p.trim(), Some(false))
     } else if let Some(p) = up.strip_suffix("PM") {
@@ -147,5 +157,43 @@ mod tests {
     fn rejects_garbage() {
         assert!(parse_stamp("not a stamp", DateOrder::DayMonthYear).is_none());
         assert!(parse_stamp("99/99/2026, 12:00", DateOrder::DayMonthYear).is_none());
+    }
+
+    #[test]
+    fn parses_iso_date_overriding_declared_order() {
+        // Real Android export: `YYYY-MM-DD` regardless of the declared order.
+        let dt = parse_stamp("2026-02-24, 13:46", DateOrder::MonthDayYear).unwrap();
+        assert_eq!(dt.to_string(), "2026-02-24 13:46:00");
+        let dt = parse_stamp("2026-02-24, 13:46", DateOrder::DayMonthYear).unwrap();
+        assert_eq!(dt.to_string(), "2026-02-24 13:46:00");
+    }
+
+    #[test]
+    fn detects_order_from_unambiguous_dates() {
+        use crate::detect_date_order;
+        // A day component > 12 forces Day/Month.
+        assert_eq!(
+            detect_date_order("13/02/2026, 09:00 - A: hi"),
+            Some(DateOrder::DayMonthYear)
+        );
+        // A second component > 12 forces Month/Day.
+        assert_eq!(
+            detect_date_order("02/13/2026, 09:00 - A: hi"),
+            Some(DateOrder::MonthDayYear)
+        );
+        // All components <= 12 → ambiguous → None (caller picks a default).
+        assert_eq!(detect_date_order("02/03/2026, 09:00 - A: hi"), None);
+        // ISO carries its own order → not decided here.
+        assert_eq!(detect_date_order("2026-02-24, 11:46 a.m. - A: hi"), None);
+    }
+
+    #[test]
+    fn parses_dotted_meridiem() {
+        // `11:46 a.m.` / `1:54 p.m.` (after sanitize turns the narrow no-break
+        // space into a regular space).
+        let am = parse_stamp("2026-02-24, 11:46 a.m.", DateOrder::MonthDayYear).unwrap();
+        assert_eq!(am.time(), NaiveTime::from_hms_opt(11, 46, 0).unwrap());
+        let pm = parse_stamp("2026-02-24, 1:54 p.m.", DateOrder::MonthDayYear).unwrap();
+        assert_eq!(pm.time(), NaiveTime::from_hms_opt(13, 54, 0).unwrap());
     }
 }

@@ -9,8 +9,11 @@ export function Whatsapp() {
   const { client } = useAuth()
   const [file, setFile] = useState<File | null>(null)
   const [chat, setChat] = useState('')
-  const [tz, setTz] = useState('UTC')
-  const [dateOrder, setDateOrder] = useState('dmy')
+  // Default the timezone to the browser's; the date format is inferred from the
+  // file (with this locale as a fallback for ambiguous dates), so no picker.
+  const [tz, setTz] = useState(
+    () => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+  )
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<WhatsappImport | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -22,7 +25,10 @@ export function Whatsapp() {
     setErr(null)
     setResult(null)
     try {
-      setResult(await client.importWhatsapp(chat.trim(), tz.trim() || 'UTC', dateOrder, file))
+      // Locale fallback for genuinely ambiguous dates (US → month/day).
+      const locale = Intl.DateTimeFormat().resolvedOptions().locale
+      const hint = /(^en-US$)|(-US$)/i.test(locale) ? 'mdy' : 'dmy'
+      setResult(await client.importWhatsapp(chat.trim(), tz.trim() || 'UTC', hint, file))
     } catch (e) {
       setErr(
         e instanceof ApiError
@@ -53,28 +59,25 @@ export function Whatsapp() {
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-accent file:px-4 file:py-2 file:text-sm file:font-medium file:text-accent-fg"
           />
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <input
               value={chat}
               onChange={(e) => setChat(e.target.value)}
               placeholder="channel id (e.g. family-group)"
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent sm:col-span-1"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
             />
             <input
               value={tz}
               onChange={(e) => setTz(e.target.value)}
-              placeholder="timezone (e.g. Europe/London)"
+              title="Auto-detected from your browser; edit if the chat is from another timezone"
+              placeholder="timezone"
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
             />
-            <select
-              value={dateOrder}
-              onChange={(e) => setDateOrder(e.target.value)}
-              className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
-            >
-              <option value="dmy">Day/Month (most regions)</option>
-              <option value="mdy">Month/Day (US)</option>
-            </select>
           </div>
+          <p className="text-xs text-slate-400">
+            Timezone is auto-detected from your browser. The date format is read from the file
+            automatically.
+          </p>
           <button
             type="submit"
             disabled={busy || !file || !chat.trim()}

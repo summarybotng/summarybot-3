@@ -17,8 +17,8 @@
 
 use anyhow::{anyhow, Result};
 use domain::{
-    parse_export, ChannelId, DateOrder, MessageId, NormalizedMessage, ParsedExport, Platform,
-    RawWhatsAppMessage, Secret, UserId, WorkspaceId,
+    detect_date_order, parse_export, ChannelId, DateOrder, MessageId, NormalizedMessage,
+    ParsedExport, Platform, RawWhatsAppMessage, Secret, UserId, WorkspaceId,
 };
 use hmac::{Hmac, Mac};
 use repository::{Participant, WhatsAppRepository};
@@ -57,21 +57,23 @@ pub fn extract_whatsapp_text(bytes: &[u8]) -> Result<String> {
 
 /// Ingest a WhatsApp export upload end-to-end (WHA-001): extract the transcript
 /// from `bytes` (zip or raw text), parse it under the declared `timezone`
-/// (WHA-020) + `order`, then anonymize/dedup/persist. Returns the ingest summary
-/// and the parsed export (for format/date-range reporting). An unknown timezone
-/// is an error.
+/// (WHA-020), then anonymize/dedup/persist. The date-component order is **inferred
+/// from the data** ([`detect_date_order`]); `order_hint` (a locale default) is
+/// used only when the data is ambiguous. Returns the ingest summary and the
+/// parsed export. An unknown timezone is an error.
 pub fn ingest_whatsapp_zip<R: WhatsAppRepository>(
     repo: &R,
     anon_key: &Secret<Vec<u8>>,
     ctx: &IngestContext,
     bytes: &[u8],
     timezone: &str,
-    order: DateOrder,
+    order_hint: DateOrder,
 ) -> Result<(IngestSummary, ParsedExport)> {
     let zone: chrono_tz::Tz = timezone
         .parse()
         .map_err(|_| anyhow!("unknown timezone: {timezone}"))?;
     let text = extract_whatsapp_text(bytes)?;
+    let order = detect_date_order(&text).unwrap_or(order_hint);
     let parsed = parse_export(&text, zone, order);
     let summary = WhatsAppIngestor::new(repo, anon_key).ingest(ctx, &parsed.messages)?;
     Ok((summary, parsed))
