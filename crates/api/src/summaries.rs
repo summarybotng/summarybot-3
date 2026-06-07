@@ -6,7 +6,7 @@ use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use domain::summarize::{Model, ModelLadder, ModelPrice, SummaryLength};
+use domain::summarize::SummaryLength;
 use repository::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -169,7 +169,7 @@ pub async fn create_summary(
         })
         .collect();
 
-    let ladder = demo_ladder();
+    let ladder = state.model_ladder();
     // Process-wide shared backend + limiter (LEG-001 budget is global).
     let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
     let outcome = SummarizationService::new(&engine, &ladder)
@@ -200,19 +200,6 @@ pub async fn create_summary(
     }
     state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
     Ok(Json(SummaryDto::from(record)))
-}
-
-/// A single-model ladder for the demo/on-demand path (shared with the scheduler
-/// driver).
-pub(crate) fn demo_ladder() -> ModelLadder {
-    ModelLadder::new(vec![Model {
-        name: "demo".to_string(),
-        price: ModelPrice {
-            input_micros_per_ktoken: 0,
-            output_micros_per_ktoken: 0,
-        },
-        context_tokens: 200_000,
-    }])
 }
 
 /// A unique-enough id suffix from the clock (nanos).

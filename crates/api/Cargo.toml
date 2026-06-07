@@ -7,9 +7,11 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Build the live OpenRouter LLM backend into the server (off by default so the
-# default build stays network-free). Selected at runtime via OPENROUTER_API_KEY.
-openrouter = ["host/openrouter"]
+# Build the OpenAI-compatible HTTP LLM backend into the server (off by default so
+# the default build stays network-free). At runtime, point it at a local endpoint
+# (LLM_BASE_URL — e.g. the operator's Mac mini) or OpenRouter (OPENROUTER_API_KEY).
+# See ADR-125.
+http-llm = ["host/http-llm"]
 
 [dependencies]
 domain.workspace = true

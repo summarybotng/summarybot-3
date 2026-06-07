@@ -23,6 +23,7 @@ pub use scheduler_driver::spawn_scheduler;
 
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use domain::summarize::{Model, ModelLadder, ModelPrice};
 use domain::Secret;
 use host::llm::{DemoLlmClient, GlobalRateLimiter, LlmClient, RateLimitConfig};
 use repository::SqliteRepository;
@@ -52,6 +53,9 @@ pub struct AppState {
     /// Process-wide live-events bus (SSE). Mutations publish here; the
     /// `/workspaces/:ws/events` stream filters to a workspace.
     pub events: broadcast::Sender<LiveEvent>,
+    /// Summarization model name the configured backend serves (ADR-125): the
+    /// demo model by default, or e.g. a Mac mini's `llama3.1` / a hosted id.
+    pub model: Arc<str>,
 }
 
 /// Default product base domain when unconfigured.
@@ -84,6 +88,7 @@ impl AppState {
             limiter,
             base_domain: Arc::from(DEFAULT_BASE_DOMAIN),
             events: broadcast::channel(EVENT_BUFFER).0,
+            model: Arc::from("demo"),
         }
     }
 
@@ -91,6 +96,25 @@ impl AppState {
     pub fn with_base_domain(mut self, base_domain: impl Into<String>) -> Self {
         self.base_domain = Arc::from(base_domain.into());
         self
+    }
+
+    /// Override the summarization model name (ADR-125).
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Arc::from(model.into());
+        self
+    }
+
+    /// A single-model ladder for the configured model. Price is zero for now —
+    /// real per-model pricing + tenant budgets are ADR-125 Phase 3.
+    pub(crate) fn model_ladder(&self) -> ModelLadder {
+        ModelLadder::new(vec![Model {
+            name: self.model.to_string(),
+            price: ModelPrice {
+                input_micros_per_ktoken: 0,
+                output_micros_per_ktoken: 0,
+            },
+            context_tokens: 200_000,
+        }])
     }
 
     /// Publish a live event to all connected SSE subscribers. A no-op when no

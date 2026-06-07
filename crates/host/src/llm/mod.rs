@@ -15,14 +15,14 @@
 pub mod demo;
 pub mod engine;
 pub mod failure;
+#[cfg(feature = "http-llm")]
+pub mod http;
 pub mod limiter;
-#[cfg(feature = "openrouter")]
-pub mod openrouter;
 pub mod provider;
 pub mod ratelimit;
 
-#[cfg(feature = "openrouter")]
-pub use openrouter::OpenRouterClient;
+#[cfg(feature = "http-llm")]
+pub use http::HttpLlmClient;
 
 pub use demo::DemoLlmClient;
 pub use engine::{

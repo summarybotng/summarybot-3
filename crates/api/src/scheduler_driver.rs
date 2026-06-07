@@ -12,7 +12,6 @@
 //! configured for it (`main.rs`) — the same one the on-demand endpoint uses.
 
 use crate::auth::now_secs;
-use crate::summaries::demo_ladder;
 use crate::AppState;
 use domain::summarize::ModelLadder;
 use host::llm::{LlmClient, ResilientLlm};
@@ -25,7 +24,7 @@ pub fn spawn_scheduler(state: AppState, interval_secs: u64) {
     tokio::spawn(async move {
         // Built once over the shared backend + limiter; reused every tick.
         let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
-        let ladder = demo_ladder();
+        let ladder = state.model_ladder();
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
         loop {
             ticker.tick().await;

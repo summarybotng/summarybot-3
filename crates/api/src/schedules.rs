@@ -3,7 +3,7 @@
 //! + the domain recurrence engine (which computes the initial `next_run`).
 
 use crate::auth::{now_secs, AuthUser};
-use crate::summaries::{demo_ladder, SummaryDto};
+use crate::summaries::SummaryDto;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -269,7 +269,7 @@ pub async fn trigger_schedule(
     let workspace = workspace(ws)?;
     // Shared process-wide backend + limiter, same as the scheduler driver.
     let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
-    let ladder = demo_ladder();
+    let ladder = state.model_ladder();
     let now = now_secs();
 
     let repo = state.repo.lock().expect("repo mutex");
