@@ -3,11 +3,14 @@
 //! + the domain recurrence engine (which computes the initial `next_run`).
 
 use crate::auth::{now_secs, AuthUser};
+use crate::summaries::{demo_ladder, SummaryDto};
 use crate::{ApiError, AppState};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use repository::{ScheduleRepository, StoredSchedule};
+use host::llm::ResilientLlm;
+use host::{ScheduleRunner, SummarizingScheduleRunner};
+use repository::{ScheduleRepository, StoredSchedule, StructuredSummaryRepository};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -238,6 +241,48 @@ pub async fn resume(
     Path((ws, id)): Path<(String, String)>,
 ) -> Result<Json<ScheduleDto>, ApiError> {
     set_enabled(state, user, ws, id, true).await
+}
+
+/// Result of an immediate trigger.
+#[derive(Serialize)]
+pub struct TriggerResponse {
+    /// Whether a summary was actually produced (false when the schedule is
+    /// unscoped or the lookback window had nothing substantial).
+    pub produced: bool,
+    pub summary: Option<SummaryDto>,
+}
+
+/// `POST /workspaces/:ws/schedules/:id/run` — trigger a schedule immediately
+/// (SCM-007), out of band. Runs the same pipeline a scheduled tick would (resolve
+/// scope → summarize → store), but does **not** alter the schedule's cadence or
+/// `next_run`. Produces a summary only when the schedule is channel-scoped and
+/// the lookback window holds substantial messages.
+pub async fn trigger_schedule(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+) -> Result<Json<TriggerResponse>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = workspace(ws)?;
+    // Shared process-wide backend + limiter, same as the scheduler driver.
+    let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
+    let ladder = demo_ladder();
+    let now = now_secs();
+
+    let repo = state.repo.lock().expect("repo mutex");
+    let stored = repo
+        .get_schedule(&workspace, &id)?
+        .ok_or(ApiError::NotFound)?;
+    let runner = SummarizingScheduleRunner::new(&*repo, &engine, &ladder);
+    runner.run(&stored, now).map_err(ApiError::Internal)?;
+    // The runner stores under this deterministic id when it produces a summary.
+    let produced = repo
+        .get_record(&workspace, &format!("sum_{id}_{now}"))?
+        .map(SummaryDto::from);
+    Ok(Json(TriggerResponse {
+        produced: produced.is_some(),
+        summary: produced,
+    }))
 }
 
 /// `DELETE /workspaces/:ws/schedules/:id`

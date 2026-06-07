@@ -129,6 +129,10 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/schedules/:id/resume",
             post(schedules::resume),
         )
+        .route(
+            "/workspaces/:ws/schedules/:id/run",
+            post(schedules::trigger_schedule),
+        )
         // Tenancy: provisioning (TEN-001), host→tenant resolution (TEN-006),
         // members + invites.
         .route("/tenants", post(tenancy::provision_tenant))
@@ -197,6 +201,7 @@ async fn openapi() -> Json<serde_json::Value> {
             },
             "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
             "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
+            "/workspaces/{ws}/schedules/{id}/run": { "post": { "summary": "Trigger immediately (SCM-007)" } },
             "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" } },
             "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
             "/tenants/{tenant}/workspaces": {
@@ -627,6 +632,93 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn trigger_schedule_runs_immediately_and_returns_the_summary() {
+        use domain::{ChannelId, MessageId, NormalizedMessage, Platform, Schedule};
+        use repository::{ScheduleRepository, StoredSchedule, WhatsAppRepository};
+
+        let (state, token) = seeded_state();
+        let ws = domain::WorkspaceId::parse("ws-1").unwrap();
+        let now = crate::auth::now_secs();
+        // Seed substantial messages in channel c1 and a c1-scoped schedule.
+        {
+            let repo = state.repo.lock().unwrap();
+            for (i, text) in ["we shipped the release today", "great work everyone"]
+                .iter()
+                .enumerate()
+            {
+                repo.save_message(
+                    &ws,
+                    &NormalizedMessage {
+                        id: MessageId::parse(format!("tm{i}")).unwrap(),
+                        platform: Platform::WhatsApp,
+                        channel_id: ChannelId::parse("c1").unwrap(),
+                        author_id: "alice".into(),
+                        author_name: "Alice".into(),
+                        content: (*text).into(),
+                        timestamp: now - 100,
+                        is_system: false,
+                        reply_to: None,
+                        attachments: vec![],
+                    },
+                )
+                .unwrap();
+            }
+            let schedule = Schedule::build(
+                ws.clone(),
+                "hourly",
+                0,
+                0,
+                &[],
+                1,
+                "UTC",
+                None,
+                0,
+                true,
+                Some("c1"),
+                100_000,
+            )
+            .unwrap();
+            repo.create_schedule(&StoredSchedule {
+                id: "sch_run".into(),
+                schedule,
+                next_run: now + 3_600,
+                consecutive_failures: 0,
+            })
+            .unwrap();
+        }
+
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/schedules/sch_run/run")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["produced"], true);
+        assert_eq!(j["summary"]["channel_id"], "c1");
+        assert!(!j["summary"]["participants"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn trigger_unknown_schedule_is_404() {
+        let (state, token) = seeded_state();
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/schedules/ghost/run")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
