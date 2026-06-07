@@ -9,6 +9,7 @@ use host::llm::{GlobalRateLimiter, LlmClient, RateLimitConfig};
 use repository::SqliteRepository;
 use std::env;
 use std::sync::Arc;
+use tower_http::services::{ServeDir, ServeFile};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,7 +37,13 @@ async fn main() -> Result<()> {
     // Background scheduler: fire due schedules on an interval (SCH-005/006).
     spawn_scheduler(state.clone(), scheduler_secs);
 
-    let app = build_router(state);
+    // Serve the built dashboard SPA (WEB_DIR, default web/dist): hashed assets
+    // under /assets, and index.html (200) for any other non-API path so client
+    // routing / reloads work. API routes are matched before the fallback.
+    let web_dir = env::var("WEB_DIR").unwrap_or_else(|_| "web/dist".to_string());
+    let app = build_router(state)
+        .nest_service("/assets", ServeDir::new(format!("{web_dir}/assets")))
+        .fallback_service(ServeFile::new(format!("{web_dir}/index.html")));
 
     let listener = tokio::net::TcpListener::bind(&bind)
         .await

@@ -7,3 +7,7 @@
 
 # ruflo auto-generated CLAUDE.md backups (local tooling artifacts)
 CLAUDE.md.pre-ruflo*
+
+# Web dashboard (node)
+web/node_modules
+web/dist
