@@ -64,7 +64,17 @@ pub struct AppState {
     /// model, so platform-key spend is measurable for budgets (ADR-125 Phase 3).
     /// Zero for the demo model.
     pub price_micros_per_ktoken: i64,
+    /// The summarization context window (tokens) the backend can actually use.
+    /// Drives map-reduce chunking (ADR-095): transcripts past this are split,
+    /// summarized per chunk, then reduced. Defaults to a large window (hosted
+    /// models); set it low for a small-context local model so large chats are
+    /// covered in full instead of truncated.
+    pub context_tokens: i64,
 }
+
+/// Default summarization context window (tokens) — sized for hosted models;
+/// overridden by `LLM_CONTEXT_TOKENS` for a small-context local backend.
+const DEFAULT_CONTEXT_TOKENS: i64 = 200_000;
 
 /// Default product base domain when unconfigured.
 const DEFAULT_BASE_DOMAIN: &str = "summarybot.app";
@@ -99,6 +109,7 @@ impl AppState {
             model: Arc::from("demo"),
             config_key: None,
             price_micros_per_ktoken: 0,
+            context_tokens: DEFAULT_CONTEXT_TOKENS,
         }
     }
 
@@ -127,6 +138,15 @@ impl AppState {
         self
     }
 
+    /// Set the summarization context window (tokens) used for map-reduce
+    /// chunking (ADR-095). Ignored when not positive.
+    pub fn with_context_tokens(mut self, context_tokens: i64) -> Self {
+        if context_tokens > 0 {
+            self.context_tokens = context_tokens;
+        }
+        self
+    }
+
     /// The master key, if configured.
     pub(crate) fn master_key(&self) -> Option<&[u8; 32]> {
         self.config_key.as_deref()
@@ -147,7 +167,7 @@ impl AppState {
                 input_micros_per_ktoken: self.price_micros_per_ktoken,
                 output_micros_per_ktoken: self.price_micros_per_ktoken,
             },
-            context_tokens: 200_000,
+            context_tokens: self.context_tokens,
         }])
     }
 

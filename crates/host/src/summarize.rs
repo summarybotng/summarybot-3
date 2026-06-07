@@ -16,14 +16,22 @@
 use crate::llm::{LlmClient, LlmProvider, LlmRequest, RequestPriority, ResilientLlm};
 use domain::summarize::{
     allocate, finalize, ActionItem, CostGuard, ExtractedSummary, FinishReason, ModelLadder,
-    NextModel, QualityError, RawCitation, RawExtraction, SpendDecision, SummaryLength,
+    NextModel, QualityError, RawCitation, RawExtraction, ResolvedCitation, SpendDecision,
+    SummaryLength,
 };
-use domain::{FailureClass, Job, JobId, JobType, MessageId, NormalizedMessage, WorkspaceId};
+use domain::{
+    ChannelId, FailureClass, Job, JobId, JobType, MessageId, NormalizedMessage, Platform,
+    WorkspaceId,
+};
 use repository::JobRepository;
 use serde::Deserialize;
 
 /// Tokens reserved for the instruction/system prompt when allocating.
 const PROMPT_OVERHEAD_TOKENS: i64 = 512;
+
+/// Cap on citations carried from the map step into a reduced summary, so a very
+/// large history doesn't produce an unwieldy citation list.
+const MAX_CARRIED_CITATIONS: usize = 50;
 
 /// What a summary request asks for.
 pub struct SummarizeRequest<'a> {
@@ -113,20 +121,139 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
 
     /// Run the pipeline. `now` is unused by the pure path but kept for parity
     /// with job-driven callers.
+    ///
+    /// If the whole transcript fits the start model's context it's a single
+    /// pass. Otherwise it's **map-reduce** (ADR-095): split the messages into
+    /// window-sized chunks, summarize each into a citation-grounded partial
+    /// (map), then summarize the partials into one final summary (reduce,
+    /// recursively if the partials themselves overflow a window). The map step's
+    /// citations — grounded to real messages — are carried into the final
+    /// summary, since the reduce step only sees synthetic partials.
     pub fn summarize(&self, req: &SummarizeRequest) -> Result<SummaryOutcome, SummarizeError> {
         let substantial: Vec<&NormalizedMessage> =
             req.messages.iter().filter(|m| m.is_substantial()).collect();
         if substantial.is_empty() {
             return Err(SummarizeError::NoSubstantialMessages);
         }
-        let message_ids: Vec<MessageId> = substantial.iter().map(|m| m.id.clone()).collect();
-        let prompt = assemble_prompt(&substantial);
-        let input_tokens = estimate_tokens(&prompt);
-        let desired_output = output_budget(req.length);
 
         let mut guard = CostGuard::new(req.cap_micros);
-        let mut current = self.ladder.start_index(req.length);
         let mut degraded = false;
+
+        // Plan chunking against the *start* model's window (the ladder may still
+        // escalate within a window; this only decides map-reduce vs single pass).
+        let start = self.ladder.start_index(req.length);
+        let context_tokens = self
+            .ladder
+            .get(start)
+            .expect("start index in range")
+            .context_tokens;
+        let desired_output = output_budget(req.length);
+        let total_tokens = estimate_tokens(&assemble_prompt(&substantial));
+        let plan = allocate(
+            total_tokens,
+            context_tokens,
+            desired_output,
+            PROMPT_OVERHEAD_TOKENS,
+        );
+
+        if plan.chunks <= 1 {
+            return self.summarize_window(
+                req,
+                &substantial,
+                req.length,
+                desired_output,
+                &mut guard,
+                &mut degraded,
+            );
+        }
+
+        // Map: a brief partial per contiguous chunk; carry forward real
+        // citations. A single chunk that fails the model (an empty/flaky reply,
+        // a transient LLM error) shouldn't sink the whole history — skip it and
+        // flag the result degraded. A hard cost-cap, though, aborts: the budget
+        // is exhausted and later chunks can't fare better.
+        let mut partials = Vec::new();
+        let mut carried: Vec<ResolvedCitation> = Vec::new();
+        let mut last_err = None;
+        for (lo, hi) in chunk_ranges(&substantial, plan.input_tokens_per_chunk) {
+            match self.summarize_window(
+                req,
+                &substantial[lo..hi],
+                SummaryLength::Brief,
+                plan.output_tokens_per_chunk,
+                &mut guard,
+                &mut degraded,
+            ) {
+                Ok(part) => {
+                    carried.extend(part.summary.citations.iter().cloned());
+                    partials.push(part.summary);
+                }
+                Err(SummarizeError::CostCapTooLow) => return Err(SummarizeError::CostCapTooLow),
+                Err(e) => {
+                    degraded = true;
+                    last_err = Some(e);
+                }
+            }
+        }
+        // Every chunk failed — surface the reason rather than an empty summary.
+        let Some(first) = partials.first().cloned() else {
+            return Err(last_err.unwrap_or(SummarizeError::Quality(QualityError::Empty)));
+        };
+
+        let model_name = || self.ladder.get(0).expect("ladder non-empty").name.clone();
+        // A single surviving partial needs no reduce pass — it *is* the summary.
+        let mut outcome = if partials.len() == 1 {
+            SummaryOutcome {
+                summary: first,
+                model: model_name(),
+                cost_micros: guard.spent_micros(),
+                degraded,
+            }
+        } else {
+            match self.reduce(req, partials, context_tokens, &mut guard, &mut degraded) {
+                Ok(o) => o,
+                Err(SummarizeError::CostCapTooLow) => return Err(SummarizeError::CostCapTooLow),
+                // A failed reduce shouldn't waste the map work — fall back to the
+                // first partial (a partial-but-real summary), flagged degraded.
+                Err(_) => {
+                    degraded = true;
+                    SummaryOutcome {
+                        summary: first,
+                        model: model_name(),
+                        cost_micros: guard.spent_micros(),
+                        degraded,
+                    }
+                }
+            }
+        };
+        // Graft the map-step citations (the reduce step's own citation indices
+        // point at synthetic partials, so they're discarded).
+        outcome.summary.citations = dedup_citations(carried);
+        outcome.degraded = degraded;
+        Ok(outcome)
+    }
+
+    /// Summarize one window of messages with the model ladder + cost guard:
+    /// escalate on a recoverable quality problem, downgrade (flagged `degraded`)
+    /// when the cap can't afford the current model. `length` picks the ladder
+    /// start; `desired_output` is the output-token budget (smaller for map
+    /// partials). The cost guard and `degraded` flag are threaded so a
+    /// map-reduce run accounts for spend across all of its calls.
+    #[allow(clippy::too_many_arguments)]
+    fn summarize_window(
+        &self,
+        req: &SummarizeRequest,
+        messages: &[&NormalizedMessage],
+        length: SummaryLength,
+        desired_output: i64,
+        guard: &mut CostGuard,
+        degraded: &mut bool,
+    ) -> Result<SummaryOutcome, SummarizeError> {
+        let message_ids: Vec<MessageId> = messages.iter().map(|m| m.id.clone()).collect();
+        let prompt = assemble_prompt(messages);
+        let input_tokens = estimate_tokens(&prompt);
+
+        let mut current = self.ladder.start_index(length);
         // Bound the loop: at most one visit per ladder rung in each direction.
         let mut budget = self.ladder.len() * 2 + 1;
 
@@ -151,7 +278,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
             if guard.check(est) == SpendDecision::CapReached {
                 if current > 0 {
                     current -= 1;
-                    degraded = true;
+                    *degraded = true;
                     continue;
                 }
                 return Err(SummarizeError::CostCapTooLow);
@@ -177,7 +304,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                                 summary,
                                 model: response.model,
                                 cost_micros: guard.spent_micros(),
-                                degraded,
+                                degraded: *degraded,
                             })
                         }
                         // Recoverable quality problem: try a stronger model.
@@ -197,6 +324,61 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                     }
                 },
             }
+        }
+    }
+
+    /// Reduce map-step partials into a single summary. If the partials all fit
+    /// one window, that's one final pass; otherwise they're reduced in groups to
+    /// fewer partials and the process repeats — a multi-level reduce that needs
+    /// no arbitrary cap on history size. Converges because each level produces
+    /// strictly fewer partials.
+    fn reduce(
+        &self,
+        req: &SummarizeRequest,
+        mut partials: Vec<ExtractedSummary>,
+        context_tokens: i64,
+        guard: &mut CostGuard,
+        degraded: &mut bool,
+    ) -> Result<SummaryOutcome, SummarizeError> {
+        let desired_output = output_budget(req.length);
+        loop {
+            let synthetic: Vec<NormalizedMessage> = partials
+                .iter()
+                .enumerate()
+                .map(|(i, s)| synthetic_message(i, s))
+                .collect();
+            let refs: Vec<&NormalizedMessage> = synthetic.iter().collect();
+            let tokens = estimate_tokens(&assemble_prompt(&refs));
+            let plan = allocate(
+                tokens,
+                context_tokens,
+                desired_output,
+                PROMPT_OVERHEAD_TOKENS,
+            );
+            if plan.chunks <= 1 {
+                return self.summarize_window(
+                    req,
+                    &refs,
+                    req.length,
+                    desired_output,
+                    guard,
+                    degraded,
+                );
+            }
+            // Still too large: collapse to fewer partials, then loop.
+            let mut next = Vec::with_capacity(plan.chunks as usize);
+            for (lo, hi) in chunk_ranges(&refs, plan.input_tokens_per_chunk) {
+                let out = self.summarize_window(
+                    req,
+                    &refs[lo..hi],
+                    SummaryLength::Brief,
+                    plan.output_tokens_per_chunk,
+                    guard,
+                    degraded,
+                )?;
+                next.push(out.summary);
+            }
+            partials = next;
         }
     }
 
@@ -288,6 +470,80 @@ fn extract_json(body: &str) -> &str {
 /// Rough token estimate: ~4 chars/token. The host swaps in a real tokenizer.
 fn estimate_tokens(text: &str) -> i64 {
     (text.len() as i64).div_euclid(4).max(1)
+}
+
+/// Split messages into contiguous groups whose formatted input is each ≈
+/// `budget_tokens`, preserving chronological order (the map step of map-reduce).
+/// A single message larger than the budget forms its own group — a message can't
+/// be split — so every group has at least one message.
+fn chunk_ranges(messages: &[&NormalizedMessage], budget_tokens: i64) -> Vec<(usize, usize)> {
+    let budget = budget_tokens.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0usize;
+    let mut acc = 0i64;
+    for (i, m) in messages.iter().enumerate() {
+        let cost = estimate_tokens(&format!("[{i}] {}: {}\n", m.author_name, m.content));
+        // Close the current group before this message would overflow it, but
+        // never emit an empty group.
+        if i > start && acc + cost > budget {
+            ranges.push((start, i));
+            start = i;
+            acc = 0;
+        }
+        acc += cost;
+    }
+    ranges.push((start, messages.len()));
+    ranges
+}
+
+/// Turn a map-step partial into a pseudo-message for the reduce step. The id is
+/// synthetic (reduce citations are discarded in favor of the carried real ones),
+/// and the content folds the partial's text + key points + action items so the
+/// reducer sees the salient signal.
+fn synthetic_message(index: usize, partial: &ExtractedSummary) -> NormalizedMessage {
+    let mut content = partial.text.clone();
+    if !partial.key_points.is_empty() {
+        content.push_str("\nKey points: ");
+        content.push_str(&partial.key_points.join("; "));
+    }
+    if !partial.action_items.is_empty() {
+        let items: Vec<&str> = partial
+            .action_items
+            .iter()
+            .map(|a| a.text.as_str())
+            .collect();
+        content.push_str("\nAction items: ");
+        content.push_str(&items.join("; "));
+    }
+    NormalizedMessage {
+        id: MessageId::parse(format!("partial-{index}")).expect("synthetic id is well-formed"),
+        platform: Platform::Discord,
+        channel_id: ChannelId::parse("reduce").expect("synthetic channel id is well-formed"),
+        author_id: "summary".into(),
+        author_name: format!("part {}", index + 1),
+        content,
+        timestamp: 0,
+        is_system: false,
+        reply_to: None,
+        attachments: vec![],
+    }
+}
+
+/// Dedup carried citations by (message id, quote), preserving first-seen order,
+/// and cap the list so a very large history stays manageable.
+fn dedup_citations(citations: Vec<ResolvedCitation>) -> Vec<ResolvedCitation> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for c in citations {
+        let key = (c.message_id.as_str().to_string(), c.quote.clone());
+        if seen.insert(key) {
+            out.push(c);
+            if out.len() >= MAX_CARRIED_CITATIONS {
+                break;
+            }
+        }
+    }
+    out
 }
 
 fn output_budget(length: SummaryLength) -> i64 {
@@ -557,5 +813,122 @@ mod tests {
         );
         // Fenced without a tag.
         assert_eq!(extract_json("```\n{\"text\":\"hi\"}\n```"), obj);
+    }
+
+    /// A single-model ladder with a constrained context window — forces
+    /// map-reduce for transcripts larger than the window.
+    fn small_ctx_ladder(context_tokens: i64) -> ModelLadder {
+        ModelLadder::new(vec![Model {
+            name: "local".into(),
+            price: price(0, 0),
+            context_tokens,
+        }])
+    }
+
+    fn many_oks(n: usize) -> Vec<Result<LlmResponse, LlmError>> {
+        (0..n)
+            .map(|_| resp(GOOD_JSON, FinishReason::Stop))
+            .collect()
+    }
+
+    fn long_messages(count: usize) -> Vec<NormalizedMessage> {
+        (0..count)
+            .map(|i| {
+                msg(
+                    &format!("m{i}"),
+                    &"we debated the plan and agreed on the concrete next steps to take ".repeat(6),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn long_transcript_is_map_reduced_and_carries_real_citations() {
+        // A tiny window forces several map chunks plus a reduce pass; plenty of
+        // scripted OKs cover every map + reduce call.
+        let l = small_ctx_ladder(2_000);
+        let e = engine(many_oks(40));
+        let svc = SummarizationService::new(&e, &l);
+        let msgs = long_messages(12);
+        let out = svc.summarize(&req(&msgs, i64::MAX)).unwrap();
+
+        assert!(!out.summary.text.is_empty());
+        // The reduce step only sees synthetic partials, so its own citation
+        // indices are discarded — the surfaced citations are the map step's,
+        // grounded to the original `m*` message ids (never `partial-*`).
+        assert!(!out.summary.citations.is_empty());
+        assert!(out
+            .summary
+            .citations
+            .iter()
+            .all(|c| c.message_id.as_str().starts_with('m')));
+    }
+
+    #[test]
+    fn map_reduce_tolerates_a_failed_chunk_and_flags_degraded() {
+        // First map chunk returns an empty extraction (a flaky reply); the rest
+        // succeed. The history still summarizes, flagged degraded.
+        let l = small_ctx_ladder(2_000);
+        let empty = r#"{"text":"","key_points":[]}"#;
+        let script = std::iter::once(resp(empty, FinishReason::Stop))
+            .chain(many_oks(40))
+            .collect();
+        let e = engine(script);
+        let svc = SummarizationService::new(&e, &l);
+        let msgs = long_messages(12);
+        let out = svc.summarize(&req(&msgs, i64::MAX)).unwrap();
+        assert!(out.degraded, "a dropped chunk must degrade the result");
+        assert!(!out.summary.text.is_empty());
+    }
+
+    #[test]
+    fn single_pass_when_transcript_fits_the_window() {
+        // A roomy window summarizes in one call (chunks == 1): exactly one OK.
+        let l = small_ctx_ladder(200_000);
+        let e = engine(many_oks(1));
+        let svc = SummarizationService::new(&e, &l);
+        let msgs = messages();
+        let out = svc.summarize(&req(&msgs, i64::MAX)).unwrap();
+        assert_eq!(out.summary.citations[0].message_id.as_str(), "m0");
+    }
+
+    #[test]
+    fn chunk_ranges_are_contiguous_nonempty_and_cover_everything() {
+        let msgs = long_messages(7);
+        let refs: Vec<&NormalizedMessage> = msgs.iter().collect();
+        let ranges = chunk_ranges(&refs, 30); // tiny budget → many small groups
+        assert!(ranges.len() > 1);
+        assert_eq!(ranges.first().unwrap().0, 0);
+        assert_eq!(ranges.last().unwrap().1, refs.len());
+        for (a, b) in &ranges {
+            assert!(b > a, "no group may be empty");
+        }
+        for w in ranges.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "groups must be contiguous");
+        }
+    }
+
+    #[test]
+    fn oversized_single_message_forms_its_own_chunk() {
+        let msgs = long_messages(1);
+        let refs: Vec<&NormalizedMessage> = msgs.iter().collect();
+        // Budget far smaller than the one message — it can't be split.
+        let ranges = chunk_ranges(&refs, 1);
+        assert_eq!(ranges, vec![(0, 1)]);
+    }
+
+    #[test]
+    fn dedup_citations_drops_duplicates_and_caps_length() {
+        let cite = |id: &str, q: &str| ResolvedCitation {
+            message_id: MessageId::parse(id).unwrap(),
+            quote: Some(q.to_string()),
+        };
+        let out = dedup_citations(vec![cite("m0", "a"), cite("m0", "a"), cite("m1", "b")]);
+        assert_eq!(out.len(), 2);
+
+        let many: Vec<ResolvedCitation> = (0..MAX_CARRIED_CITATIONS + 10)
+            .map(|i| cite(&format!("m{i}"), "q"))
+            .collect();
+        assert_eq!(dedup_citations(many).len(), MAX_CARRIED_CITATIONS);
     }
 }

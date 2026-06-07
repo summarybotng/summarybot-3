@@ -47,6 +47,17 @@ async fn main() -> Result<()> {
     {
         state = state.with_price(price);
     }
+    // Usable summarization context window (tokens). Drives map-reduce chunking
+    // (ADR-095): set this to what the backend actually honors — small for a
+    // local model (e.g. 24000) so long chats are summarized in full rather than
+    // truncated; left large for hosted models. Defaults to a large window.
+    if let Some(ctx) = env::var("LLM_CONTEXT_TOKENS")
+        .ok()
+        .and_then(|c| c.trim().parse::<i64>().ok())
+    {
+        state = state.with_context_tokens(ctx);
+        eprintln!("summarization context window: {ctx} tokens (map-reduce chunking)");
+    }
     // Master key for encrypting stored tenant API keys (ADR-125 Phase 2b). When
     // unset, tenants can configure a keyless endpoint but not store a BYO key.
     if let Some(raw) = env::var("LLM_CONFIG_KEY")
