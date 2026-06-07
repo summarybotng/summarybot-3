@@ -133,6 +133,10 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/schedules/:id/run",
             post(schedules::trigger_schedule),
         )
+        .route(
+            "/workspaces/:ws/schedules/:id/runs",
+            get(schedules::list_runs),
+        )
         // Tenancy: provisioning (TEN-001), host→tenant resolution (TEN-006),
         // members + invites.
         .route("/tenants", post(tenancy::provision_tenant))
@@ -202,6 +206,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
             "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
             "/workspaces/{ws}/schedules/{id}/run": { "post": { "summary": "Trigger immediately (SCM-007)" } },
+            "/workspaces/{ws}/schedules/{id}/runs": { "get": { "summary": "Execution history (SCM-005)" } },
             "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" } },
             "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
             "/tenants/{tenant}/workspaces": {
@@ -690,7 +695,9 @@ mod tests {
             .unwrap();
         }
 
-        let resp = build_router(state)
+        let app = build_router(state);
+        let resp = app
+            .clone()
             .oneshot(
                 Request::post("/workspaces/ws-1/schedules/sch_run/run")
                     .header("authorization", format!("Bearer {token}"))
@@ -704,6 +711,23 @@ mod tests {
         assert_eq!(j["produced"], true);
         assert_eq!(j["summary"]["channel_id"], "c1");
         assert!(!j["summary"]["participants"].as_array().unwrap().is_empty());
+
+        // The manual run is recorded in the execution history (SCM-005).
+        let runs = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/schedules/sch_run/runs")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(runs.status(), StatusCode::OK);
+        let rj = body_json(runs).await;
+        assert_eq!(rj.as_array().unwrap().len(), 1);
+        assert_eq!(rj[0]["status"], "fired");
+        assert_eq!(rj[0]["manual"], true);
+        assert_eq!(rj[0]["detail"], j["summary"]["id"]); // detail = produced summary id
     }
 
     #[tokio::test]

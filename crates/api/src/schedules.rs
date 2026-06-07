@@ -5,12 +5,15 @@
 use crate::auth::{now_secs, AuthUser};
 use crate::summaries::{demo_ladder, SummaryDto};
 use crate::{ApiError, AppState};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use host::llm::ResilientLlm;
 use host::{ScheduleRunner, SummarizingScheduleRunner};
-use repository::{ScheduleRepository, StoredSchedule, StructuredSummaryRepository};
+use repository::{
+    RunStatus, ScheduleRepository, ScheduleRun, ScheduleRunRepository, StoredSchedule,
+    StructuredSummaryRepository,
+};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -274,15 +277,81 @@ pub async fn trigger_schedule(
         .get_schedule(&workspace, &id)?
         .ok_or(ApiError::NotFound)?;
     let runner = SummarizingScheduleRunner::new(&*repo, &engine, &ladder);
-    runner.run(&stored, now).map_err(ApiError::Internal)?;
-    // The runner stores under this deterministic id when it produces a summary.
-    let produced = repo
-        .get_record(&workspace, &format!("sum_{id}_{now}"))?
-        .map(SummaryDto::from);
-    Ok(Json(TriggerResponse {
-        produced: produced.is_some(),
-        summary: produced,
-    }))
+    match runner.run(&stored, now) {
+        Ok(()) => {
+            // The runner stores under this deterministic id when it produces one.
+            let produced = repo
+                .get_record(&workspace, &format!("sum_{id}_{now}"))?
+                .map(SummaryDto::from);
+            let detail = produced.as_ref().map(|s| s.id.clone());
+            repo.record_run(
+                &workspace,
+                &id,
+                now,
+                RunStatus::Fired,
+                detail.as_deref(),
+                true,
+            )?;
+            Ok(Json(TriggerResponse {
+                produced: produced.is_some(),
+                summary: produced,
+            }))
+        }
+        Err(reason) => {
+            repo.record_run(&workspace, &id, now, RunStatus::Failed, Some(&reason), true)?;
+            Err(ApiError::Internal(reason))
+        }
+    }
+}
+
+/// JSON shape of a recorded run (SCM-005).
+#[derive(Serialize)]
+pub struct RunDto {
+    pub id: i64,
+    pub schedule_id: String,
+    pub ran_at: i64,
+    pub status: String,
+    pub detail: Option<String>,
+    pub manual: bool,
+}
+
+impl From<ScheduleRun> for RunDto {
+    fn from(r: ScheduleRun) -> Self {
+        RunDto {
+            id: r.id,
+            schedule_id: r.schedule_id,
+            ran_at: r.ran_at,
+            status: r.status.as_str().to_string(),
+            detail: r.detail,
+            manual: r.manual,
+        }
+    }
+}
+
+/// `?limit=50`
+#[derive(Deserialize)]
+pub struct RunsQuery {
+    #[serde(default = "default_runs_limit")]
+    pub limit: u32,
+}
+
+fn default_runs_limit() -> u32 {
+    50
+}
+
+/// `GET /workspaces/:ws/schedules/:id/runs` — execution history, newest first
+/// (SCM-005).
+pub async fn list_runs(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+    Query(q): Query<RunsQuery>,
+) -> Result<Json<Vec<RunDto>>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = workspace(ws)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    let runs = repo.list_runs(&workspace, &id, q.limit.min(500))?;
+    Ok(Json(runs.into_iter().map(RunDto::from).collect()))
 }
 
 /// `DELETE /workspaces/:ws/schedules/:id`

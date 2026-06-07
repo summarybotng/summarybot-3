@@ -11,6 +11,7 @@ mod identity;
 mod job;
 mod membership;
 mod schedule;
+mod schedule_run;
 mod session;
 mod summary_store;
 mod whatsapp;
@@ -19,6 +20,7 @@ pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
 pub use membership::MembershipRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
+pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use session::SessionRepository;
 pub use summary_store::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
@@ -243,6 +245,20 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_schedules_enabled
                 ON schedules(enabled, next_run);
+            -- Schedule execution history (SCM-005): one row per fire/fail/skip,
+            -- whether by the scheduler or a manual trigger. `detail` carries the
+            -- produced summary id (success) or the failure reason.
+            CREATE TABLE IF NOT EXISTS schedule_runs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_id  TEXT    NOT NULL,
+                workspace_id TEXT    NOT NULL,
+                ran_at       INTEGER NOT NULL,
+                status       TEXT    NOT NULL,
+                detail       TEXT,
+                manual       INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_schedule_runs_lookup
+                ON schedule_runs(workspace_id, schedule_id, ran_at);
             CREATE TABLE IF NOT EXISTS summaries (
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 workspace_id  TEXT    NOT NULL,

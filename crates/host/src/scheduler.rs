@@ -10,7 +10,7 @@
 //! auto-disabled.
 
 use domain::{evaluate_tick, TickAction};
-use repository::{ScheduleRepository, StoredSchedule};
+use repository::{RunStatus, ScheduleRepository, ScheduleRunRepository, StoredSchedule};
 
 /// Runs the actual summary for a due schedule (resolve scope → summarize →
 /// deliver). Abstracted so the scheduler is testable without an LLM/network; the
@@ -37,7 +37,7 @@ pub struct SchedulerService<'a, R> {
     max_failures: u32,
 }
 
-impl<'a, R: ScheduleRepository> SchedulerService<'a, R> {
+impl<'a, R: ScheduleRepository + ScheduleRunRepository> SchedulerService<'a, R> {
     /// Defaults: 5-minute grace, auto-disable after 5 consecutive failures.
     pub fn new(repo: &'a R) -> Self {
         Self {
@@ -77,16 +77,19 @@ impl<'a, R: ScheduleRepository> SchedulerService<'a, R> {
                 TickAction::Skip => {
                     // Missed run beyond grace: advance without firing (catch-up).
                     self.reschedule(&stored, now, stored.consecutive_failures)?;
+                    self.record(&stored, now, RunStatus::Skipped, None)?;
                     report.skipped += 1;
                 }
                 TickAction::Fire => {
                     let failures = match runner.run(&stored, now) {
                         Ok(()) => {
                             report.fired += 1;
+                            self.record(&stored, now, RunStatus::Fired, None)?;
                             0
                         }
-                        Err(_) => {
+                        Err(reason) => {
                             report.failed += 1;
+                            self.record(&stored, now, RunStatus::Failed, Some(&reason))?;
                             stored.consecutive_failures + 1
                         }
                     };
@@ -95,6 +98,24 @@ impl<'a, R: ScheduleRepository> SchedulerService<'a, R> {
             }
         }
         Ok(report)
+    }
+
+    /// Append a run-history row (SCM-005) for a scheduler-driven run.
+    fn record(
+        &self,
+        stored: &StoredSchedule,
+        now: i64,
+        status: RunStatus,
+        detail: Option<&str>,
+    ) -> anyhow::Result<()> {
+        self.repo.record_run(
+            &stored.schedule.workspace_id,
+            &stored.id,
+            now,
+            status,
+            detail,
+            false,
+        )
     }
 
     /// Advance to the next run after `now`; a schedule with no future run (a
