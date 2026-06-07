@@ -141,6 +141,10 @@ pub fn build_router(state: AppState) -> Router {
             "/tenants/:tenant/workspaces/:ws",
             get(workspaces::get_workspace),
         )
+        .route(
+            "/tenants/:tenant/workspaces/:ws/connections",
+            get(workspaces::list_connections).post(workspaces::attach_connection),
+        )
         .route("/tenants/:tenant/members", get(tenancy::list_members))
         .route(
             "/tenants/:tenant/members/:user",
@@ -197,6 +201,10 @@ async fn openapi() -> Json<serde_json::Value> {
                 "post": { "summary": "Create a workspace (WSP-009)" }
             },
             "/tenants/{tenant}/workspaces/{ws}": { "get": { "summary": "Workspace detail" } },
+            "/tenants/{tenant}/workspaces/{ws}/connections": {
+                "get": { "summary": "List attached platform sources" },
+                "post": { "summary": "Attach a platform source (WSP-008)" }
+            },
             "/tenant": { "get": { "summary": "Resolve the tenant for the request host (TEN-006)" } },
             "/tenants/{tenant}/members": { "get": { "summary": "List tenant members" } },
             "/tenants/{tenant}/members/{user}": {

@@ -2,8 +2,8 @@
 //! the [`WorkspaceRepository`].
 //!
 //! Workspaces are created **explicitly** (WSP-009): a tenant member with
-//! `ManageSettings` names a workspace; platform sources are attached separately
-//! (WSP-008, a later seam). Authorization is the caller's tenant membership
+//! `ManageSettings` names a workspace, then attaches platform sources to it
+//! (WSP-008). Authorization is the caller's tenant membership
 //! (reusing [`crate::tenancy::authorize`]), not the access token's workspace
 //! claim — that claim grants the *data-plane* routes (summaries/schedules) and
 //! is minted at login, so a freshly-created workspace needs a new token before
@@ -14,8 +14,8 @@ use crate::tenancy::{authorize, parse_tenant};
 use crate::{ApiError, AppState};
 use axum::extract::{Path, State};
 use axum::Json;
-use domain::{Permission, Workspace, WorkspaceId};
-use repository::WorkspaceRepository;
+use domain::{Permission, Platform, PlatformId, Workspace, WorkspaceConnection, WorkspaceId};
+use repository::{AttachError, WorkspaceRepository};
 use serde::{Deserialize, Serialize};
 
 /// JSON shape of a workspace.
@@ -108,6 +108,92 @@ pub async fn get_workspace(
         .get_workspace(&tenant, &ws)?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(WorkspaceDto::from(workspace)))
+}
+
+/// JSON shape of a platform connection.
+#[derive(Serialize)]
+pub struct ConnectionDto {
+    pub workspace_id: String,
+    pub platform: String,
+    pub platform_id: String,
+}
+
+impl From<WorkspaceConnection> for ConnectionDto {
+    fn from(c: WorkspaceConnection) -> Self {
+        ConnectionDto {
+            workspace_id: c.workspace_id.as_str().to_string(),
+            platform: c.platform.as_str().to_string(),
+            platform_id: c.platform_id.as_str().to_string(),
+        }
+    }
+}
+
+/// Body for attaching a platform source to a workspace.
+#[derive(Deserialize)]
+pub struct AttachConnectionRequest {
+    pub platform: String,
+    pub platform_id: String,
+}
+
+/// Confirm the workspace exists *and* belongs to `tenant` (TEN-007), under an
+/// already-held repo guard. 404 if missing or owned by another tenant.
+fn workspace_in_tenant(
+    repo: &repository::SqliteRepository,
+    tenant: &domain::TenantId,
+    ws: &WorkspaceId,
+) -> Result<(), ApiError> {
+    repo.get_workspace(tenant, ws)?.ok_or(ApiError::NotFound)?;
+    Ok(())
+}
+
+/// `POST /tenants/:tenant/workspaces/:ws/connections` — attach a platform source
+/// (WSP-008). Requires `ManageSettings`. A source may feed many workspaces
+/// (ADR-120); only a duplicate within *this* workspace is rejected (409).
+pub async fn attach_connection(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((tenant, ws)): Path<(String, String)>,
+    Json(body): Json<AttachConnectionRequest>,
+) -> Result<Json<ConnectionDto>, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let ws = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let platform =
+        Platform::parse(&body.platform).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let platform_id =
+        PlatformId::parse(body.platform_id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let conn = WorkspaceConnection::new(ws.clone(), platform, platform_id);
+
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
+    workspace_in_tenant(&repo, &tenant, &ws)?;
+    match repo.attach_connection(&conn) {
+        Ok(()) => Ok(Json(ConnectionDto::from(conn))),
+        Err(AttachError::AlreadyAttached {
+            platform,
+            platform_id,
+        }) => Err(ApiError::Conflict(format!(
+            "{platform} source {platform_id} is already attached to this workspace"
+        ))),
+        Err(AttachError::Db(e)) => Err(ApiError::from(e)),
+    }
+}
+
+/// `GET /tenants/:tenant/workspaces/:ws/connections` — list a workspace's
+/// attached sources (any member).
+pub async fn list_connections(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((tenant, ws)): Path<(String, String)>,
+) -> Result<Json<Vec<ConnectionDto>>, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let ws = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ViewSummaries)?;
+    workspace_in_tenant(&repo, &tenant, &ws)?;
+    let connections = repo.list_connections(&ws)?;
+    Ok(Json(
+        connections.into_iter().map(ConnectionDto::from).collect(),
+    ))
 }
 
 #[cfg(test)]
@@ -285,5 +371,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Owner creates a workspace, then attaches + lists a platform source.
+    #[tokio::test]
+    async fn attach_then_list_connection() {
+        let (state, token) = state_with_owner("t1", "owner");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        app.clone()
+            .oneshot(
+                Request::post("/tenants/t1/workspaces")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"ws-eng","name":"Engineering"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let attached = app
+            .clone()
+            .oneshot(
+                Request::post("/tenants/t1/workspaces/ws-eng/connections")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"platform":"slack","platform_id":"T-123"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(attached.status(), StatusCode::OK);
+        let aj = body_json(attached).await;
+        assert_eq!(aj["platform"], "slack");
+        assert_eq!(aj["platform_id"], "T-123");
+
+        // Listed.
+        let listed = app
+            .oneshot(
+                Request::get("/tenants/t1/workspaces/ws-eng/connections")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        assert_eq!(body_json(listed).await.as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn duplicate_attach_to_same_workspace_is_conflict() {
+        let (state, token) = state_with_owner("t1", "owner");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        app.clone()
+            .oneshot(
+                Request::post("/tenants/t1/workspaces")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"ws-eng","name":"Engineering"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mk = || {
+            Request::post("/tenants/t1/workspaces/ws-eng/connections")
+                .header("authorization", &auth)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"platform":"discord","platform_id":"G-1"}"#))
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(mk()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.oneshot(mk()).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_to_unknown_workspace_is_404() {
+        let (state, token) = state_with_owner("t1", "owner");
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/tenants/t1/workspaces/ghost/connections")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"platform":"slack","platform_id":"T-9"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attach_rejects_unknown_platform() {
+        let (state, token) = state_with_owner("t1", "owner");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        app.clone()
+            .oneshot(
+                Request::post("/tenants/t1/workspaces")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"ws-eng","name":"Engineering"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let resp = app
+            .oneshot(
+                Request::post("/tenants/t1/workspaces/ws-eng/connections")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"platform":"telegram","platform_id":"X"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
