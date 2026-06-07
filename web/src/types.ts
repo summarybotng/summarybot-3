@@ -94,3 +94,14 @@ export interface Budget {
   remaining_micros: number
   period_start: number
 }
+
+export interface WhatsappImport {
+  chat_id: string
+  format: string
+  messages: number
+  stored: number
+  duplicates: number
+  new_participants: number
+  date_start: number | null
+  date_end: number | null
+}

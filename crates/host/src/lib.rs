@@ -30,7 +30,9 @@ pub use tenant_routing::resolve_tenant_by_host;
 use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
-pub use whatsapp::{IngestContext, IngestSummary, WhatsAppIngestor};
+pub use whatsapp::{
+    extract_whatsapp_text, ingest_whatsapp_zip, IngestContext, IngestSummary, WhatsAppIngestor,
+};
 
 // Host-side bindings generated from the same WIT contract the guest exports.
 mod bindings {

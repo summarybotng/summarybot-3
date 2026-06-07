@@ -7,6 +7,7 @@ import type {
   Summary,
   Tenant,
   TokenResponse,
+  WhatsappImport,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -208,6 +209,21 @@ export class Client {
 
   listRuns(id: string): Promise<ScheduleRun[]> {
     return this.json<ScheduleRun[]>(`/workspaces/${this.ws()}/schedules/${id}/runs`)
+  }
+
+  /** Upload a WhatsApp export (.zip or _chat.txt) as the raw request body. */
+  importWhatsapp(
+    chat: string,
+    tz: string,
+    dateOrder: string,
+    file: File,
+  ): Promise<WhatsappImport> {
+    const p = new URLSearchParams({ chat, tz })
+    if (dateOrder) p.set('date_order', dateOrder)
+    return this.json<WhatsappImport>(`/workspaces/${this.ws()}/whatsapp/imports?${p}`, {
+      method: 'POST',
+      body: file,
+    })
   }
 
   // --- tenancy (control plane) ---

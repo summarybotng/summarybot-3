@@ -15,16 +15,67 @@
 //! exact-match + create, which is correct if conservative (it may create two
 //! participants for "Rob"/"Robert" until a later merge pass links them).
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use domain::{
-    ChannelId, MessageId, NormalizedMessage, Platform, RawWhatsAppMessage, Secret, UserId,
-    WorkspaceId,
+    parse_export, ChannelId, DateOrder, MessageId, NormalizedMessage, ParsedExport, Platform,
+    RawWhatsAppMessage, Secret, UserId, WorkspaceId,
 };
 use hmac::{Hmac, Mac};
 use repository::{Participant, WhatsAppRepository};
 use sha2::{Digest, Sha256};
+use std::io::Read;
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Extract the chat transcript from a WhatsApp export upload (WHA-001): a `.zip`
+/// (the `_chat.txt`, else the largest `.txt`), or — as a fallback — raw text
+/// when the bytes aren't a zip (a directly-uploaded `_chat.txt`).
+pub fn extract_whatsapp_text(bytes: &[u8]) -> Result<String> {
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+        // Not a zip → assume a raw text transcript.
+        return Ok(String::from_utf8_lossy(bytes).into_owned());
+    };
+    // Collect .txt entries, then prefer `_chat.txt`, else the largest.
+    let mut txts: Vec<(usize, u64, bool)> = Vec::new();
+    for i in 0..archive.len() {
+        let f = archive.by_index(i)?;
+        let name = f.name().to_ascii_lowercase();
+        if name.ends_with(".txt") {
+            txts.push((i, f.size(), name.ends_with("_chat.txt")));
+        }
+    }
+    txts.sort_by_key(|(_, size, is_chat)| (std::cmp::Reverse(*is_chat), std::cmp::Reverse(*size)));
+    let idx = txts
+        .first()
+        .map(|(i, _, _)| *i)
+        .ok_or_else(|| anyhow!("no .txt transcript found in the WhatsApp export zip"))?;
+    let mut file = archive.by_index(idx)?;
+    let mut buf = Vec::with_capacity(file.size() as usize);
+    file.read_to_end(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Ingest a WhatsApp export upload end-to-end (WHA-001): extract the transcript
+/// from `bytes` (zip or raw text), parse it under the declared `timezone`
+/// (WHA-020) + `order`, then anonymize/dedup/persist. Returns the ingest summary
+/// and the parsed export (for format/date-range reporting). An unknown timezone
+/// is an error.
+pub fn ingest_whatsapp_zip<R: WhatsAppRepository>(
+    repo: &R,
+    anon_key: &Secret<Vec<u8>>,
+    ctx: &IngestContext,
+    bytes: &[u8],
+    timezone: &str,
+    order: DateOrder,
+) -> Result<(IngestSummary, ParsedExport)> {
+    let zone: chrono_tz::Tz = timezone
+        .parse()
+        .map_err(|_| anyhow!("unknown timezone: {timezone}"))?;
+    let text = extract_whatsapp_text(bytes)?;
+    let parsed = parse_export(&text, zone, order);
+    let summary = WhatsAppIngestor::new(repo, anon_key).ingest(ctx, &parsed.messages)?;
+    Ok((summary, parsed))
+}
 
 /// Context for one import: where it lands and who uploaded it.
 pub struct IngestContext<'a> {
@@ -322,5 +373,77 @@ mod tests {
         let b = ingest_text(&repo, &key, "[01/01/2026, 09:00:00] Alice: shared message");
         assert_eq!(b.stored, 0);
         assert_eq!(b.duplicates, 1);
+    }
+
+    /// Build an in-memory zip from (name, content) entries.
+    fn make_zip(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            for (name, content) in entries {
+                w.start_file(*name, SimpleFileOptions::default()).unwrap();
+                w.write_all(content.as_bytes()).unwrap();
+            }
+            w.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn extract_prefers_chat_txt_then_largest() {
+        let zip = make_zip(&[
+            ("media/note.txt", "irrelevant"),
+            ("WhatsApp Chat/_chat.txt", "the real transcript"),
+        ]);
+        assert_eq!(extract_whatsapp_text(&zip).unwrap(), "the real transcript");
+        // No zip → treated as raw text.
+        assert_eq!(
+            extract_whatsapp_text(b"raw _chat text").unwrap(),
+            "raw _chat text"
+        );
+    }
+
+    #[test]
+    fn ingests_a_zip_export_end_to_end() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = key();
+        let zip = make_zip(&[(
+            "WhatsApp Chat with Team/_chat.txt",
+            "[01/01/2026, 09:00:00] Alice: hello team\n[01/01/2026, 09:01:00] Bob: morning",
+        )]);
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        let chat = ChannelId::parse("c1").unwrap();
+        let up = UserId::parse("u1").unwrap();
+        let (summary, parsed) = ingest_whatsapp_zip(
+            &repo,
+            &key,
+            &ctx(&ws, &chat, &up),
+            &zip,
+            "UTC",
+            DateOrder::DayMonthYear,
+        )
+        .unwrap();
+        assert_eq!(summary.stored, 2);
+        assert_eq!(parsed.messages.len(), 2);
+        assert!(parsed.date_range.is_some());
+    }
+
+    #[test]
+    fn ingest_zip_rejects_unknown_timezone() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        let chat = ChannelId::parse("c1").unwrap();
+        let up = UserId::parse("u1").unwrap();
+        let err = ingest_whatsapp_zip(
+            &repo,
+            &key(),
+            &ctx(&ws, &chat, &up),
+            b"[01/01/2026, 09:00:00] Alice: hi",
+            "Mars/Olympus",
+            DateOrder::DayMonthYear,
+        );
+        assert!(err.is_err());
     }
 }

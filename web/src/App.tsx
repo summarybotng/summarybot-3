@@ -5,8 +5,9 @@ import { Login } from './views/Login'
 import { Summaries } from './views/Summaries'
 import { Schedules } from './views/Schedules'
 import { Settings } from './views/Settings'
+import { Whatsapp } from './views/Whatsapp'
 
-type Tab = 'summaries' | 'schedules' | 'settings'
+type Tab = 'summaries' | 'schedules' | 'whatsapp' | 'settings'
 
 export default function App() {
   const { client, signOut } = useAuth()
@@ -49,7 +50,7 @@ export default function App() {
           </button>
         </div>
         <nav className="mx-auto flex max-w-3xl gap-1 px-4">
-          {(['summaries', 'schedules', 'settings'] as Tab[]).map((t) => (
+          {(['summaries', 'schedules', 'whatsapp', 'settings'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -68,6 +69,7 @@ export default function App() {
       <main className="flex-1 px-4 py-6">
         {tab === 'summaries' && <Summaries />}
         {tab === 'schedules' && <Schedules />}
+        {tab === 'whatsapp' && <Whatsapp />}
         {tab === 'settings' && <Settings />}
       </main>
     </div>

@@ -15,6 +15,7 @@ mod scheduler_driver;
 mod schedules;
 mod summaries;
 mod tenancy;
+mod whatsapp;
 mod workspaces;
 
 pub use error::ApiError;
@@ -324,6 +325,12 @@ pub fn build_router(state: AppState) -> Router {
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
         .route("/workspaces/:ws/events", get(events::workspace_events))
+        // WhatsApp export upload (WHA-001) — allow a large body for the zip.
+        .route(
+            "/workspaces/:ws/whatsapp/imports",
+            post(whatsapp::import_whatsapp)
+                .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/workspaces/:ws/summaries/:id/pin", post(summaries::pin))
         .route(
             "/workspaces/:ws/summaries/:id/unpin",
@@ -441,6 +448,7 @@ async fn openapi() -> Json<serde_json::Value> {
                 "delete": { "summary": "Delete one summary (DSH-013)" }
             },
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
+            "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
             "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } },
@@ -1194,6 +1202,52 @@ mod tests {
         assert_eq!(first.status(), StatusCode::OK); // allowed; charges the budget
         let second = app.oneshot(post()).await.unwrap();
         assert_eq!(second.status(), StatusCode::PAYMENT_REQUIRED); // budget exhausted → 402
+    }
+
+    #[tokio::test]
+    async fn whatsapp_import_ingests_and_is_idempotent() {
+        let (state, token) = seeded_state(); // token grants ws-1
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        let body =
+            "[01/01/2026, 09:00:00] Alice: morning team\n[01/01/2026, 09:01:00] Bob: morning";
+        let post = || {
+            Request::post("/workspaces/ws-1/whatsapp/imports?chat=family&tz=UTC")
+                .header("authorization", &auth)
+                .header("content-type", "text/plain")
+                .body(Body::from(body))
+                .unwrap()
+        };
+
+        let first = app.clone().oneshot(post()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let j = body_json(first).await;
+        assert_eq!(j["chat_id"], "family");
+        assert_eq!(j["stored"], 2);
+        assert_eq!(j["messages"], 2);
+        assert_eq!(j["format"], "Ios");
+
+        // Re-importing the same export stores nothing new (WHA-012).
+        let again = app.oneshot(post()).await.unwrap();
+        let j2 = body_json(again).await;
+        assert_eq!(j2["stored"], 0);
+        assert_eq!(j2["duplicates"], 2);
+    }
+
+    #[tokio::test]
+    async fn whatsapp_import_rejects_bad_timezone() {
+        let (state, token) = seeded_state();
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/whatsapp/imports?chat=fam&tz=Mars/Olympus")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "text/plain")
+                    .body(Body::from("[01/01/2026, 09:00:00] Alice: hi"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
