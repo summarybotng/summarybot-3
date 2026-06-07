@@ -171,7 +171,7 @@ impl<'a, R: WhatsAppRepository> WhatsAppIngestor<'a, R> {
             {
                 return Ok((p.id, p.pseudonym, false));
             }
-            let participant = self.new_participant(phone_hash.as_bytes());
+            let participant = self.new_participant(ctx, phone_hash.as_bytes());
             self.repo.create_participant(
                 ctx.workspace_id,
                 ctx.chat_id,
@@ -191,7 +191,7 @@ impl<'a, R: WhatsAppRepository> WhatsAppIngestor<'a, R> {
         {
             return Ok((p.id, p.pseudonym, false));
         }
-        let participant = self.new_participant(sender.as_bytes());
+        let participant = self.new_participant(ctx, sender.as_bytes());
         self.repo.create_participant(
             ctx.workspace_id,
             ctx.chat_id,
@@ -202,11 +202,21 @@ impl<'a, R: WhatsAppRepository> WhatsAppIngestor<'a, R> {
         Ok((participant.id, participant.pseudonym, true))
     }
 
-    fn new_participant(&self, seed: &[u8]) -> Participant {
-        let h = short_hash(seed);
+    /// Mint a participant. The **pseudonym** is person-stable (derived from the
+    /// seed alone, so the same person reads the same label across chats); the
+    /// **id** additionally folds in workspace + chat so the global primary key
+    /// stays unique when the same person appears in more than one chat.
+    fn new_participant(&self, ctx: &IngestContext, seed: &[u8]) -> Participant {
+        let pseudonym = short_hash(seed);
+        let mut id_seed = Vec::new();
+        id_seed.extend_from_slice(ctx.workspace_id.as_str().as_bytes());
+        id_seed.push(0);
+        id_seed.extend_from_slice(ctx.chat_id.as_str().as_bytes());
+        id_seed.push(0);
+        id_seed.extend_from_slice(seed);
         Participant {
-            id: format!("p:{h}"),
-            pseudonym: format!("Participant-{h}"),
+            id: format!("p:{}", short_hash(&id_seed)),
+            pseudonym: format!("Participant-{pseudonym}"),
         }
     }
 
@@ -375,6 +385,32 @@ mod tests {
         let b = ingest_text(&repo, &key, "[01/01/2026, 09:00:00] Alice: shared message");
         assert_eq!(b.stored, 0);
         assert_eq!(b.duplicates, 1);
+    }
+
+    #[test]
+    fn same_person_in_two_chats_does_not_collide_on_id() {
+        // Regression: the participant id must be unique per (workspace, chat),
+        // so importing the same person into a second chat doesn't hit the PK.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = key();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        let up = UserId::parse("u1").unwrap();
+        let phone_text = "[01/01/2026, 09:00:00] +1 (902) 702-3100: hello";
+        let name_text = "[01/01/2026, 09:00:00] John O'Hare: hi";
+        for text in [phone_text, name_text] {
+            let parsed = parse_export(text, chrono_tz::UTC, DateOrder::DayMonthYear);
+            let a = ChannelId::parse("chat-a").unwrap();
+            let b = ChannelId::parse("chat-b").unwrap();
+            WhatsAppIngestor::new(&repo, &key)
+                .ingest(&ctx(&ws, &a, &up), &parsed.messages)
+                .unwrap();
+            // Same sender, different chat — previously a UNIQUE(id) violation.
+            let s = WhatsAppIngestor::new(&repo, &key)
+                .ingest(&ctx(&ws, &b, &up), &parsed.messages)
+                .unwrap();
+            assert_eq!(s.stored, 1);
+            assert_eq!(s.new_participants, 1);
+        }
     }
 
     /// Build an in-memory zip from (name, content) entries.
