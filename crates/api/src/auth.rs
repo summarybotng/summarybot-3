@@ -4,12 +4,13 @@
 use crate::{ApiError, AppState};
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderValue, Request};
+use axum::http::{header, HeaderValue, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use axum::Json;
 use domain::{AccessClaims, DiscordProvider, EmailProvider, GoogleProvider, IdentityProvider};
-use host::{new_correlation_id, verify_token, AuthService};
+use host::{new_correlation_id, verify_token, AuthError, AuthService};
+use repository::SessionRepository;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -122,4 +123,53 @@ pub async fn login(
         user_id: pair.user_id.as_str().to_string(),
         access_expires_at: pair.access_expires_at,
     }))
+}
+
+/// Refresh body: the opaque refresh token + the workspaces to re-grant on the
+/// new access token (claims are minted fresh at issue time).
+#[derive(Deserialize)]
+pub struct RefreshRequest {
+    pub refresh_token: String,
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+}
+
+/// `POST /auth/refresh` — exchange a refresh token for a new pair, **rotating**
+/// the session (the presented token is revoked; a replay now fails). An invalid,
+/// expired, or revoked token is a 401.
+pub async fn refresh(
+    State(state): State<AppState>,
+    Json(body): Json<RefreshRequest>,
+) -> Result<Json<TokenResponse>, ApiError> {
+    let mut workspaces = Vec::with_capacity(body.workspaces.len());
+    for w in &body.workspaces {
+        workspaces.push(
+            domain::WorkspaceId::parse(w.clone())
+                .map_err(|e| ApiError::bad_request(e.to_string()))?,
+        );
+    }
+    let repo = state.repo.lock().expect("repo mutex");
+    let svc = AuthService::new(&*repo, &state.signing_key);
+    let pair = svc
+        .refresh(&body.refresh_token, workspaces, now_secs())
+        .map_err(|e| match e {
+            // A refused refresh token is an auth failure, not a bad request.
+            AuthError::Refresh(_) => ApiError::Unauthorized,
+            other => ApiError::bad_request(other.to_string()),
+        })?;
+    Ok(Json(TokenResponse {
+        access_token: pair.access_token,
+        refresh_token: pair.refresh_token,
+        user_id: pair.user_id.as_str().to_string(),
+        access_expires_at: pair.access_expires_at,
+    }))
+}
+
+/// `POST /auth/logout` — revoke the caller's current session (the one that
+/// minted this access token), so its refresh token can no longer rotate.
+/// Idempotent: 204 whether or not a live session was found.
+pub async fn logout(State(state): State<AppState>, user: AuthUser) -> Result<StatusCode, ApiError> {
+    let repo = state.repo.lock().expect("repo mutex");
+    repo.revoke_session(&user.0.session_id)?;
+    Ok(StatusCode::NO_CONTENT)
 }

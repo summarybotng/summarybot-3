@@ -89,6 +89,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(auth::login))
+        .route("/auth/refresh", post(auth::refresh))
+        .route("/auth/logout", post(auth::logout))
         .route(
             "/workspaces/:ws/summaries",
             get(summaries::list_summaries).post(summaries::create_summary),
@@ -186,6 +188,8 @@ async fn openapi() -> Json<serde_json::Value> {
         "paths": {
             "/healthz": { "get": { "summary": "Liveness check" } },
             "/auth/login": { "post": { "summary": "Exchange verified provider claims for tokens" } },
+            "/auth/refresh": { "post": { "summary": "Rotate a refresh token for a new token pair" } },
+            "/auth/logout": { "post": { "summary": "Revoke the current session" } },
             "/workspaces/{ws}/summaries": {
                 "get": { "summary": "List/search summaries (q, participant, tag; limit, offset)" },
                 "post": { "summary": "Create a summary (demo: deterministic, no LLM)" }
@@ -797,5 +801,112 @@ mod tests {
         let json = body_json(resp).await;
         assert!(json["access_token"].as_str().unwrap().contains('.'));
         assert!(!json["refresh_token"].as_str().unwrap().is_empty());
+    }
+
+    /// Log in via the API and return (access_token, refresh_token).
+    async fn login_pair(app: &Router) -> (String, String) {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"email","subject":"x","email":"a@b.com","workspaces":["ws-1"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let j = body_json(resp).await;
+        (
+            j["access_token"].as_str().unwrap().to_string(),
+            j["refresh_token"].as_str().unwrap().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn refresh_rotates_and_replay_is_rejected() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let app = build_router(AppState::new(repo, key()));
+        let (_access, refresh) = login_pair(&app).await;
+
+        // First refresh succeeds and returns a new pair.
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::post("/auth/refresh")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"refresh_token":"{refresh}","workspaces":["ws-1"]}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let new_refresh = body_json(ok).await["refresh_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(new_refresh, refresh); // rotated
+
+        // Replaying the OLD refresh token now fails (session was revoked) → 401.
+        let replay = app
+            .oneshot(
+                Request::post("/auth/refresh")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"refresh_token":"{refresh}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_the_session_so_refresh_fails() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let app = build_router(AppState::new(repo, key()));
+        let (access, refresh) = login_pair(&app).await;
+
+        // Logout with the access token → 204.
+        let out = app
+            .clone()
+            .oneshot(
+                Request::post("/auth/logout")
+                    .header("authorization", format!("Bearer {access}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.status(), StatusCode::NO_CONTENT);
+
+        // The refresh token from that session no longer works.
+        let refused = app
+            .oneshot(
+                Request::post("/auth/refresh")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(r#"{{"refresh_token":"{refresh}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn refresh_with_garbage_token_is_unauthorized() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let resp = build_router(AppState::new(repo, key()))
+            .oneshot(
+                Request::post("/auth/refresh")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"refresh_token":"not-a-real-token"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
