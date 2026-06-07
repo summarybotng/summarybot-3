@@ -20,7 +20,7 @@ pub use job::JobRepository;
 pub use membership::MembershipRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use session::SessionRepository;
-pub use summary_store::{StructuredSummaryRepository, SummaryRecord};
+pub use summary_store::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
 

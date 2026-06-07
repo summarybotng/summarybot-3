@@ -6,7 +6,7 @@ use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use domain::summarize::{Model, ModelLadder, ModelPrice, SummaryLength};
-use repository::{StructuredSummaryRepository, SummaryRecord};
+use repository::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -80,17 +80,34 @@ impl From<SummaryRecord> for SummaryDto {
     }
 }
 
-/// `?include_archived=true&limit=50`
+/// `?include_archived=true&limit=50&offset=0&q=roadmap&participant=Bob&tag=ops`
+/// — filtering + pagination for the dashboard listing (DSH-002/004/005).
 #[derive(Deserialize)]
 pub struct ListQuery {
     #[serde(default)]
     pub include_archived: bool,
     #[serde(default = "default_limit")]
     pub limit: u32,
+    #[serde(default)]
+    pub offset: u32,
+    /// Free-text substring over summary text + key points (DSH-004).
+    #[serde(default)]
+    pub q: Option<String>,
+    /// Substring over the participant list (DSH-005).
+    #[serde(default)]
+    pub participant: Option<String>,
+    /// Substring over the tag list (DSH-009).
+    #[serde(default)]
+    pub tag: Option<String>,
 }
 
 fn default_limit() -> u32 {
     50
+}
+
+/// Treat a blank/whitespace-only query param as absent.
+fn non_blank(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// Body for on-demand summarize: a batch of message texts (optionally authored).
@@ -214,8 +231,16 @@ pub async fn list_summaries(
     user.require_workspace(&ws)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let query = SummaryQuery {
+        include_archived: q.include_archived,
+        text: non_blank(q.q),
+        participant: non_blank(q.participant),
+        tag: non_blank(q.tag),
+        limit: q.limit.min(500),
+        offset: q.offset,
+    };
     let repo = state.repo.lock().expect("repo mutex");
-    let records = repo.list_records(&workspace, q.include_archived, q.limit.min(500))?;
+    let records = repo.search_records(&workspace, &query)?;
     Ok(Json(records.into_iter().map(SummaryDto::from).collect()))
 }
 

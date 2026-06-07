@@ -177,7 +177,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/healthz": { "get": { "summary": "Liveness check" } },
             "/auth/login": { "post": { "summary": "Exchange verified provider claims for tokens" } },
             "/workspaces/{ws}/summaries": {
-                "get": { "summary": "List summaries" },
+                "get": { "summary": "List/search summaries (q, participant, tag; limit, offset)" },
                 "post": { "summary": "Create a summary (demo: deterministic, no LLM)" }
             },
             "/workspaces/{ws}/summaries/{id}": { "get": { "summary": "Summary detail" } },
@@ -335,6 +335,71 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
         assert_eq!(json[0]["id"], "sum_1");
+    }
+
+    #[tokio::test]
+    async fn list_summaries_honors_search_filters() {
+        let (state, token) = seeded_state(); // sum_1: text "We shipped.", kp "Launched", participant "Alice"
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        let count = |app: Router, uri: &'static str, auth: String| async move {
+            let resp = app
+                .oneshot(
+                    Request::get(uri)
+                        .header("authorization", auth)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            body_json(resp).await.as_array().unwrap().len()
+        };
+
+        // Text match on a key point; case-insensitive.
+        assert_eq!(
+            count(
+                app.clone(),
+                "/workspaces/ws-1/summaries?q=launched",
+                auth.clone()
+            )
+            .await,
+            1
+        );
+        // No match → empty.
+        assert_eq!(
+            count(
+                app.clone(),
+                "/workspaces/ws-1/summaries?q=zzz",
+                auth.clone()
+            )
+            .await,
+            0
+        );
+        // Participant filter.
+        assert_eq!(
+            count(
+                app.clone(),
+                "/workspaces/ws-1/summaries?participant=alice",
+                auth.clone()
+            )
+            .await,
+            1
+        );
+        assert_eq!(
+            count(
+                app.clone(),
+                "/workspaces/ws-1/summaries?participant=zoe",
+                auth.clone()
+            )
+            .await,
+            0
+        );
+        // offset past the end → empty.
+        assert_eq!(
+            count(app, "/workspaces/ws-1/summaries?offset=5", auth).await,
+            0
+        );
     }
 
     #[tokio::test]

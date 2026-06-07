@@ -10,6 +10,7 @@ use crate::SqliteRepository;
 use anyhow::Result;
 use domain::summarize::{ActionItem, ExtractedSummary, ResolvedCitation};
 use domain::{ChannelId, MessageId, WorkspaceId};
+use rusqlite::types::ToSql;
 use rusqlite::{params, OptionalExtension};
 
 /// A stored summary with its provenance and management flags (§5.1).
@@ -28,6 +29,38 @@ pub struct SummaryRecord {
     pub summary: ExtractedSummary,
 }
 
+/// Filter + pagination for a summary listing (PRD §5.1: DSH-002/004/005). All
+/// filters are optional and combine with AND; text/participant/tag use
+/// case-insensitive substring (`LIKE`) matching — a simple first cut. The
+/// richer FTS5 dual-index is a Phase-7 concern (brief open Q#7), deliberately
+/// not committed to here.
+#[derive(Debug, Clone)]
+pub struct SummaryQuery {
+    /// Include archived summaries (DSH-008); excluded by default.
+    pub include_archived: bool,
+    /// Substring match over the summary text and key points (DSH-004).
+    pub text: Option<String>,
+    /// Substring match over the participant list (DSH-005).
+    pub participant: Option<String>,
+    /// Substring match over the tag list (DSH-009).
+    pub tag: Option<String>,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+impl Default for SummaryQuery {
+    fn default() -> Self {
+        Self {
+            include_archived: false,
+            text: None,
+            participant: None,
+            tag: None,
+            limit: 50,
+            offset: 0,
+        }
+    }
+}
+
 /// Storage boundary for structured summaries (the dashboard sink + §5.1 mgmt).
 pub trait StructuredSummaryRepository {
     fn save_record(&self, workspace: &WorkspaceId, record: &SummaryRecord) -> Result<()>;
@@ -39,6 +72,13 @@ pub trait StructuredSummaryRepository {
         workspace: &WorkspaceId,
         include_archived: bool,
         limit: u32,
+    ) -> Result<Vec<SummaryRecord>>;
+    /// Filtered + paginated listing (DSH-002/004/005). Same ordering as
+    /// [`StructuredSummaryRepository::list_records`] (pinned first, then newest).
+    fn search_records(
+        &self,
+        workspace: &WorkspaceId,
+        query: &SummaryQuery,
     ) -> Result<Vec<SummaryRecord>>;
     /// Pin/unpin (§5.1). Returns whether a row changed.
     fn set_pinned(&self, workspace: &WorkspaceId, id: &str, pinned: bool) -> Result<bool>;
@@ -231,6 +271,66 @@ impl StructuredSummaryRepository for SqliteRepository {
         Ok(out)
     }
 
+    fn search_records(
+        &self,
+        workspace: &WorkspaceId,
+        query: &SummaryQuery,
+    ) -> Result<Vec<SummaryRecord>> {
+        // Build the WHERE dynamically; bind every value (no string interpolation
+        // of user input — only `?n` placeholders). LIKE patterns are lowercased
+        // and matched against lowercased columns for case-insensitivity.
+        let ws = workspace.as_str().to_string();
+        let like = |s: &str| format!("%{}%", s.to_lowercase());
+        let text_pat = query.text.as_deref().map(like);
+        let part_pat = query.participant.as_deref().map(like);
+        let tag_pat = query.tag.as_deref().map(like);
+        let limit = query.limit;
+        let offset = query.offset;
+
+        let mut sql = String::from(
+            "SELECT id FROM summary_records WHERE workspace_id = ?1 AND (?2 OR archived = 0)",
+        );
+        let mut binds: Vec<&dyn ToSql> = vec![&ws, &query.include_archived];
+        let mut n = 3;
+        if let Some(p) = &text_pat {
+            // ?n is referenced twice (text OR key_points) — one bound value.
+            sql.push_str(&format!(
+                " AND (lower(text) LIKE ?{n} OR lower(key_points) LIKE ?{n})"
+            ));
+            binds.push(p);
+            n += 1;
+        }
+        if let Some(p) = &part_pat {
+            sql.push_str(&format!(" AND lower(participants) LIKE ?{n}"));
+            binds.push(p);
+            n += 1;
+        }
+        if let Some(p) = &tag_pat {
+            sql.push_str(&format!(" AND lower(tags) LIKE ?{n}"));
+            binds.push(p);
+            n += 1;
+        }
+        sql.push_str(&format!(
+            " ORDER BY pinned DESC, created_at DESC LIMIT ?{} OFFSET ?{}",
+            n,
+            n + 1
+        ));
+        binds.push(&limit);
+        binds.push(&offset);
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let ids: Vec<String> = stmt
+            .query_map(binds.as_slice(), |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(rec) = self.get_record(workspace, &id)? {
+                out.push(rec);
+            }
+        }
+        Ok(out)
+    }
+
     fn set_pinned(&self, workspace: &WorkspaceId, id: &str, pinned: bool) -> Result<bool> {
         let n = self.conn.execute(
             "UPDATE summary_records SET pinned = ?3 WHERE id = ?1 AND workspace_id = ?2",
@@ -370,5 +470,139 @@ mod tests {
     fn set_on_missing_record_returns_false() {
         let repo = repo();
         assert!(!repo.set_pinned(&ws(), "ghost", true).unwrap());
+    }
+
+    /// Seed three distinct records for search tests.
+    fn seed_three(repo: &SqliteRepository) {
+        let mut a = record();
+        a.id = "a".into();
+        a.created_at = 100;
+        a.summary.text = "Quarterly planning recap".into();
+        a.summary.key_points = vec!["roadmap agreed".into()];
+        a.summary.participants = vec!["Alice".into(), "Bob".into()];
+        a.tags = vec!["planning".into()];
+
+        let mut b = record();
+        b.id = "b".into();
+        b.created_at = 200;
+        b.summary.text = "Release shipped".into();
+        b.summary.key_points = vec!["changelog written".into()];
+        b.summary.participants = vec!["Carol".into()];
+        b.tags = vec!["release".into()];
+
+        let mut c = record();
+        c.id = "c".into();
+        c.created_at = 300;
+        c.summary.text = "Incident postmortem".into();
+        c.summary.key_points = vec!["root cause: roadmap drift".into()];
+        c.summary.participants = vec!["Bob".into()];
+        c.tags = vec!["ops".into()];
+
+        for r in [a, b, c] {
+            repo.save_record(&ws(), &r).unwrap();
+        }
+    }
+
+    #[test]
+    fn search_by_text_matches_text_or_key_points_case_insensitively() {
+        let repo = repo();
+        seed_three(&repo);
+        // "roadmap" appears in a.key_points and c.key_points; newest (c) first.
+        let q = SummaryQuery {
+            text: Some("ROADMAP".into()),
+            ..Default::default()
+        };
+        let ids: Vec<String> = repo
+            .search_records(&ws(), &q)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(ids, vec!["c", "a"]);
+    }
+
+    #[test]
+    fn search_by_participant_and_by_tag() {
+        let repo = repo();
+        seed_three(&repo);
+        let by_part = repo
+            .search_records(
+                &ws(),
+                &SummaryQuery {
+                    participant: Some("bob".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let ids: Vec<&str> = by_part.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "a"]); // Bob is in a and c
+
+        let by_tag = repo
+            .search_records(
+                &ws(),
+                &SummaryQuery {
+                    tag: Some("release".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(by_tag.len(), 1);
+        assert_eq!(by_tag[0].id, "b");
+    }
+
+    #[test]
+    fn search_paginates_with_limit_and_offset() {
+        let repo = repo();
+        seed_three(&repo); // newest-first: c, b, a
+        let page1 = repo
+            .search_records(
+                &ws(),
+                &SummaryQuery {
+                    limit: 2,
+                    offset: 0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            page1.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["c", "b"]
+        );
+        let page2 = repo
+            .search_records(
+                &ws(),
+                &SummaryQuery {
+                    limit: 2,
+                    offset: 2,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            page2.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["a"]
+        );
+    }
+
+    #[test]
+    fn search_combines_filters_and_is_workspace_scoped() {
+        let repo = repo();
+        seed_three(&repo);
+        // participant Bob AND text "postmortem" → only c.
+        let q = SummaryQuery {
+            participant: Some("Bob".into()),
+            text: Some("postmortem".into()),
+            ..Default::default()
+        };
+        let res = repo.search_records(&ws(), &q).unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].id, "c");
+
+        // Another workspace sees nothing.
+        let other = WorkspaceId::parse("ws-other").unwrap();
+        assert!(repo
+            .search_records(&other, &SummaryQuery::default())
+            .unwrap()
+            .is_empty());
     }
 }
