@@ -236,8 +236,9 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         message_ids: &[MessageId],
     ) -> Result<ExtractedSummary, QualityError> {
         // A non-JSON / unparseable body is treated as an empty extraction, so it
-        // falls into the same recoverable "try a stronger model" path.
-        let wire: WireExtraction = serde_json::from_str(json).unwrap_or_default();
+        // falls into the same recoverable "try a stronger model" path. Real
+        // models often wrap the JSON in ``` fences or prose — extract it first.
+        let wire: WireExtraction = serde_json::from_str(extract_json(json)).unwrap_or_default();
         let raw = RawExtraction {
             text: wire.text,
             key_points: wire.key_points,
@@ -264,6 +265,26 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
     }
 }
 
+/// Pull the JSON object out of a model reply that may be wrapped in a ```` ``` ````
+/// fence or prefixed with prose: prefer the inside of a fence, else the span
+/// from the first `{` to the last `}`. Falls back to the trimmed input.
+fn extract_json(body: &str) -> &str {
+    let body = body.trim();
+    let unfenced = match body.strip_prefix("```") {
+        // Drop an optional language tag on the fence's first line, then the
+        // closing fence.
+        Some(rest) => {
+            let after_tag = rest.split_once('\n').map(|x| x.1).unwrap_or(rest);
+            after_tag.strip_suffix("```").unwrap_or(after_tag).trim()
+        }
+        None => body,
+    };
+    match (unfenced.find('{'), unfenced.rfind('}')) {
+        (Some(start), Some(end)) if end >= start => &unfenced[start..=end],
+        _ => unfenced,
+    }
+}
+
 /// Rough token estimate: ~4 chars/token. The host swaps in a real tokenizer.
 fn estimate_tokens(text: &str) -> i64 {
     (text.len() as i64).div_euclid(4).max(1)
@@ -277,9 +298,22 @@ fn output_budget(length: SummaryLength) -> i64 {
     }
 }
 
-/// Number each message so the model's citation indices map back to position.
+/// Build the summarization prompt: an instruction + the exact JSON schema we
+/// parse, then the numbered messages (the `[i]` prefix is the citation index).
+/// The deterministic demo client ignores the instruction (it only reads `[i]`
+/// lines); a real model needs it to produce the structured output.
 fn assemble_prompt(messages: &[&NormalizedMessage]) -> String {
-    let mut s = String::new();
+    let mut s = String::from(
+        "You are a summarization engine. Read the numbered chat messages below and \
+         reply with ONLY a single minified JSON object — no prose, no markdown code \
+         fences — of exactly this shape:\n\
+         {\"text\":\"<concise prose summary>\",\"key_points\":[\"...\"],\
+         \"action_items\":[{\"text\":\"...\",\"assignee\":null}],\
+         \"technical_terms\":[\"...\"],\"participants\":[\"...\"],\
+         \"citations\":[{\"message_index\":0,\"quote\":\"<verbatim snippet>\"}]}\n\
+         Set message_index from a message's [index] prefix. Use empty arrays for \
+         anything you can't fill. Messages:\n",
+    );
     for (i, m) in messages.iter().enumerate() {
         s.push_str(&format!("[{i}] {}: {}\n", m.author_name, m.content));
     }
@@ -500,5 +534,21 @@ mod tests {
         let job = repo.get_job(&ws, &id).unwrap().unwrap();
         assert_eq!(job.status, domain::JobStatus::Failed);
         assert_eq!(job.failure_reason.as_deref(), Some("invalid_request"));
+    }
+
+    #[test]
+    fn extract_json_handles_fences_and_prose() {
+        let obj = r#"{"text":"hi"}"#;
+        // Bare object.
+        assert_eq!(extract_json(obj), obj);
+        // Fenced with a language tag.
+        assert_eq!(extract_json("```json\n{\"text\":\"hi\"}\n```"), obj);
+        // Prose before/after.
+        assert_eq!(
+            extract_json("Here is the summary:\n{\"text\":\"hi\"} — done"),
+            obj
+        );
+        // Fenced without a tag.
+        assert_eq!(extract_json("```\n{\"text\":\"hi\"}\n```"), obj);
     }
 }

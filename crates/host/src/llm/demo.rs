@@ -17,8 +17,12 @@ impl LlmClient for DemoLlmClient {
     fn complete(&self, request: &LlmRequest) -> Result<LlmResponse, LlmError> {
         let mut participants: Vec<String> = Vec::new();
         let mut key_points: Vec<String> = Vec::new();
-        // The prompt is "[i] Author: content" per line (see assemble_prompt).
+        // The prompt is an instruction header + "[i] Author: content" lines
+        // (see assemble_prompt). Only the numbered message lines are parsed.
         for line in request.prompt.lines() {
+            if !line.starts_with('[') {
+                continue;
+            }
             let after = line.split_once("] ").map(|(_, r)| r).unwrap_or(line);
             if let Some((author, content)) = after.split_once(": ") {
                 let author = author.trim();
