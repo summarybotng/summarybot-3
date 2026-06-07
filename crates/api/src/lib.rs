@@ -14,6 +14,7 @@ mod scheduler_driver;
 mod schedules;
 mod summaries;
 mod tenancy;
+mod workspaces;
 
 pub use error::ApiError;
 pub use scheduler_driver::spawn_scheduler;
@@ -131,6 +132,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/tenants", post(tenancy::provision_tenant))
         .route("/tenants/:tenant", put(tenancy::update_tenant))
         .route("/tenant", get(tenancy::resolve_tenant))
+        // Workspace management under a tenant (WSP-009).
+        .route(
+            "/tenants/:tenant/workspaces",
+            get(workspaces::list_workspaces).post(workspaces::create_workspace),
+        )
+        .route(
+            "/tenants/:tenant/workspaces/:ws",
+            get(workspaces::get_workspace),
+        )
         .route("/tenants/:tenant/members", get(tenancy::list_members))
         .route(
             "/tenants/:tenant/members/:user",
@@ -182,6 +192,11 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
             "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" } },
             "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
+            "/tenants/{tenant}/workspaces": {
+                "get": { "summary": "List a tenant's workspaces" },
+                "post": { "summary": "Create a workspace (WSP-009)" }
+            },
+            "/tenants/{tenant}/workspaces/{ws}": { "get": { "summary": "Workspace detail" } },
             "/tenant": { "get": { "summary": "Resolve the tenant for the request host (TEN-006)" } },
             "/tenants/{tenant}/members": { "get": { "summary": "List tenant members" } },
             "/tenants/{tenant}/members/{user}": {

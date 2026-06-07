@@ -69,6 +69,12 @@ pub trait WorkspaceRepository {
     fn create_workspace(&self, workspace: &Workspace) -> Result<()>;
     /// Fetch a workspace only if it belongs to `tenant` (TEN-007).
     fn get_workspace(&self, tenant: &TenantId, id: &WorkspaceId) -> Result<Option<Workspace>>;
+    /// Fetch a workspace by id regardless of tenant — for global id-uniqueness
+    /// checks at creation (the id is a global PK). NOT for tenant-scoped reads,
+    /// which must use [`WorkspaceRepository::get_workspace`].
+    fn find_workspace(&self, id: &WorkspaceId) -> Result<Option<Workspace>>;
+    /// List a tenant's workspaces, ordered by id for determinism (TEN-007).
+    fn list_workspaces(&self, tenant: &TenantId) -> Result<Vec<Workspace>>;
     /// Attach a platform source to a workspace. A source may be attached to
     /// many workspaces (ADR-120); only a duplicate within the same workspace
     /// is rejected.
@@ -91,6 +97,18 @@ where
     E: std::error::Error + Send + Sync + 'static,
 {
     f(raw).map_err(anyhow::Error::new)
+}
+
+/// Build a [`Workspace`] from a row laid out as `id, tenant_id, name,
+/// owner_user_id, created_at`. Revalidates ids (defense in depth — TEN-007).
+fn workspace_from_row(row: &rusqlite::Row) -> Result<Workspace> {
+    Ok(Workspace {
+        id: parse_field(WorkspaceId::parse, row.get::<_, String>(0)?)?,
+        tenant_id: parse_field(TenantId::parse, row.get::<_, String>(1)?)?,
+        name: row.get(2)?,
+        owner_user_id: parse_field(UserId::parse, row.get::<_, String>(3)?)?,
+        created_at: row.get(4)?,
+    })
 }
 
 impl SqliteRepository {
@@ -186,18 +204,49 @@ impl WorkspaceRepository for SqliteRepository {
         )?;
         let mut rows = stmt.query(params![id.as_str(), tenant.as_str()])?;
         match rows.next()? {
-            Some(row) => {
-                let ws = Workspace {
-                    id: parse_field(WorkspaceId::parse, row.get::<_, String>(0)?)?,
-                    tenant_id: parse_field(TenantId::parse, row.get::<_, String>(1)?)?,
-                    name: row.get(2)?,
-                    owner_user_id: parse_field(UserId::parse, row.get::<_, String>(3)?)?,
-                    created_at: row.get(4)?,
-                };
-                Ok(Some(ws))
-            }
+            Some(row) => Ok(Some(workspace_from_row(row)?)),
             None => Ok(None),
         }
+    }
+
+    fn find_workspace(&self, id: &WorkspaceId) -> Result<Option<Workspace>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, tenant_id, name, owner_user_id, created_at
+             FROM workspaces WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![id.as_str()])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(workspace_from_row(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn list_workspaces(&self, tenant: &TenantId) -> Result<Vec<Workspace>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, tenant_id, name, owner_user_id, created_at
+             FROM workspaces WHERE tenant_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![tenant.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, tenant_id, name, owner, created_at) = row?;
+            out.push(Workspace {
+                id: parse_field(WorkspaceId::parse, id)?,
+                tenant_id: parse_field(TenantId::parse, tenant_id)?,
+                name,
+                owner_user_id: parse_field(UserId::parse, owner)?,
+                created_at,
+            });
+        }
+        Ok(out)
     }
 
     fn attach_connection(&self, conn: &WorkspaceConnection) -> Result<(), AttachError> {
@@ -301,6 +350,37 @@ mod tests {
             .unwrap();
         assert_eq!(got.name, "Acme");
         assert_eq!(got.created_at, 1_700_000_000);
+    }
+
+    #[test]
+    fn list_workspaces_is_tenant_scoped_and_find_is_global() {
+        let repo = repo();
+        repo.create_workspace(&workspace("ws1", "t1")).unwrap();
+        repo.create_workspace(&workspace("ws2", "t1")).unwrap();
+        repo.create_workspace(&workspace("ws3", "t2")).unwrap();
+
+        // list_workspaces sees only the tenant's own, ordered by id.
+        let ids: Vec<String> = repo
+            .list_workspaces(&TenantId::parse("t1").unwrap())
+            .unwrap()
+            .iter()
+            .map(|w| w.id.as_str().to_string())
+            .collect();
+        assert_eq!(ids, vec!["ws1".to_string(), "ws2".to_string()]);
+
+        // find_workspace is global (used for id-uniqueness at creation).
+        assert_eq!(
+            repo.find_workspace(&WorkspaceId::parse("ws3").unwrap())
+                .unwrap()
+                .unwrap()
+                .tenant_id
+                .as_str(),
+            "t2"
+        );
+        assert!(repo
+            .find_workspace(&WorkspaceId::parse("nope").unwrap())
+            .unwrap()
+            .is_none());
     }
 
     #[test]

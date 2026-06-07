@@ -70,8 +70,8 @@ impl From<domain::Invite> for InviteDto {
 
 /// Authorize the caller for `permission` on `tenant`, under an already-held
 /// repo guard (the `Mutex` is non-reentrant). 403 unless the caller is a member
-/// of the tenant with sufficient role.
-fn authorize(
+/// of the tenant with sufficient role. Shared with the workspace endpoints.
+pub(crate) fn authorize(
     repo: &SqliteRepository,
     actor: &UserId,
     tenant: &TenantId,
@@ -87,8 +87,9 @@ fn authorize(
     }
 }
 
-/// Parse a tenant id from the path, mapping a malformed one to 400.
-fn parse_tenant(raw: String) -> Result<TenantId, ApiError> {
+/// Parse a tenant id from the path, mapping a malformed one to 400. Shared with
+/// the workspace endpoints.
+pub(crate) fn parse_tenant(raw: String) -> Result<TenantId, ApiError> {
     TenantId::parse(raw).map_err(|e| ApiError::bad_request(e.to_string()))
 }
 
