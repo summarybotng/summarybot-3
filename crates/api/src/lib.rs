@@ -129,6 +129,7 @@ pub fn build_router(state: AppState) -> Router {
         // Tenancy: provisioning (TEN-001), host→tenant resolution (TEN-006),
         // members + invites.
         .route("/tenants", post(tenancy::provision_tenant))
+        .route("/tenants/:tenant", put(tenancy::update_tenant))
         .route("/tenant", get(tenancy::resolve_tenant))
         .route("/tenants/:tenant/members", get(tenancy::list_members))
         .route(
@@ -180,6 +181,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
             "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
             "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" } },
+            "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
             "/tenant": { "get": { "summary": "Resolve the tenant for the request host (TEN-006)" } },
             "/tenants/{tenant}/members": { "get": { "summary": "List tenant members" } },
             "/tenants/{tenant}/members/{user}": {

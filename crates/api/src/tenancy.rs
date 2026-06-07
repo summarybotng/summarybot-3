@@ -22,7 +22,7 @@ use domain::{
 };
 use host::{resolve_tenant_by_host, InviteService};
 use repository::{MembershipRepository, SqliteRepository, WorkspaceRepository};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// JSON shape of a membership.
 #[derive(Serialize)]
@@ -366,6 +366,105 @@ pub async fn provision_tenant(
     Ok(Json(TenantDto::from(tenant)))
 }
 
+/// Deserialize a field as a "double option" so a PATCH can distinguish three
+/// cases: **absent** (field missing → `None`, leave unchanged), **`null`**
+/// (`Some(None)`, clear it), and **a value** (`Some(Some(v))`, set it). Pair
+/// with `#[serde(default)]` so an absent field becomes the outer `None`.
+fn double_option<'de, T, D>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(de).map(Some)
+}
+
+/// Body for updating a tenant's settings (TEN-001/TEN-002). Every field is
+/// optional with PATCH semantics: omit to keep, send `null` to clear, send a
+/// value to set. `name` can't be cleared (a tenant must be named), so it's a
+/// plain optional.
+#[derive(Deserialize)]
+pub struct UpdateTenantRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub subdomain: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub custom_domain: Option<Option<String>>,
+}
+
+/// `PUT /tenants/:tenant` — update tenant settings (TEN-001/TEN-002). Requires
+/// `ManageSettings` (Admin+). Subdomain/custom domain are validated when set and
+/// must be free (409), ignoring the tenant's own current value.
+pub async fn update_tenant(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+    Json(body): Json<UpdateTenantRequest>,
+) -> Result<Json<TenantDto>, ApiError> {
+    let tenant_id = parse_tenant(tenant)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant_id, Permission::ManageSettings)?;
+    let current = repo.get_tenant(&tenant_id)?.ok_or(ApiError::NotFound)?;
+
+    // Name: keep current unless a non-empty replacement is given.
+    let name = match body.name.as_deref().map(str::trim) {
+        Some(n) if !n.is_empty() => n.to_string(),
+        Some(_) => return Err(ApiError::bad_request("name must not be empty")),
+        None => current.name.clone(),
+    };
+
+    // Subdomain / custom domain: absent → keep; null → clear; value → validate.
+    let subdomain = resolve_update(body.subdomain, current.subdomain.clone(), |raw| {
+        normalize_subdomain(raw).ok_or_else(|| format!("invalid subdomain: {raw}"))
+    })?;
+    let custom_domain = resolve_update(body.custom_domain, current.custom_domain.clone(), |raw| {
+        normalize_custom_domain(raw).ok_or_else(|| format!("invalid custom domain: {raw}"))
+    })?;
+
+    // Uniqueness, ignoring this tenant's own current values.
+    if let Some(sub) = &subdomain {
+        if let Some(other) = repo.find_tenant_by_subdomain(sub)? {
+            if other.id != tenant_id {
+                return Err(ApiError::Conflict(format!("subdomain {sub} is taken")));
+            }
+        }
+    }
+    if let Some(dom) = &custom_domain {
+        if let Some(other) = repo.find_tenant_by_custom_domain(dom)? {
+            if other.id != tenant_id {
+                return Err(ApiError::Conflict(format!("custom domain {dom} is taken")));
+            }
+        }
+    }
+
+    let updated = Tenant::new(tenant_id, name, subdomain, custom_domain)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    repo.update_tenant(&updated)?;
+    Ok(Json(TenantDto::from(updated)))
+}
+
+/// Apply PATCH semantics to one optional field: `None` keeps `current`,
+/// `Some(None)` clears it, `Some(Some(raw))` validates+normalizes via `validate`.
+fn resolve_update(
+    field: Option<Option<String>>,
+    current: Option<String>,
+    validate: impl Fn(&str) -> Result<String, String>,
+) -> Result<Option<String>, ApiError> {
+    match field {
+        None => Ok(current),
+        Some(None) => Ok(None),
+        Some(Some(raw)) => {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                // An empty string is treated as a clear, like null.
+                Ok(None)
+            } else {
+                validate(raw).map(Some).map_err(ApiError::bad_request)
+            }
+        }
+    }
+}
+
 /// Public tenant identity resolved from the request host (TEN-006).
 #[derive(Serialize)]
 pub struct TenantDto {
@@ -613,6 +712,139 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Provision a tenant and return (state, owner token, tenant id).
+    async fn provisioned(id: &str, subdomain: &str) -> (AppState, String) {
+        let (state, token) = state_with_user("founder");
+        let app = build_router(state.clone());
+        let resp = app
+            .oneshot(
+                Request::post("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"id":"{id}","name":"Acme","subdomain":"{subdomain}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        (state, token)
+    }
+
+    #[tokio::test]
+    async fn update_tenant_renames_and_moves_subdomain() {
+        let (state, token) = provisioned("acme", "acme").await;
+        let resp = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/acme")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"Acme Corp","subdomain":"acmecorp"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["name"], "Acme Corp");
+        assert_eq!(j["subdomain"], "acmecorp");
+    }
+
+    #[tokio::test]
+    async fn update_tenant_null_clears_subdomain() {
+        let (state, token) = provisioned("acme", "acme").await;
+        let resp = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/acme")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"subdomain":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // subdomain cleared; name untouched (absent field = keep).
+        let j = body_json(resp).await;
+        assert!(j["subdomain"].is_null());
+        assert_eq!(j["name"], "Acme");
+    }
+
+    #[tokio::test]
+    async fn update_tenant_requires_manage_settings() {
+        // An outsider (no membership) can't update settings → 403.
+        let (state, _owner) = provisioned("acme", "acme").await;
+        let (outsider, _) = login_outsider(&state, "outsider");
+        let resp = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/acme")
+                    .header("authorization", format!("Bearer {outsider}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"Hacked"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn update_tenant_rejects_taken_subdomain() {
+        // Two tenants under one owner; second can't steal the first's subdomain.
+        let (state, token) = provisioned("t-a", "alpha").await;
+        let app = build_router(state);
+        app.clone()
+            .oneshot(
+                Request::post("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"t-b","name":"B","subdomain":"beta"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t-b")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"subdomain":"alpha"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn update_tenant_keeping_own_subdomain_is_allowed() {
+        // Re-asserting the tenant's *own* subdomain must not 409 against itself.
+        let (state, token) = provisioned("acme", "acme").await;
+        let resp = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/acme")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"Acme 2","subdomain":"acme"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["subdomain"], "acme");
     }
 
     #[tokio::test]

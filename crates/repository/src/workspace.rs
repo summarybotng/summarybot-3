@@ -62,6 +62,9 @@ pub trait WorkspaceRepository {
     fn find_tenant_by_subdomain(&self, subdomain: &str) -> Result<Option<Tenant>>;
     /// Resolve a tenant by its custom domain (TEN-002/TEN-006). Case-insensitive.
     fn find_tenant_by_custom_domain(&self, domain: &str) -> Result<Option<Tenant>>;
+    /// Persist changes to an existing tenant's name/subdomain/custom domain
+    /// (TEN-001/TEN-002). Returns whether a row changed (false if no such id).
+    fn update_tenant(&self, tenant: &Tenant) -> Result<bool>;
     /// Persist an explicitly-created workspace (WSP-009).
     fn create_workspace(&self, workspace: &Workspace) -> Result<()>;
     /// Fetch a workspace only if it belongs to `tenant` (TEN-007).
@@ -146,6 +149,19 @@ impl WorkspaceRepository for SqliteRepository {
             "WHERE custom_domain IS NOT NULL AND lower(custom_domain) = lower(?1)",
             params![domain],
         )
+    }
+
+    fn update_tenant(&self, tenant: &Tenant) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE tenants SET name = ?2, subdomain = ?3, custom_domain = ?4 WHERE id = ?1",
+            params![
+                tenant.id.as_str(),
+                tenant.name,
+                tenant.subdomain,
+                tenant.custom_domain,
+            ],
+        )?;
+        Ok(n > 0)
     }
 
     fn create_workspace(&self, workspace: &Workspace) -> Result<()> {
@@ -397,6 +413,60 @@ mod tests {
             .get_tenant(&TenantId::parse("t1").unwrap())
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn update_tenant_changes_fields_and_frees_old_subdomain() {
+        let repo = repo();
+        repo.create_tenant(
+            &Tenant::new(
+                TenantId::parse("t1").unwrap(),
+                "Acme",
+                Some("acme".into()),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        // Rename + move subdomain + set a custom domain.
+        let changed = repo
+            .update_tenant(
+                &Tenant::new(
+                    TenantId::parse("t1").unwrap(),
+                    "Acme Corp",
+                    Some("acmecorp".into()),
+                    Some("chat.acme.com".into()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(changed);
+
+        let t = repo
+            .get_tenant(&TenantId::parse("t1").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(t.name, "Acme Corp");
+        assert_eq!(t.subdomain.as_deref(), Some("acmecorp"));
+        assert_eq!(t.custom_domain.as_deref(), Some("chat.acme.com"));
+        // The old subdomain is now free (no row matches it).
+        assert!(repo.find_tenant_by_subdomain("acme").unwrap().is_none());
+        assert_eq!(
+            repo.find_tenant_by_subdomain("acmecorp")
+                .unwrap()
+                .unwrap()
+                .id
+                .as_str(),
+            "t1"
+        );
+
+        // Updating an unknown tenant changes nothing.
+        assert!(!repo
+            .update_tenant(
+                &Tenant::new(TenantId::parse("ghost").unwrap(), "X", None, None).unwrap()
+            )
+            .unwrap());
     }
 
     #[test]
