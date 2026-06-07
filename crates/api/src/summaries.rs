@@ -171,12 +171,15 @@ pub async fn create_summary(
 
     // Resolve any per-tenant LLM override for this workspace (ADR-125 Phase 2a),
     // then build the engine over that backend + the shared limiter.
-    let (base_url, model) = {
+    let (base_url, model, api_key) = {
         let repo = state.repo.lock().expect("repo mutex");
-        crate::resolve_llm(&repo, &workspace, &state.model)
+        crate::resolve_llm(&repo, &workspace, &state.model, state.master_key())
     };
     let ladder = state.ladder_for(&model);
-    let engine = ResilientLlm::new(state.client_for_base(base_url), state.limiter.clone());
+    let engine = ResilientLlm::new(
+        state.client_for_base(base_url, api_key),
+        state.limiter.clone(),
+    );
     let outcome = SummarizationService::new(&engine, &ladder)
         .summarize(&SummarizeRequest {
             messages: &messages,

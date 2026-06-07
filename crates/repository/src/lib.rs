@@ -295,11 +295,19 @@ impl SqliteRepository {
             -- OpenAI-compatible endpoint and/or model. Keyless for now (the
             -- encrypted BYO-key column is Phase 2b).
             CREATE TABLE IF NOT EXISTS tenant_llm_config (
-                tenant_id TEXT PRIMARY KEY,
-                base_url  TEXT,
-                model     TEXT
+                tenant_id   TEXT PRIMARY KEY,
+                base_url    TEXT,
+                model       TEXT,
+                api_key_enc TEXT
             );",
         )?;
+        // Idempotent column adds for schema evolution (SQLite lacks ADD COLUMN
+        // IF NOT EXISTS). Errors with "duplicate column name" on an up-to-date
+        // DB — expected and ignored; fresh DBs already have it via CREATE above.
+        let _ = conn.execute(
+            "ALTER TABLE tenant_llm_config ADD COLUMN api_key_enc TEXT",
+            [],
+        );
         Ok(Self { conn })
     }
 }

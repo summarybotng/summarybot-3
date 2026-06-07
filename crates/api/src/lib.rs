@@ -56,6 +56,9 @@ pub struct AppState {
     /// Summarization model name the configured backend serves (ADR-125): the
     /// demo model by default, or e.g. a Mac mini's `llama3.1` / a hosted id.
     pub model: Arc<str>,
+    /// Operator master key (32 bytes) for encrypting stored tenant API keys
+    /// (ADR-125 Phase 2b). `None` disables BYO-key storage. Never logged.
+    pub config_key: Option<Arc<[u8; 32]>>,
 }
 
 /// Default product base domain when unconfigured.
@@ -89,6 +92,7 @@ impl AppState {
             base_domain: Arc::from(DEFAULT_BASE_DOMAIN),
             events: broadcast::channel(EVENT_BUFFER).0,
             model: Arc::from("demo"),
+            config_key: None,
         }
     }
 
@@ -102,6 +106,17 @@ impl AppState {
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Arc::from(model.into());
         self
+    }
+
+    /// Set the master key used to encrypt stored tenant API keys (ADR-125 2b).
+    pub fn with_config_key(mut self, key: [u8; 32]) -> Self {
+        self.config_key = Some(Arc::new(key));
+        self
+    }
+
+    /// The master key, if configured.
+    pub(crate) fn master_key(&self) -> Option<&[u8; 32]> {
+        self.config_key.as_deref()
     }
 
     /// A single-model ladder for the process-default model.
@@ -122,26 +137,31 @@ impl AppState {
         }])
     }
 
-    /// Resolve the LLM client for an optional per-tenant base URL (ADR-125
-    /// Phase 2a). With the `http-llm` feature and a base URL, a per-request
-    /// OpenAI-compatible client; otherwise the process-default backend.
+    /// Resolve the LLM client for a tenant's override (ADR-125). With the
+    /// `http-llm` feature: a base URL → that endpoint (with the optional BYO
+    /// key); a key but no base URL → OpenRouter with the tenant's key; neither →
+    /// the process default.
     #[cfg(feature = "http-llm")]
     pub(crate) fn client_for_base(
         &self,
         base_url: Option<String>,
+        api_key: Option<String>,
     ) -> Arc<dyn LlmClient + Send + Sync> {
-        match base_url {
-            Some(b) => Arc::new(host::llm::HttpLlmClient::new(b, None)),
-            None => self.llm.clone(),
+        use host::llm::HttpLlmClient;
+        match (base_url, api_key) {
+            (Some(b), key) => Arc::new(HttpLlmClient::new(b, key.map(Secret::new))),
+            (None, Some(key)) => Arc::new(HttpLlmClient::openrouter(Secret::new(key))),
+            (None, None) => self.llm.clone(),
         }
     }
 
-    /// Without `http-llm` there is no HTTP client to build, so a per-tenant base
-    /// URL is ignored and the process-default backend is used.
+    /// Without `http-llm` there is no HTTP client to build, so per-tenant
+    /// endpoint/key are ignored and the process-default backend is used.
     #[cfg(not(feature = "http-llm"))]
     pub(crate) fn client_for_base(
         &self,
         _base_url: Option<String>,
+        _api_key: Option<String>,
     ) -> Arc<dyn LlmClient + Send + Sync> {
         self.llm.clone()
     }
@@ -158,19 +178,26 @@ impl AppState {
 /// tenant's config. Returns the optional base-URL override and the model name
 /// (the tenant's, or `default_model`). A workspace with no row / no config
 /// yields no override.
+/// Returns `(base_url, model, api_key)`. The key is decrypted with `master_key`
+/// (ADR-125 Phase 2b); without a master key, a stored key is ignored.
 pub(crate) fn resolve_llm(
     repo: &SqliteRepository,
     workspace: &domain::WorkspaceId,
     default_model: &str,
-) -> (Option<String>, String) {
+    master_key: Option<&[u8; 32]>,
+) -> (Option<String>, String, Option<String>) {
     use repository::{LlmConfigRepository, WorkspaceRepository};
     if let Ok(Some(ws)) = repo.find_workspace(workspace) {
         if let Ok(Some(cfg)) = repo.get_llm_config(&ws.tenant_id) {
             let model = cfg.model.unwrap_or_else(|| default_model.to_string());
-            return (cfg.base_url, model);
+            let api_key = match (cfg.api_key_enc, master_key) {
+                (Some(enc), Some(master)) => host::decrypt_secret(master, &enc).ok(),
+                _ => None,
+            };
+            return (cfg.base_url, model, api_key);
         }
     }
-    (None, default_model.to_string())
+    (None, default_model.to_string(), None)
 }
 
 /// Build the router with all routes + the correlation-id middleware.
@@ -928,20 +955,62 @@ mod tests {
             &TenantLlmConfig {
                 base_url: Some("http://mac-mini:11434/v1".into()),
                 model: Some("llama3.1".into()),
+                api_key_enc: None,
             },
         )
         .unwrap();
 
-        // Resolves to the tenant's endpoint + model.
-        let (base, model) = resolve_llm(&repo, &ws, "demo");
+        // Resolves to the tenant's endpoint + model (no key configured).
+        let (base, model, key) = resolve_llm(&repo, &ws, "demo", None);
         assert_eq!(base.as_deref(), Some("http://mac-mini:11434/v1"));
         assert_eq!(model, "llama3.1");
+        assert!(key.is_none());
 
         // An unknown workspace (no row) → no override, default model.
-        let (base, model) =
-            resolve_llm(&repo, &domain::WorkspaceId::parse("ghost").unwrap(), "demo");
+        let (base, model, _) = resolve_llm(
+            &repo,
+            &domain::WorkspaceId::parse("ghost").unwrap(),
+            "demo",
+            None,
+        );
         assert!(base.is_none());
         assert_eq!(model, "demo");
+    }
+
+    #[test]
+    fn resolve_llm_decrypts_byo_key_with_master() {
+        use host::encrypt_secret;
+        use repository::{LlmConfigRepository, TenantLlmConfig, WorkspaceRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let tenant = domain::TenantId::parse("acme").unwrap();
+        let ws = domain::WorkspaceId::parse("ws-eng").unwrap();
+        repo.create_workspace(
+            &domain::Workspace::create(
+                ws.clone(),
+                tenant.clone(),
+                "Eng",
+                domain::UserId::parse("u1").unwrap(),
+                10,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let master = [9u8; 32];
+        repo.set_llm_config(
+            &tenant,
+            &TenantLlmConfig {
+                base_url: None,
+                model: Some("gpt-4o-mini".into()),
+                api_key_enc: Some(encrypt_secret(&master, "sk-tenant-key").unwrap()),
+            },
+        )
+        .unwrap();
+
+        // With the master key the BYO key is decrypted; without it, dropped.
+        let (_, _, key) = resolve_llm(&repo, &ws, "demo", Some(&master));
+        assert_eq!(key.as_deref(), Some("sk-tenant-key"));
+        let (_, _, key) = resolve_llm(&repo, &ws, "demo", None);
+        assert!(key.is_none());
     }
 
     #[tokio::test]

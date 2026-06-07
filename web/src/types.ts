@@ -76,4 +76,12 @@ export interface LiveEvent {
 export interface LlmConfig {
   base_url: string | null
   model: string | null
+  has_key: boolean
+}
+
+/** PUT body for LLM config; api_key is tri-state (omit=keep, null=clear, value=set). */
+export interface LlmConfigUpdate {
+  base_url?: string | null
+  model?: string | null
+  api_key?: string | null
 }

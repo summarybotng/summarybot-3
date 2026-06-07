@@ -97,9 +97,11 @@ precedence** (the "who pays" model):
 
 ## Open questions (for Phase 2/3)
 
-1. **Key encryption at rest** — envelope encryption with an operator master key
-   (env/KMS) vs. delegating to the deployment's secret store. Leaning: a master
-   key from config, AES-GCM per record.
+1. ~~**Key encryption at rest**~~ — **RESOLVED 2026-06-07: operator master key +
+   AES-256-GCM per record** (random 96-bit nonce, `base64(nonce‖ciphertext)`).
+   Master key is 32 bytes from `LLM_CONFIG_KEY` (64 hex). Implemented in Phase 2b
+   (`host::secretbox`). A deployment may still source that key from a KMS/secret
+   store externally.
 2. **Budget period & reset** — calendar month vs. rolling window; per-tenant vs.
    per-workspace. Leaning: per-tenant, calendar month, operator-configurable.
 3. **Provider health/fallback** — if a tenant's BYO endpoint is down, fail their

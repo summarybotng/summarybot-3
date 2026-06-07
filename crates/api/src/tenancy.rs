@@ -506,12 +506,33 @@ pub async fn resolve_tenant(
         .ok_or(ApiError::NotFound)
 }
 
-/// JSON shape of a tenant's LLM config (ADR-125 Phase 2a). Keyless — base URL
-/// and model only.
-#[derive(Serialize, Deserialize)]
+/// Response shape of a tenant's LLM config (ADR-125). The BYO key is **never**
+/// returned — only whether one is set.
+#[derive(Serialize)]
 pub struct LlmConfigDto {
     pub base_url: Option<String>,
     pub model: Option<String>,
+    pub has_key: bool,
+}
+
+fn config_dto(cfg: &TenantLlmConfig) -> LlmConfigDto {
+    LlmConfigDto {
+        base_url: cfg.base_url.clone(),
+        model: cfg.model.clone(),
+        has_key: cfg.api_key_enc.is_some(),
+    }
+}
+
+/// Request body for setting LLM config. `base_url`/`model` are full replacements;
+/// `api_key` is tri-state (omit = keep, null/"" = clear, value = set + encrypt).
+#[derive(Deserialize)]
+pub struct SetLlmConfigRequest {
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub api_key: Option<Option<String>>,
 }
 
 /// `GET /tenants/:tenant/llm-config` — the tenant's LLM override (ManageSettings).
@@ -524,20 +545,19 @@ pub async fn get_llm_config(
     let repo = state.repo.lock().expect("repo mutex");
     authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
     let cfg = repo.get_llm_config(&tenant)?.unwrap_or_default();
-    Ok(Json(LlmConfigDto {
-        base_url: cfg.base_url,
-        model: cfg.model,
-    }))
+    Ok(Json(config_dto(&cfg)))
 }
 
-/// `PUT /tenants/:tenant/llm-config` — set the tenant's LLM override. Both fields
-/// optional; an empty body clears the override. `base_url` must be an http(s)
-/// URL. Keyless (BYO key is Phase 2b). Requires ManageSettings.
+/// `PUT /tenants/:tenant/llm-config` — set the tenant's LLM override.
+/// `base_url` (validated http(s)) and `model` replace; `api_key` is tri-state
+/// (omit = keep, null/empty = clear, value = encrypt + store, ADR-125 2b).
+/// Setting a key requires the server's master key (`LLM_CONFIG_KEY`).
+/// Requires ManageSettings.
 pub async fn set_llm_config(
     State(state): State<AppState>,
     user: AuthUser,
     Path(tenant): Path<String>,
-    Json(body): Json<LlmConfigDto>,
+    Json(body): Json<SetLlmConfigRequest>,
 ) -> Result<Json<LlmConfigDto>, ApiError> {
     let tenant = parse_tenant(tenant)?;
     let base_url = match body
@@ -565,12 +585,31 @@ pub async fn set_llm_config(
 
     let repo = state.repo.lock().expect("repo mutex");
     authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
-    let cfg = TenantLlmConfig { base_url, model };
+    // Tri-state key: keep current, clear, or encrypt + set.
+    let current = repo.get_llm_config(&tenant)?.unwrap_or_default();
+    let api_key_enc = match body.api_key {
+        None => current.api_key_enc,
+        Some(None) => None,
+        Some(Some(k)) if k.trim().is_empty() => None,
+        Some(Some(k)) => {
+            let master = state.master_key().ok_or_else(|| {
+                ApiError::bad_request(
+                    "key encryption not configured on the server (set LLM_CONFIG_KEY)",
+                )
+            })?;
+            Some(
+                host::encrypt_secret(master, k.trim())
+                    .map_err(|e| ApiError::Internal(e.to_string()))?,
+            )
+        }
+    };
+    let cfg = TenantLlmConfig {
+        base_url,
+        model,
+        api_key_enc,
+    };
     repo.set_llm_config(&tenant, &cfg)?;
-    Ok(Json(LlmConfigDto {
-        base_url: cfg.base_url,
-        model: cfg.model,
-    }))
+    Ok(Json(config_dto(&cfg)))
 }
 
 /// `DELETE /tenants/:tenant/llm-config` — clear the override (revert to process
@@ -1061,6 +1100,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// State where `owner` is Owner of `tenant` AND the server has a master key.
+    fn state_with_owner_and_master(tenant: &str) -> (AppState, String) {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = Secret::new(b"tenancy-test-key".to_vec());
+        let pair = {
+            let svc = AuthService::new(&repo, &key);
+            svc.login(
+                &DiscordProvider,
+                &ProviderClaims {
+                    subject: "owner".into(),
+                    email: None,
+                },
+                vec![],
+                now_secs(),
+            )
+            .unwrap()
+        };
+        repo.upsert_membership(&Membership::new(
+            TenantId::parse(tenant).unwrap(),
+            pair.user_id.clone(),
+            Role::Owner,
+        ))
+        .unwrap();
+        (
+            AppState::new(repo, key).with_config_key([5u8; 32]),
+            pair.access_token,
+        )
+    }
+
+    #[tokio::test]
+    async fn llm_config_byo_key_encrypts_and_is_never_returned() {
+        let (state, token) = state_with_owner_and_master("t1");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        // Set a BYO key + model.
+        let set = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gpt-4o-mini","api_key":"sk-secret-123"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(set.status(), StatusCode::OK);
+        let js = body_json(set).await;
+        assert_eq!(js["has_key"], true);
+        assert_eq!(js["model"], "gpt-4o-mini");
+        assert!(js["api_key"].is_null()); // never echoed back
+
+        // GET reports has_key but no key material.
+        let g = app
+            .clone()
+            .oneshot(
+                Request::get("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let gj = body_json(g).await;
+        assert_eq!(gj["has_key"], true);
+        assert!(gj["api_key"].is_null());
+
+        // Omitting api_key on a later save keeps the key (tri-state).
+        let keep = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"gpt-4o"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(keep).await["has_key"], true);
+
+        // null clears it.
+        let clear = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"api_key":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(clear).await["has_key"], false);
+    }
+
+    #[tokio::test]
+    async fn llm_config_key_requires_server_master_key() {
+        // state_with_owner builds state WITHOUT a master key.
+        let (state, token, _) = state_with_owner("t1");
+        let resp = build_router(state)
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"api_key":"sk-x"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

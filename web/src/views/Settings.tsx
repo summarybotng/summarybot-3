@@ -14,6 +14,7 @@ export function Settings() {
   const [needsClaim, setNeedsClaim] = useState(false)
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
+  const [apiKey, setApiKey] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
 
   async function load() {
@@ -54,15 +55,32 @@ export function Settings() {
     if (!client) return
     setMsg(null)
     try {
-      const cfg = await client.setLlmConfig(tenant.trim(), {
+      // Send api_key only when the admin typed one (omitting it keeps the
+      // existing key; clearing is the dedicated button below).
+      const body: { base_url: string | null; model: string | null; api_key?: string } = {
         base_url: baseUrl.trim() || null,
         model: model.trim() || null,
-      })
+      }
+      if (apiKey.trim()) body.api_key = apiKey.trim()
+      const cfg = await client.setLlmConfig(tenant.trim(), body)
       setLoaded(cfg)
+      setApiKey('')
       setMsg('Saved. New summaries for this tenant will use it.')
     } catch (e) {
-      setMsg(e instanceof ApiError && e.status === 400 ? 'base_url must be an http(s) URL.' : 'Save failed.')
+      if (e instanceof ApiError && e.status === 400) {
+        setMsg('Rejected: base_url must be an http(s) URL, or key encryption is not enabled on the server.')
+      } else {
+        setMsg('Save failed.')
+      }
     }
+  }
+
+  async function removeKey() {
+    if (!client) return
+    const cfg = await client.setLlmConfig(tenant.trim(), { api_key: null })
+    setLoaded(cfg)
+    setApiKey('')
+    setMsg('API key removed.')
   }
 
   async function clear() {
@@ -70,7 +88,8 @@ export function Settings() {
     await client.clearLlmConfig(tenant.trim())
     setBaseUrl('')
     setModel('')
-    setLoaded({ base_url: null, model: null })
+    setApiKey('')
+    setLoaded({ base_url: null, model: null, has_key: false })
     setMsg('Cleared — reverted to the platform default.')
   }
 
@@ -127,6 +146,35 @@ export function Settings() {
                 className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
               />
             </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700">
+                API key{' '}
+                <span className={loaded.has_key ? 'text-green-600' : 'text-slate-400'}>
+                  ({loaded.has_key ? 'a key is set' : 'none'})
+                </span>
+              </label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={loaded.has_key ? 'leave blank to keep' : 'sk-… (for a hosted provider)'}
+                  className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+                />
+                {loaded.has_key && (
+                  <button
+                    onClick={() => void removeKey()}
+                    className="rounded-lg border border-slate-300 px-3 text-sm"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-slate-400">
+                Stored encrypted (AES-256-GCM); never shown again. Needs key encryption enabled on
+                the server.
+              </p>
+            </div>
             <div className="flex gap-2">
               <button
                 onClick={() => void save()}
@@ -138,12 +186,9 @@ export function Settings() {
                 onClick={() => void clear()}
                 className="rounded-lg border border-slate-300 px-4 py-2 text-sm"
               >
-                Clear
+                Clear all
               </button>
             </div>
-            <p className="text-xs text-slate-400">
-              Keyless for now — bring-your-own-key for hosted providers is a follow-up (ADR-125 Phase 2b).
-            </p>
           </div>
         )}
 

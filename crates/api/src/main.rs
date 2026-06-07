@@ -39,6 +39,18 @@ async fn main() -> Result<()> {
     if let Some(model) = env::var("LLM_MODEL").ok().filter(|m| !m.trim().is_empty()) {
         state = state.with_model(model.trim());
     }
+    // Master key for encrypting stored tenant API keys (ADR-125 Phase 2b). When
+    // unset, tenants can configure a keyless endpoint but not store a BYO key.
+    if let Some(raw) = env::var("LLM_CONFIG_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty())
+    {
+        let key = host::parse_master_key(&raw).context(
+            "LLM_CONFIG_KEY must be 64 hex chars (32 bytes, e.g. `openssl rand -hex 32`)",
+        )?;
+        state = state.with_config_key(key);
+        eprintln!("tenant API-key encryption: enabled");
+    }
 
     // Background scheduler: fire due schedules on an interval (SCH-005/006).
     spawn_scheduler(state.clone(), scheduler_secs);

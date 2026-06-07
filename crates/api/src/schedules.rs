@@ -270,9 +270,13 @@ pub async fn trigger_schedule(
     let now = now_secs();
 
     let repo = state.repo.lock().expect("repo mutex");
-    // Honor any per-tenant LLM override (ADR-125 Phase 2a), like create_summary.
-    let (base_url, model) = crate::resolve_llm(&repo, &workspace, &state.model);
-    let engine = ResilientLlm::new(state.client_for_base(base_url), state.limiter.clone());
+    // Honor any per-tenant LLM override (ADR-125), like create_summary.
+    let (base_url, model, api_key) =
+        crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
+    let engine = ResilientLlm::new(
+        state.client_for_base(base_url, api_key),
+        state.limiter.clone(),
+    );
     let ladder = state.ladder_for(&model);
     let stored = repo
         .get_schedule(&workspace, &id)?

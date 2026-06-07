@@ -1,4 +1,12 @@
-import type { LlmConfig, Schedule, ScheduleRun, Summary, Tenant, TokenResponse } from './types'
+import type {
+  LlmConfig,
+  LlmConfigUpdate,
+  Schedule,
+  ScheduleRun,
+  Summary,
+  Tenant,
+  TokenResponse,
+} from './types'
 
 const SESSION_KEY = 'sb_session'
 
@@ -212,7 +220,7 @@ export class Client {
     return this.json<LlmConfig>(`/tenants/${tenant}/llm-config`)
   }
 
-  setLlmConfig(tenant: string, cfg: LlmConfig): Promise<LlmConfig> {
+  setLlmConfig(tenant: string, cfg: LlmConfigUpdate): Promise<LlmConfig> {
     return this.json<LlmConfig>(`/tenants/${tenant}/llm-config`, this.body('PUT', cfg))
   }
 
