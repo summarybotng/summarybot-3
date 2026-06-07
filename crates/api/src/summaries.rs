@@ -4,6 +4,7 @@
 use crate::auth::AuthUser;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use domain::summarize::{Model, ModelLadder, ModelPrice, SummaryLength};
 use repository::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
@@ -314,4 +315,83 @@ pub async fn set_tags(
     let repo = state.repo.lock().expect("repo mutex");
     let changed = repo.set_tags(&workspace, &id, &body.tags)?;
     reload(&repo, &workspace, &id, changed)
+}
+
+/// `DELETE /workspaces/:ws/summaries/:id` — hard-delete one summary (DSH-013).
+pub async fn delete_summary(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let repo = state.repo.lock().expect("repo mutex");
+    if repo.delete_record(&workspace, &id)? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+/// Body for a bulk operation over a set of summary ids.
+#[derive(Deserialize)]
+pub struct BulkIdsRequest {
+    pub ids: Vec<String>,
+}
+
+/// `DELETE /workspaces/:ws/summaries` — bulk hard-delete (DSH-013). Body:
+/// `{ "ids": [...] }`. Returns how many were actually removed (ids not in this
+/// workspace are silently skipped — tenant isolation, not an error).
+pub async fn bulk_delete(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Json(body): Json<BulkIdsRequest>,
+) -> Result<Json<BulkCountResponse>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let repo = state.repo.lock().expect("repo mutex");
+    let mut count = 0;
+    for id in &body.ids {
+        if repo.delete_record(&workspace, id)? {
+            count += 1;
+        }
+    }
+    Ok(Json(BulkCountResponse { count }))
+}
+
+/// Body for bulk archive/unarchive.
+#[derive(Deserialize)]
+pub struct BulkArchiveRequest {
+    pub ids: Vec<String>,
+    pub archived: bool,
+}
+
+/// Count of rows affected by a bulk operation.
+#[derive(Serialize)]
+pub struct BulkCountResponse {
+    pub count: usize,
+}
+
+/// `PATCH /workspaces/:ws/summaries` — bulk archive/unarchive (batches DSH-008).
+/// Body: `{ "ids": [...], "archived": true }`. Returns how many changed.
+pub async fn bulk_archive(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Json(body): Json<BulkArchiveRequest>,
+) -> Result<Json<BulkCountResponse>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let repo = state.repo.lock().expect("repo mutex");
+    let mut count = 0;
+    for id in &body.ids {
+        if repo.set_archived(&workspace, id, body.archived)? {
+            count += 1;
+        }
+    }
+    Ok(Json(BulkCountResponse { count }))
 }

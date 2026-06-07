@@ -86,6 +86,9 @@ pub trait StructuredSummaryRepository {
     fn set_archived(&self, workspace: &WorkspaceId, id: &str, archived: bool) -> Result<bool>;
     /// Replace the tag set (§5.1).
     fn set_tags(&self, workspace: &WorkspaceId, id: &str, tags: &[String]) -> Result<bool>;
+    /// Hard-delete a summary and its child rows (DSH-013), tenant-scoped. Returns
+    /// whether a row was removed.
+    fn delete_record(&self, workspace: &WorkspaceId, id: &str) -> Result<bool>;
 }
 
 /// Join a string list into one column (entries can't contain newlines).
@@ -354,6 +357,28 @@ impl StructuredSummaryRepository for SqliteRepository {
         )?;
         Ok(n > 0)
     }
+
+    fn delete_record(&self, workspace: &WorkspaceId, id: &str) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        // Scope the delete to the workspace (TEN-007); only purge child rows if
+        // the parent actually belonged here.
+        let n = tx.execute(
+            "DELETE FROM summary_records WHERE id = ?1 AND workspace_id = ?2",
+            params![id, workspace.as_str()],
+        )?;
+        if n > 0 {
+            tx.execute(
+                "DELETE FROM summary_action_items WHERE summary_id = ?1",
+                params![id],
+            )?;
+            tx.execute(
+                "DELETE FROM summary_citations WHERE summary_id = ?1",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n > 0)
+    }
 }
 
 #[cfg(test)]
@@ -501,6 +526,32 @@ mod tests {
         for r in [a, b, c] {
             repo.save_record(&ws(), &r).unwrap();
         }
+    }
+
+    #[test]
+    fn delete_record_removes_row_and_children_and_is_scoped() {
+        let repo = repo();
+        repo.save_record(&ws(), &record()).unwrap(); // record() has action items + a citation
+                                                     // Wrong workspace can't delete it.
+        let other = WorkspaceId::parse("ws-other").unwrap();
+        assert!(!repo.delete_record(&other, "sum_1").unwrap());
+        assert!(repo.get_record(&ws(), "sum_1").unwrap().is_some());
+
+        // Owner deletes it; the row and its children are gone.
+        assert!(repo.delete_record(&ws(), "sum_1").unwrap());
+        assert!(repo.get_record(&ws(), "sum_1").unwrap().is_none());
+        // Re-fetch confirms child rows didn't resurrect a partial record.
+        let orphan_actions: i64 = repo
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM summary_action_items WHERE summary_id = 'sum_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_actions, 0);
+        // Deleting again is a no-op.
+        assert!(!repo.delete_record(&ws(), "sum_1").unwrap());
     }
 
     #[test]

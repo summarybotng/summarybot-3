@@ -93,9 +93,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/logout", post(auth::logout))
         .route(
             "/workspaces/:ws/summaries",
-            get(summaries::list_summaries).post(summaries::create_summary),
+            get(summaries::list_summaries)
+                .post(summaries::create_summary)
+                .delete(summaries::bulk_delete)
+                .patch(summaries::bulk_archive),
         )
-        .route("/workspaces/:ws/summaries/:id", get(summaries::get_summary))
+        .route(
+            "/workspaces/:ws/summaries/:id",
+            get(summaries::get_summary).delete(summaries::delete_summary),
+        )
         .route("/workspaces/:ws/summaries/:id/pin", post(summaries::pin))
         .route(
             "/workspaces/:ws/summaries/:id/unpin",
@@ -192,9 +198,14 @@ async fn openapi() -> Json<serde_json::Value> {
             "/auth/logout": { "post": { "summary": "Revoke the current session" } },
             "/workspaces/{ws}/summaries": {
                 "get": { "summary": "List/search summaries (q, participant, tag; limit, offset)" },
-                "post": { "summary": "Create a summary (demo: deterministic, no LLM)" }
+                "post": { "summary": "Create a summary (demo: deterministic, no LLM)" },
+                "delete": { "summary": "Bulk delete by ids (DSH-013)" },
+                "patch": { "summary": "Bulk archive/unarchive by ids" }
             },
-            "/workspaces/{ws}/summaries/{id}": { "get": { "summary": "Summary detail" } },
+            "/workspaces/{ws}/summaries/{id}": {
+                "get": { "summary": "Summary detail" },
+                "delete": { "summary": "Delete one summary (DSH-013)" }
+            },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
             "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } },
@@ -780,6 +791,130 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Seed `n` extra summaries (sum_2..) alongside the seeded sum_1.
+    fn seed_extra(state: &AppState, ids: &[&str]) {
+        let repo = state.repo.lock().unwrap();
+        for id in ids {
+            repo.save_record(&domain::WorkspaceId::parse("ws-1").unwrap(), &record(id))
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_one_summary_then_gone() {
+        let (state, token) = seeded_state(); // has sum_1
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        let del = app
+            .clone()
+            .oneshot(
+                Request::delete("/workspaces/ws-1/summaries/sum_1")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::NO_CONTENT);
+        // Second delete → 404.
+        let again = app
+            .oneshot(
+                Request::delete("/workspaces/ws-1/summaries/sum_1")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_counts_only_real_rows() {
+        let (state, token) = seeded_state(); // sum_1
+        seed_extra(&state, &["sum_2", "sum_3"]);
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/workspaces/ws-1/summaries")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ids":["sum_1","sum_3","ghost"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["count"], 2); // ghost skipped
+
+        // Only sum_2 remains.
+        let listed = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/summaries")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let lj = body_json(listed).await;
+        assert_eq!(lj.as_array().unwrap().len(), 1);
+        assert_eq!(lj[0]["id"], "sum_2");
+    }
+
+    #[tokio::test]
+    async fn bulk_archive_then_hidden_from_default_list() {
+        let (state, token) = seeded_state(); // sum_1
+        seed_extra(&state, &["sum_2"]);
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/workspaces/ws-1/summaries")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ids":["sum_1","sum_2"],"archived":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["count"], 2);
+
+        // Default list excludes archived → empty; include_archived shows both.
+        let active = app
+            .clone()
+            .oneshot(
+                Request::get("/workspaces/ws-1/summaries")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(body_json(active).await.as_array().unwrap().is_empty());
+
+        let all = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/summaries?include_archived=true")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(all).await.as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
