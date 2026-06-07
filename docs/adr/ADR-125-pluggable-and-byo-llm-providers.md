@@ -67,9 +67,16 @@ precedence** (the "who pays" model):
   (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, falling back to
   `OPENROUTER_API_KEY`, then demo). This makes the Mac mini usable now and is
   the (c) "process default" rung.
-- **Phase 2.** Per-tenant LLM config persistence (`tenant_llm_config`:
-  provider/base_url, key as a stored secret, model) + resolution at request
-  time → the (a) BYO rung. Managed via the tenancy API + dashboard settings.
+- **Phase 2a (this increment).** Per-tenant **keyless** LLM config
+  (`tenant_llm_config`: base_url + model) + resolution at request time, managed
+  via the tenancy API + a dashboard settings screen. Covers "bring your own
+  *endpoint*" (a tenant's self-hosted Ollama/vLLM/LM Studio — the common case
+  given the local-LLM direction). No secret-at-rest, so it ships without the
+  encryption decision below.
+- **Phase 2b (pending Open Q1).** Add an encrypted BYO **key** column so a
+  tenant can point at a hosted provider with their own key. Blocked on the
+  key-encryption-at-rest decision (Open Q1) — deliberately not shipped with
+  plaintext keys.
 - **Phase 3.** Operator-lent key + budget: a per-tenant budget (micros/period),
   spend accounting from `cost_micros`, and refusal when exhausted → the (b)
   rung. Operator-granted out-of-band (consistent with PRM-008 / ADR-119, where

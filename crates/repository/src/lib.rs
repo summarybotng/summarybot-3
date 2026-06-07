@@ -9,6 +9,7 @@ use rusqlite::Connection;
 
 mod identity;
 mod job;
+mod llm_config;
 mod membership;
 mod schedule;
 mod schedule_run;
@@ -18,6 +19,7 @@ mod whatsapp;
 mod workspace;
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
+pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
@@ -288,7 +290,15 @@ impl SqliteRepository {
                 status     TEXT    NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_invites_tenant
-                ON invites(tenant_id, created_at);",
+                ON invites(tenant_id, created_at);
+            -- Per-tenant LLM provider config (ADR-125 Phase 2a): a tenant's own
+            -- OpenAI-compatible endpoint and/or model. Keyless for now (the
+            -- encrypted BYO-key column is Phase 2b).
+            CREATE TABLE IF NOT EXISTS tenant_llm_config (
+                tenant_id TEXT PRIMARY KEY,
+                base_url  TEXT,
+                model     TEXT
+            );",
         )?;
         Ok(Self { conn })
     }

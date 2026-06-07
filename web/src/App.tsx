@@ -4,8 +4,9 @@ import { applyTenantAccent } from './theme'
 import { Login } from './views/Login'
 import { Summaries } from './views/Summaries'
 import { Schedules } from './views/Schedules'
+import { Settings } from './views/Settings'
 
-type Tab = 'summaries' | 'schedules'
+type Tab = 'summaries' | 'schedules' | 'settings'
 
 export default function App() {
   const { client, signOut } = useAuth()
@@ -48,7 +49,7 @@ export default function App() {
           </button>
         </div>
         <nav className="mx-auto flex max-w-3xl gap-1 px-4">
-          {(['summaries', 'schedules'] as Tab[]).map((t) => (
+          {(['summaries', 'schedules', 'settings'] as Tab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -65,7 +66,9 @@ export default function App() {
       </header>
 
       <main className="flex-1 px-4 py-6">
-        {tab === 'summaries' ? <Summaries /> : <Schedules />}
+        {tab === 'summaries' && <Summaries />}
+        {tab === 'schedules' && <Schedules />}
+        {tab === 'settings' && <Settings />}
       </main>
     </div>
   )

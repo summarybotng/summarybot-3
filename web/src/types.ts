@@ -72,3 +72,8 @@ export interface LiveEvent {
   kind: string
   summary_id?: string
 }
+
+export interface LlmConfig {
+  base_url: string | null
+  model: string | null
+}

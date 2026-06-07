@@ -1,4 +1,4 @@
-import type { Schedule, ScheduleRun, Summary, Tenant, TokenResponse } from './types'
+import type { LlmConfig, Schedule, ScheduleRun, Summary, Tenant, TokenResponse } from './types'
 
 const SESSION_KEY = 'sb_session'
 
@@ -199,5 +199,24 @@ export class Client {
 
   listRuns(id: string): Promise<ScheduleRun[]> {
     return this.json<ScheduleRun[]>(`/workspaces/${this.ws()}/schedules/${id}/runs`)
+  }
+
+  // --- tenancy (control plane) ---
+
+  /** Provision a tenant; the caller becomes its Owner. */
+  provisionTenant(id: string): Promise<Tenant> {
+    return this.json<Tenant>('/tenants', this.body('POST', { id, name: id }))
+  }
+
+  getLlmConfig(tenant: string): Promise<LlmConfig> {
+    return this.json<LlmConfig>(`/tenants/${tenant}/llm-config`)
+  }
+
+  setLlmConfig(tenant: string, cfg: LlmConfig): Promise<LlmConfig> {
+    return this.json<LlmConfig>(`/tenants/${tenant}/llm-config`, this.body('PUT', cfg))
+  }
+
+  clearLlmConfig(tenant: string): Promise<void> {
+    return this.json<void>(`/tenants/${tenant}/llm-config`, { method: 'DELETE' })
   }
 }

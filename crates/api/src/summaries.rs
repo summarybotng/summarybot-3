@@ -169,9 +169,14 @@ pub async fn create_summary(
         })
         .collect();
 
-    let ladder = state.model_ladder();
-    // Process-wide shared backend + limiter (LEG-001 budget is global).
-    let engine = ResilientLlm::new(state.llm.clone(), state.limiter.clone());
+    // Resolve any per-tenant LLM override for this workspace (ADR-125 Phase 2a),
+    // then build the engine over that backend + the shared limiter.
+    let (base_url, model) = {
+        let repo = state.repo.lock().expect("repo mutex");
+        crate::resolve_llm(&repo, &workspace, &state.model)
+    };
+    let ladder = state.ladder_for(&model);
+    let engine = ResilientLlm::new(state.client_for_base(base_url), state.limiter.clone());
     let outcome = SummarizationService::new(&engine, &ladder)
         .summarize(&SummarizeRequest {
             messages: &messages,

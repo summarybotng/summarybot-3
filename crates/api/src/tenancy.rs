@@ -21,7 +21,10 @@ use domain::{
     normalize_subdomain, AcceptOutcome, Membership, Permission, Role, Tenant, TenantId, UserId,
 };
 use host::{resolve_tenant_by_host, InviteService};
-use repository::{MembershipRepository, SqliteRepository, WorkspaceRepository};
+use repository::{
+    LlmConfigRepository, MembershipRepository, SqliteRepository, TenantLlmConfig,
+    WorkspaceRepository,
+};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// JSON shape of a membership.
@@ -503,6 +506,87 @@ pub async fn resolve_tenant(
         .ok_or(ApiError::NotFound)
 }
 
+/// JSON shape of a tenant's LLM config (ADR-125 Phase 2a). Keyless — base URL
+/// and model only.
+#[derive(Serialize, Deserialize)]
+pub struct LlmConfigDto {
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+}
+
+/// `GET /tenants/:tenant/llm-config` — the tenant's LLM override (ManageSettings).
+pub async fn get_llm_config(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+) -> Result<Json<LlmConfigDto>, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
+    let cfg = repo.get_llm_config(&tenant)?.unwrap_or_default();
+    Ok(Json(LlmConfigDto {
+        base_url: cfg.base_url,
+        model: cfg.model,
+    }))
+}
+
+/// `PUT /tenants/:tenant/llm-config` — set the tenant's LLM override. Both fields
+/// optional; an empty body clears the override. `base_url` must be an http(s)
+/// URL. Keyless (BYO key is Phase 2b). Requires ManageSettings.
+pub async fn set_llm_config(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+    Json(body): Json<LlmConfigDto>,
+) -> Result<Json<LlmConfigDto>, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let base_url = match body
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(u) => {
+            if !(u.starts_with("http://") || u.starts_with("https://"))
+                || u.contains(char::is_whitespace)
+            {
+                return Err(ApiError::bad_request("base_url must be an http(s) URL"));
+            }
+            Some(u.to_string())
+        }
+        None => None,
+    };
+    let model = body
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
+    let cfg = TenantLlmConfig { base_url, model };
+    repo.set_llm_config(&tenant, &cfg)?;
+    Ok(Json(LlmConfigDto {
+        base_url: cfg.base_url,
+        model: cfg.model,
+    }))
+}
+
+/// `DELETE /tenants/:tenant/llm-config` — clear the override (revert to process
+/// defaults). Idempotent 204. Requires ManageSettings.
+pub async fn clear_llm_config(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
+    repo.clear_llm_config(&tenant)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,6 +945,122 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn llm_config_set_get_clear_round_trip() {
+        let (state, token, _) = state_with_owner("t1");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        // Initially empty.
+        let g0 = app
+            .clone()
+            .oneshot(
+                Request::get("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(g0.status(), StatusCode::OK);
+        let j0 = body_json(g0).await;
+        assert!(j0["base_url"].is_null() && j0["model"].is_null());
+
+        // Set a tenant endpoint + model.
+        let set = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"base_url":"http://mac-mini.local:11434/v1","model":"llama3.1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(set.status(), StatusCode::OK);
+        let js = body_json(set).await;
+        assert_eq!(js["base_url"], "http://mac-mini.local:11434/v1");
+        assert_eq!(js["model"], "llama3.1");
+
+        // Read back.
+        let g1 = app
+            .clone()
+            .oneshot(
+                Request::get("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(g1).await["model"], "llama3.1");
+
+        // Clear → 204, then empty again.
+        let del = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::NO_CONTENT);
+        let g2 = app
+            .oneshot(
+                Request::get("/tenants/t1/llm-config")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(body_json(g2).await["base_url"].is_null());
+    }
+
+    #[tokio::test]
+    async fn llm_config_rejects_bad_url_and_non_member() {
+        let (state, token, _) = state_with_owner("t1");
+        let (outsider, _) = login_outsider(&state, "outsider");
+        let app = build_router(state);
+
+        // Invalid base_url → 400.
+        let bad = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/llm-config")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"base_url":"not a url"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+
+        // Non-member → 403.
+        let forbidden = app
+            .oneshot(
+                Request::get("/tenants/t1/llm-config")
+                    .header("authorization", format!("Bearer {outsider}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

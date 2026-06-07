@@ -104,11 +104,16 @@ impl AppState {
         self
     }
 
-    /// A single-model ladder for the configured model. Price is zero for now —
-    /// real per-model pricing + tenant budgets are ADR-125 Phase 3.
+    /// A single-model ladder for the process-default model.
     pub(crate) fn model_ladder(&self) -> ModelLadder {
+        self.ladder_for(&self.model)
+    }
+
+    /// A single-model ladder for an explicit model name. Price is zero for now —
+    /// real per-model pricing + tenant budgets are ADR-125 Phase 3.
+    pub(crate) fn ladder_for(&self, model: &str) -> ModelLadder {
         ModelLadder::new(vec![Model {
-            name: self.model.to_string(),
+            name: model.to_string(),
             price: ModelPrice {
                 input_micros_per_ktoken: 0,
                 output_micros_per_ktoken: 0,
@@ -117,11 +122,55 @@ impl AppState {
         }])
     }
 
+    /// Resolve the LLM client for an optional per-tenant base URL (ADR-125
+    /// Phase 2a). With the `http-llm` feature and a base URL, a per-request
+    /// OpenAI-compatible client; otherwise the process-default backend.
+    #[cfg(feature = "http-llm")]
+    pub(crate) fn client_for_base(
+        &self,
+        base_url: Option<String>,
+    ) -> Arc<dyn LlmClient + Send + Sync> {
+        match base_url {
+            Some(b) => Arc::new(host::llm::HttpLlmClient::new(b, None)),
+            None => self.llm.clone(),
+        }
+    }
+
+    /// Without `http-llm` there is no HTTP client to build, so a per-tenant base
+    /// URL is ignored and the process-default backend is used.
+    #[cfg(not(feature = "http-llm"))]
+    pub(crate) fn client_for_base(
+        &self,
+        _base_url: Option<String>,
+    ) -> Arc<dyn LlmClient + Send + Sync> {
+        self.llm.clone()
+    }
+
     /// Publish a live event to all connected SSE subscribers. A no-op when no
     /// one is listening (the send error just means zero receivers).
     pub fn publish(&self, event: LiveEvent) {
         let _ = self.events.send(event);
     }
+}
+
+/// Resolve a workspace's per-tenant LLM overrides (ADR-125 Phase 2a) under an
+/// already-held repo guard: map the workspace to its tenant and read that
+/// tenant's config. Returns the optional base-URL override and the model name
+/// (the tenant's, or `default_model`). A workspace with no row / no config
+/// yields no override.
+pub(crate) fn resolve_llm(
+    repo: &SqliteRepository,
+    workspace: &domain::WorkspaceId,
+    default_model: &str,
+) -> (Option<String>, String) {
+    use repository::{LlmConfigRepository, WorkspaceRepository};
+    if let Ok(Some(ws)) = repo.find_workspace(workspace) {
+        if let Ok(Some(cfg)) = repo.get_llm_config(&ws.tenant_id) {
+            let model = cfg.model.unwrap_or_else(|| default_model.to_string());
+            return (cfg.base_url, model);
+        }
+    }
+    (None, default_model.to_string())
 }
 
 /// Build the router with all routes + the correlation-id middleware.
@@ -191,6 +240,12 @@ pub fn build_router(state: AppState) -> Router {
         // members + invites.
         .route("/tenants", post(tenancy::provision_tenant))
         .route("/tenants/:tenant", put(tenancy::update_tenant))
+        .route(
+            "/tenants/:tenant/llm-config",
+            get(tenancy::get_llm_config)
+                .put(tenancy::set_llm_config)
+                .delete(tenancy::clear_llm_config),
+        )
         .route("/tenant", get(tenancy::resolve_tenant))
         // Workspace management under a tenant (WSP-009).
         .route(
@@ -267,6 +322,11 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/schedules/{id}/runs": { "get": { "summary": "Execution history (SCM-005)" } },
             "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" } },
             "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
+            "/tenants/{tenant}/llm-config": {
+                "get": { "summary": "Get the tenant's LLM override (ADR-125)" },
+                "put": { "summary": "Set the tenant's LLM endpoint/model" },
+                "delete": { "summary": "Clear the tenant's LLM override" }
+            },
             "/tenants/{tenant}/workspaces": {
                 "get": { "summary": "List a tenant's workspaces" },
                 "post": { "summary": "Create a workspace (WSP-009)" }
@@ -843,6 +903,45 @@ mod tests {
             repo.save_record(&domain::WorkspaceId::parse("ws-1").unwrap(), &record(id))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn resolve_llm_applies_per_tenant_override() {
+        use repository::{LlmConfigRepository, TenantLlmConfig, WorkspaceRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let tenant = domain::TenantId::parse("acme").unwrap();
+        let ws = domain::WorkspaceId::parse("ws-eng").unwrap();
+        // A provisioned workspace under the tenant, and that tenant's LLM config.
+        repo.create_workspace(
+            &domain::Workspace::create(
+                ws.clone(),
+                tenant.clone(),
+                "Eng",
+                domain::UserId::parse("u1").unwrap(),
+                10,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        repo.set_llm_config(
+            &tenant,
+            &TenantLlmConfig {
+                base_url: Some("http://mac-mini:11434/v1".into()),
+                model: Some("llama3.1".into()),
+            },
+        )
+        .unwrap();
+
+        // Resolves to the tenant's endpoint + model.
+        let (base, model) = resolve_llm(&repo, &ws, "demo");
+        assert_eq!(base.as_deref(), Some("http://mac-mini:11434/v1"));
+        assert_eq!(model, "llama3.1");
+
+        // An unknown workspace (no row) → no override, default model.
+        let (base, model) =
+            resolve_llm(&repo, &domain::WorkspaceId::parse("ghost").unwrap(), "demo");
+        assert!(base.is_none());
+        assert_eq!(model, "demo");
     }
 
     #[tokio::test]
