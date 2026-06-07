@@ -10,6 +10,7 @@
 
 mod auth;
 mod error;
+mod events;
 mod scheduler_driver;
 mod schedules;
 mod summaries;
@@ -17,6 +18,7 @@ mod tenancy;
 mod workspaces;
 
 pub use error::ApiError;
+pub use events::LiveEvent;
 pub use scheduler_driver::spawn_scheduler;
 
 use axum::routing::{get, post, put};
@@ -25,6 +27,11 @@ use domain::Secret;
 use host::llm::{DemoLlmClient, GlobalRateLimiter, LlmClient, RateLimitConfig};
 use repository::SqliteRepository;
 use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
+
+/// Capacity of the live-events broadcast buffer (frames a slow subscriber may
+/// fall behind before it starts dropping the oldest — see SSE lag handling).
+const EVENT_BUFFER: usize = 256;
 
 /// Shared application state. The repo is behind a `Mutex` because rusqlite's
 /// `Connection` is `Send` but not `Sync`; SQLite serializes writes anyway.
@@ -42,6 +49,9 @@ pub struct AppState {
     /// Product base domain for host→tenant routing (TEN-006); subdomains under
     /// it resolve to tenants, anything else is a custom domain.
     pub base_domain: Arc<str>,
+    /// Process-wide live-events bus (SSE). Mutations publish here; the
+    /// `/workspaces/:ws/events` stream filters to a workspace.
+    pub events: broadcast::Sender<LiveEvent>,
 }
 
 /// Default product base domain when unconfigured.
@@ -73,6 +83,7 @@ impl AppState {
             llm,
             limiter,
             base_domain: Arc::from(DEFAULT_BASE_DOMAIN),
+            events: broadcast::channel(EVENT_BUFFER).0,
         }
     }
 
@@ -80,6 +91,12 @@ impl AppState {
     pub fn with_base_domain(mut self, base_domain: impl Into<String>) -> Self {
         self.base_domain = Arc::from(base_domain.into());
         self
+    }
+
+    /// Publish a live event to all connected SSE subscribers. A no-op when no
+    /// one is listening (the send error just means zero receivers).
+    pub fn publish(&self, event: LiveEvent) {
+        let _ = self.events.send(event);
     }
 }
 
@@ -102,6 +119,7 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/summaries/:id",
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
+        .route("/workspaces/:ws/events", get(events::workspace_events))
         .route("/workspaces/:ws/summaries/:id/pin", post(summaries::pin))
         .route(
             "/workspaces/:ws/summaries/:id/unpin",
@@ -206,6 +224,7 @@ async fn openapi() -> Json<serde_json::Value> {
                 "get": { "summary": "Summary detail" },
                 "delete": { "summary": "Delete one summary (DSH-013)" }
             },
+            "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
             "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } },
@@ -800,6 +819,32 @@ mod tests {
             repo.save_record(&domain::WorkspaceId::parse("ws-1").unwrap(), &record(id))
                 .unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn creating_a_summary_publishes_a_live_event() {
+        let (state, token) = seeded_state();
+        // Subscribe to the live bus before the request, like an SSE client would.
+        let mut rx = state.events.subscribe();
+        let app = build_router(state);
+        let created = app
+            .oneshot(
+                Request::post("/workspaces/ws-1/summaries")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"messages":["hello team","ship friday"]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let new_id = body_json(created).await["id"].as_str().unwrap().to_string();
+
+        // The broadcast carries a matching summary.created event.
+        let ev = rx.try_recv().expect("a live event was published");
+        assert_eq!(ev.kind, "summary.created");
+        assert_eq!(ev.workspace_id, "ws-1");
+        assert_eq!(ev.summary_id.as_deref(), Some(new_id.as_str()));
     }
 
     #[tokio::test]

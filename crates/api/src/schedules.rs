@@ -292,6 +292,9 @@ pub async fn trigger_schedule(
                 detail.as_deref(),
                 true,
             )?;
+            if let Some(summary_id) = &detail {
+                state.publish(crate::LiveEvent::summary_created(&workspace, summary_id));
+            }
             Ok(Json(TriggerResponse {
                 produced: produced.is_some(),
                 summary: produced,

@@ -198,6 +198,7 @@ pub async fn create_summary(
         let repo = state.repo.lock().expect("repo mutex");
         repo.save_record(&workspace, &record)?;
     }
+    state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
     Ok(Json(SummaryDto::from(record)))
 }
 
@@ -326,8 +327,12 @@ pub async fn delete_summary(
     user.require_workspace(&ws)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let repo = state.repo.lock().expect("repo mutex");
-    if repo.delete_record(&workspace, &id)? {
+    let deleted = {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.delete_record(&workspace, &id)?
+    };
+    if deleted {
+        state.publish(crate::LiveEvent::summary_deleted(&workspace, &id));
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
@@ -352,14 +357,22 @@ pub async fn bulk_delete(
     user.require_workspace(&ws)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let repo = state.repo.lock().expect("repo mutex");
-    let mut count = 0;
-    for id in &body.ids {
-        if repo.delete_record(&workspace, id)? {
-            count += 1;
+    let deleted: Vec<&String> = {
+        let repo = state.repo.lock().expect("repo mutex");
+        let mut deleted = Vec::new();
+        for id in &body.ids {
+            if repo.delete_record(&workspace, id)? {
+                deleted.push(id);
+            }
         }
+        deleted
+    };
+    for id in &deleted {
+        state.publish(crate::LiveEvent::summary_deleted(&workspace, id));
     }
-    Ok(Json(BulkCountResponse { count }))
+    Ok(Json(BulkCountResponse {
+        count: deleted.len(),
+    }))
 }
 
 /// Body for bulk archive/unarchive.
