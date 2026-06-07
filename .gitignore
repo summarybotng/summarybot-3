@@ -11,3 +11,8 @@ CLAUDE.md.pre-ruflo*
 # Web dashboard (node)
 web/node_modules
 web/dist
+
+# Local SQLite databases (demo/dev runtime data + WAL/SHM sidecars)
+*.db
+*.db-wal
+*.db-shm
