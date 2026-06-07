@@ -4,3 +4,6 @@
 # Rust
 /target
 **/*.rs.bk
+
+# ruflo auto-generated CLAUDE.md backups (local tooling artifacts)
+CLAUDE.md.pre-ruflo*
