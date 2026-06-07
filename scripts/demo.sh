@@ -71,6 +71,49 @@ echo "==> delete the schedule (expect 204)"
 echo "    status: $(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
   "${BASE}/workspaces/${WS}/schedules/${SCHED_ID}" -H "authorization: Bearer ${TOKEN}")"
 
+# ----------------------------------------------------------------------------
+# Control plane (Phase 8 tenancy): provision a tenant, create a workspace,
+# attach a source, invite + accept a member, resolve the tenant by host.
+# ----------------------------------------------------------------------------
+echo "==> provision tenant 'acme' (caller becomes Owner)"
+curl -fsS -X POST "${BASE}/tenants" \
+  -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' \
+  -d '{"id":"acme","name":"Acme Inc","subdomain":"acme"}' \
+  | jq '{id, name, subdomain}'
+
+echo "==> resolve tenant by host header (acme.summarybot.app)"
+curl -fsS "${BASE}/tenant" -H 'host: acme.summarybot.app' | jq '{id, name, subdomain}'
+
+echo "==> create a workspace under the tenant (WSP-009)"
+curl -fsS -X POST "${BASE}/tenants/acme/workspaces" \
+  -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' \
+  -d '{"id":"ws-eng","name":"Engineering"}' | jq '{id, tenant_id, name}'
+
+echo "==> attach a Slack source to the workspace (WSP-008)"
+curl -fsS -X POST "${BASE}/tenants/acme/workspaces/ws-eng/connections" \
+  -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' \
+  -d '{"platform":"slack","platform_id":"T-DEMO"}' | jq '{platform, platform_id}'
+
+echo "==> invite a member (raw token returned once)"
+INVITE=$(curl -fsS -X POST "${BASE}/tenants/acme/invites" \
+  -H "authorization: Bearer ${TOKEN}" -H 'content-type: application/json' \
+  -d '{"email":"teammate@example.com","role":"member"}')
+INVITE_TOKEN=$(echo "${INVITE}" | jq -r .token)
+echo "    invite for $(echo "${INVITE}" | jq -r .email) as $(echo "${INVITE}" | jq -r .role)"
+
+echo "==> a second user logs in and accepts the invite"
+TOKEN2=$(curl -fsS -X POST "${BASE}/auth/login" \
+  -H 'content-type: application/json' \
+  -d '{"provider":"email","subject":"y","email":"teammate@example.com","workspaces":[]}' \
+  | jq -r .access_token)
+curl -fsS -X POST "${BASE}/invites/accept" \
+  -H "authorization: Bearer ${TOKEN2}" -H 'content-type: application/json' \
+  -d "{\"token\":\"${INVITE_TOKEN}\"}" | jq '{accepted, role}'
+
+echo "==> list tenant members (owner + accepted member)"
+curl -fsS "${BASE}/tenants/acme/members" \
+  -H "authorization: Bearer ${TOKEN}" | jq 'map({user_id, role})'
+
 echo "==> auth is enforced (no token → 401)"
 echo "    status: $(curl -s -o /dev/null -w '%{http_code}' "${BASE}/workspaces/${WS}/summaries")"
 
