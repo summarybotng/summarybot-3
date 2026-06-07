@@ -1,4 +1,5 @@
 import type {
+  Budget,
   LlmConfig,
   LlmConfigUpdate,
   Schedule,
@@ -226,5 +227,20 @@ export class Client {
 
   clearLlmConfig(tenant: string): Promise<void> {
     return this.json<void>(`/tenants/${tenant}/llm-config`, { method: 'DELETE' })
+  }
+
+  getBudget(tenant: string): Promise<Budget> {
+    return this.json<Budget>(`/tenants/${tenant}/budget`)
+  }
+
+  setBudget(tenant: string, limit_micros: number, period_secs: number): Promise<Budget> {
+    return this.json<Budget>(
+      `/tenants/${tenant}/budget`,
+      this.body('PUT', { limit_micros, period_secs }),
+    )
+  }
+
+  clearBudget(tenant: string): Promise<void> {
+    return this.json<void>(`/tenants/${tenant}/budget`, { method: 'DELETE' })
   }
 }

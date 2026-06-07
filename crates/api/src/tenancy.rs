@@ -17,13 +17,14 @@ use crate::{ApiError, AppState};
 use axum::extract::{Host, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use domain::{current_window, remaining_micros, Budget, Spend};
 use domain::{
     normalize_subdomain, AcceptOutcome, Membership, Permission, Role, Tenant, TenantId, UserId,
 };
 use host::{resolve_tenant_by_host, InviteService};
 use repository::{
-    LlmConfigRepository, MembershipRepository, SqliteRepository, TenantLlmConfig,
-    WorkspaceRepository,
+    BudgetRepository, BudgetRow, LlmConfigRepository, MembershipRepository, SqliteRepository,
+    TenantLlmConfig, WorkspaceRepository,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -626,6 +627,127 @@ pub async fn clear_llm_config(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// JSON shape of a tenant's LLM budget (ADR-125 Phase 3), reflecting the current
+/// (rolled) window.
+#[derive(Serialize)]
+pub struct BudgetDto {
+    pub configured: bool,
+    pub limit_micros: i64,
+    pub period_secs: i64,
+    pub spent_micros: i64,
+    pub remaining_micros: i64,
+    pub period_start: i64,
+}
+
+/// Body for granting/updating a budget.
+#[derive(Deserialize)]
+pub struct SetBudgetRequest {
+    pub limit_micros: i64,
+    pub period_secs: i64,
+}
+
+/// `GET /tenants/:tenant/budget` — current budget + spend (ManageBilling/Owner).
+pub async fn get_budget(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+) -> Result<Json<BudgetDto>, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageBilling)?;
+    Ok(Json(match repo.get_budget(&tenant)? {
+        Some(row) => {
+            let budget = Budget {
+                limit_micros: row.limit_micros,
+                period_secs: row.period_secs,
+            };
+            let window = current_window(
+                Spend {
+                    period_start: row.period_start,
+                    spent_micros: row.spent_micros,
+                },
+                budget,
+                now_secs(),
+            );
+            BudgetDto {
+                configured: true,
+                limit_micros: row.limit_micros,
+                period_secs: row.period_secs,
+                spent_micros: window.spent_micros,
+                remaining_micros: remaining_micros(window, budget),
+                period_start: window.period_start,
+            }
+        }
+        None => BudgetDto {
+            configured: false,
+            limit_micros: 0,
+            period_secs: 0,
+            spent_micros: 0,
+            remaining_micros: 0,
+            period_start: 0,
+        },
+    }))
+}
+
+/// `PUT /tenants/:tenant/budget` — grant/update a budget (ManageBilling/Owner).
+/// Changing the limit/period preserves the current window's accrued spend.
+pub async fn set_budget(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+    Json(body): Json<SetBudgetRequest>,
+) -> Result<Json<BudgetDto>, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    if body.limit_micros < 0 || body.period_secs < 0 {
+        return Err(ApiError::bad_request(
+            "limit_micros and period_secs must be >= 0",
+        ));
+    }
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageBilling)?;
+    let existing = repo.get_budget(&tenant)?;
+    let row = BudgetRow {
+        limit_micros: body.limit_micros,
+        period_secs: body.period_secs,
+        period_start: existing.map(|e| e.period_start).unwrap_or_else(now_secs),
+        spent_micros: existing.map(|e| e.spent_micros).unwrap_or(0),
+    };
+    repo.upsert_budget(&tenant, &row)?;
+    let budget = Budget {
+        limit_micros: row.limit_micros,
+        period_secs: row.period_secs,
+    };
+    let window = current_window(
+        Spend {
+            period_start: row.period_start,
+            spent_micros: row.spent_micros,
+        },
+        budget,
+        now_secs(),
+    );
+    Ok(Json(BudgetDto {
+        configured: true,
+        limit_micros: row.limit_micros,
+        period_secs: row.period_secs,
+        spent_micros: window.spent_micros,
+        remaining_micros: remaining_micros(window, budget),
+        period_start: window.period_start,
+    }))
+}
+
+/// `DELETE /tenants/:tenant/budget` — remove the grant (ManageBilling/Owner).
+pub async fn clear_budget(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let tenant = parse_tenant(tenant)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageBilling)?;
+    repo.clear_budget(&tenant)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1223,6 +1345,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn budget_set_get_clear_round_trip() {
+        let (state, token, _) = state_with_owner("t1");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        // Unset initially.
+        let g0 = app
+            .clone()
+            .oneshot(
+                Request::get("/tenants/t1/budget")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(g0).await["configured"], false);
+
+        // Grant a budget.
+        let set = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/t1/budget")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"limit_micros":1000000,"period_secs":2592000}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(set.status(), StatusCode::OK);
+        let sj = body_json(set).await;
+        assert_eq!(sj["configured"], true);
+        assert_eq!(sj["limit_micros"], 1_000_000);
+        assert_eq!(sj["remaining_micros"], 1_000_000);
+
+        // Clear → unset again.
+        let del = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/tenants/t1/budget")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.status(), StatusCode::NO_CONTENT);
+        let g1 = app
+            .oneshot(
+                Request::get("/tenants/t1/budget")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(g1).await["configured"], false);
+    }
+
+    #[tokio::test]
+    async fn budget_requires_owner() {
+        let (state, _, _) = state_with_owner("t1");
+        let (outsider, _) = login_outsider(&state, "outsider");
+        let resp = build_router(state)
+            .oneshot(
+                Request::get("/tenants/t1/budget")
+                    .header("authorization", format!("Bearer {outsider}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

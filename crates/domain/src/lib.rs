@@ -5,6 +5,7 @@
 //! WASM component. It has no I/O and no platform dependencies (PRD §12.0:
 //! "WASM does bounded/streamed pure compute"; logic never lives in handlers).
 
+mod budget;
 mod coverage;
 mod delivery;
 mod failure;
@@ -20,6 +21,7 @@ mod session;
 pub mod summarize;
 mod whatsapp;
 mod workspace;
+pub use budget::{current_window, remaining_micros, within_budget, Budget, Spend, Window};
 pub use coverage::{analyze_coverage, CoverageGap, CoverageReport, GapKind, Span};
 pub use delivery::{
     resolve as resolve_delivery, visible_kinds, DeliveryCapabilities, DeliveryDecision,

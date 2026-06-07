@@ -59,6 +59,10 @@ pub struct AppState {
     /// Operator master key (32 bytes) for encrypting stored tenant API keys
     /// (ADR-125 Phase 2b). `None` disables BYO-key storage. Never logged.
     pub config_key: Option<Arc<[u8; 32]>>,
+    /// Price (micros per 1k tokens, input and output) of the process-default
+    /// model, so platform-key spend is measurable for budgets (ADR-125 Phase 3).
+    /// Zero for the demo model.
+    pub price_micros_per_ktoken: i64,
 }
 
 /// Default product base domain when unconfigured.
@@ -93,6 +97,7 @@ impl AppState {
             events: broadcast::channel(EVENT_BUFFER).0,
             model: Arc::from("demo"),
             config_key: None,
+            price_micros_per_ktoken: 0,
         }
     }
 
@@ -114,6 +119,13 @@ impl AppState {
         self
     }
 
+    /// Set the process-default model price (micros/1k tokens) for budget
+    /// accounting (ADR-125 Phase 3).
+    pub fn with_price(mut self, price_micros_per_ktoken: i64) -> Self {
+        self.price_micros_per_ktoken = price_micros_per_ktoken;
+        self
+    }
+
     /// The master key, if configured.
     pub(crate) fn master_key(&self) -> Option<&[u8; 32]> {
         self.config_key.as_deref()
@@ -124,14 +136,15 @@ impl AppState {
         self.ladder_for(&self.model)
     }
 
-    /// A single-model ladder for an explicit model name. Price is zero for now —
-    /// real per-model pricing + tenant budgets are ADR-125 Phase 3.
+    /// A single-model ladder for an explicit model name, priced from the
+    /// process-default price (ADR-125 Phase 3) so platform-key spend is
+    /// measurable. Per-model price tables are a future refinement.
     pub(crate) fn ladder_for(&self, model: &str) -> ModelLadder {
         ModelLadder::new(vec![Model {
             name: model.to_string(),
             price: ModelPrice {
-                input_micros_per_ktoken: 0,
-                output_micros_per_ktoken: 0,
+                input_micros_per_ktoken: self.price_micros_per_ktoken,
+                output_micros_per_ktoken: self.price_micros_per_ktoken,
             },
             context_tokens: 200_000,
         }])
@@ -173,31 +186,122 @@ impl AppState {
     }
 }
 
-/// Resolve a workspace's per-tenant LLM overrides (ADR-125 Phase 2a) under an
-/// already-held repo guard: map the workspace to its tenant and read that
-/// tenant's config. Returns the optional base-URL override and the model name
-/// (the tenant's, or `default_model`). A workspace with no row / no config
-/// yields no override.
-/// Returns `(base_url, model, api_key)`. The key is decrypted with `master_key`
-/// (ADR-125 Phase 2b); without a master key, a stored key is ignored.
+/// The resolved LLM choice for a request (ADR-125): which endpoint/key/model to
+/// use, the owning tenant (if the workspace maps to one), and whether the tenant
+/// brought their own provider (`byo` — in which case no platform budget applies).
+pub(crate) struct LlmResolution {
+    pub base_url: Option<String>,
+    pub model: String,
+    pub api_key: Option<String>,
+    pub tenant: Option<domain::TenantId>,
+    pub byo: bool,
+}
+
+/// Resolve the LLM choice for a workspace under an already-held repo guard: map
+/// the workspace → its tenant, read that tenant's config, and decrypt any BYO
+/// key with `master_key` (ADR-125 2b). A workspace with no row yields the
+/// process default and no tenant.
 pub(crate) fn resolve_llm(
     repo: &SqliteRepository,
     workspace: &domain::WorkspaceId,
     default_model: &str,
     master_key: Option<&[u8; 32]>,
-) -> (Option<String>, String, Option<String>) {
+) -> LlmResolution {
     use repository::{LlmConfigRepository, WorkspaceRepository};
-    if let Ok(Some(ws)) = repo.find_workspace(workspace) {
-        if let Ok(Some(cfg)) = repo.get_llm_config(&ws.tenant_id) {
-            let model = cfg.model.unwrap_or_else(|| default_model.to_string());
-            let api_key = match (cfg.api_key_enc, master_key) {
-                (Some(enc), Some(master)) => host::decrypt_secret(master, &enc).ok(),
-                _ => None,
-            };
-            return (cfg.base_url, model, api_key);
-        }
+    let default = || LlmResolution {
+        base_url: None,
+        model: default_model.to_string(),
+        api_key: None,
+        tenant: None,
+        byo: false,
+    };
+    let Ok(Some(ws)) = repo.find_workspace(workspace) else {
+        return default();
+    };
+    let tenant = Some(ws.tenant_id.clone());
+    let Ok(Some(cfg)) = repo.get_llm_config(&ws.tenant_id) else {
+        // Tenant known but no LLM override → platform default (budget may apply).
+        return LlmResolution {
+            tenant,
+            ..default()
+        };
+    };
+    let api_key = match (cfg.api_key_enc, master_key) {
+        (Some(enc), Some(master)) => host::decrypt_secret(master, &enc).ok(),
+        _ => None,
+    };
+    let byo = cfg.base_url.is_some() || api_key.is_some();
+    LlmResolution {
+        base_url: cfg.base_url,
+        model: cfg.model.unwrap_or_else(|| default_model.to_string()),
+        api_key,
+        tenant,
+        byo,
     }
-    (None, default_model.to_string(), None)
+}
+
+/// Budget gate for a platform-key call (ADR-125 Phase 3): under an already-held
+/// guard, refuse if the tenant's budget is exhausted. Returns the window to
+/// charge on success — `None` when no budget applies (BYO, no tenant, or no
+/// grant → unmetered).
+pub(crate) fn budget_gate(
+    repo: &SqliteRepository,
+    res: &LlmResolution,
+    now: i64,
+) -> Result<Option<(domain::TenantId, domain::Window)>, ApiError> {
+    use domain::{current_window, within_budget, Budget, Spend};
+    use repository::BudgetRepository;
+    if res.byo {
+        return Ok(None);
+    }
+    let Some(tenant) = res.tenant.clone() else {
+        return Ok(None);
+    };
+    let Some(row) = repo.get_budget(&tenant)? else {
+        return Ok(None);
+    };
+    let budget = Budget {
+        limit_micros: row.limit_micros,
+        period_secs: row.period_secs,
+    };
+    let window = current_window(
+        Spend {
+            period_start: row.period_start,
+            spent_micros: row.spent_micros,
+        },
+        budget,
+        now,
+    );
+    if within_budget(window, budget) {
+        Ok(Some((tenant, window)))
+    } else {
+        Err(ApiError::BudgetExceeded(format!(
+            "LLM budget exhausted for tenant {}",
+            tenant.as_str()
+        )))
+    }
+}
+
+/// Charge `cost_micros` to a tenant's budget window after a successful call.
+pub(crate) fn budget_charge(
+    repo: &SqliteRepository,
+    tenant: &domain::TenantId,
+    window: domain::Window,
+    cost_micros: i64,
+) -> Result<(), ApiError> {
+    use repository::{BudgetRepository, BudgetRow};
+    if let Some(row) = repo.get_budget(tenant)? {
+        repo.upsert_budget(
+            tenant,
+            &BudgetRow {
+                limit_micros: row.limit_micros,
+                period_secs: row.period_secs,
+                period_start: window.period_start,
+                spent_micros: window.spent_micros.saturating_add(cost_micros),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// Build the router with all routes + the correlation-id middleware.
@@ -272,6 +376,12 @@ pub fn build_router(state: AppState) -> Router {
             get(tenancy::get_llm_config)
                 .put(tenancy::set_llm_config)
                 .delete(tenancy::clear_llm_config),
+        )
+        .route(
+            "/tenants/:tenant/budget",
+            get(tenancy::get_budget)
+                .put(tenancy::set_budget)
+                .delete(tenancy::clear_budget),
         )
         .route("/tenant", get(tenancy::resolve_tenant))
         // Workspace management under a tenant (WSP-009).
@@ -351,8 +461,13 @@ async fn openapi() -> Json<serde_json::Value> {
             "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
             "/tenants/{tenant}/llm-config": {
                 "get": { "summary": "Get the tenant's LLM override (ADR-125)" },
-                "put": { "summary": "Set the tenant's LLM endpoint/model" },
+                "put": { "summary": "Set the tenant's LLM endpoint/model/key" },
                 "delete": { "summary": "Clear the tenant's LLM override" }
+            },
+            "/tenants/{tenant}/budget": {
+                "get": { "summary": "Get the tenant's LLM budget + spend (ADR-125 Phase 3)" },
+                "put": { "summary": "Grant/update the tenant's budget (owner)" },
+                "delete": { "summary": "Remove the tenant's budget" }
             },
             "/tenants/{tenant}/workspaces": {
                 "get": { "summary": "List a tenant's workspaces" },
@@ -961,20 +1076,24 @@ mod tests {
         .unwrap();
 
         // Resolves to the tenant's endpoint + model (no key configured).
-        let (base, model, key) = resolve_llm(&repo, &ws, "demo", None);
-        assert_eq!(base.as_deref(), Some("http://mac-mini:11434/v1"));
-        assert_eq!(model, "llama3.1");
-        assert!(key.is_none());
+        let r = resolve_llm(&repo, &ws, "demo", None);
+        assert_eq!(r.base_url.as_deref(), Some("http://mac-mini:11434/v1"));
+        assert_eq!(r.model, "llama3.1");
+        assert!(r.api_key.is_none());
+        assert!(r.byo); // a base URL is BYO → no platform budget
+        assert_eq!(r.tenant.as_ref().map(|t| t.as_str()), Some("acme"));
 
-        // An unknown workspace (no row) → no override, default model.
-        let (base, model, _) = resolve_llm(
+        // An unknown workspace (no row) → no override, default model, no tenant.
+        let r = resolve_llm(
             &repo,
             &domain::WorkspaceId::parse("ghost").unwrap(),
             "demo",
             None,
         );
-        assert!(base.is_none());
-        assert_eq!(model, "demo");
+        assert!(r.base_url.is_none());
+        assert_eq!(r.model, "demo");
+        assert!(r.tenant.is_none());
+        assert!(!r.byo);
     }
 
     #[test]
@@ -1006,11 +1125,75 @@ mod tests {
         )
         .unwrap();
 
-        // With the master key the BYO key is decrypted; without it, dropped.
-        let (_, _, key) = resolve_llm(&repo, &ws, "demo", Some(&master));
-        assert_eq!(key.as_deref(), Some("sk-tenant-key"));
-        let (_, _, key) = resolve_llm(&repo, &ws, "demo", None);
-        assert!(key.is_none());
+        // With the master key the BYO key is decrypted (and counts as BYO);
+        // without it, the key is dropped and it's no longer BYO.
+        let r = resolve_llm(&repo, &ws, "demo", Some(&master));
+        assert_eq!(r.api_key.as_deref(), Some("sk-tenant-key"));
+        assert!(r.byo);
+        let r = resolve_llm(&repo, &ws, "demo", None);
+        assert!(r.api_key.is_none());
+        assert!(!r.byo);
+    }
+
+    #[tokio::test]
+    async fn budget_blocks_summaries_when_exhausted() {
+        use repository::{BudgetRepository, BudgetRow, WorkspaceRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let k = key();
+        // Token granting ws-eng, which maps to tenant t1.
+        let token = {
+            let svc = AuthService::new(&repo, &k);
+            svc.login(
+                &domain::DiscordProvider,
+                &domain::ProviderClaims {
+                    subject: "u".into(),
+                    email: None,
+                },
+                vec![domain::WorkspaceId::parse("ws-eng").unwrap()],
+                crate::auth::now_secs(),
+            )
+            .unwrap()
+            .access_token
+        };
+        repo.create_workspace(
+            &domain::Workspace::create(
+                domain::WorkspaceId::parse("ws-eng").unwrap(),
+                domain::TenantId::parse("t1").unwrap(),
+                "Eng",
+                domain::UserId::parse("u1").unwrap(),
+                1,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        // A budget of 1 micro — the first call fits (spent 0 < 1), then exceeds.
+        repo.upsert_budget(
+            &domain::TenantId::parse("t1").unwrap(),
+            &BudgetRow {
+                limit_micros: 1,
+                period_secs: 3600,
+                period_start: crate::auth::now_secs(),
+                spent_micros: 0,
+            },
+        )
+        .unwrap();
+        // Non-zero price so the demo summary actually costs something.
+        let state = AppState::new(repo, k).with_price(1_000);
+        let app = build_router(state);
+        let post = || {
+            Request::post("/workspaces/ws-eng/summaries")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"messages":["hello team","ship on friday"]}"#,
+                ))
+                .unwrap()
+        };
+
+        let first = app.clone().oneshot(post()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK); // allowed; charges the budget
+        let second = app.oneshot(post()).await.unwrap();
+        assert_eq!(second.status(), StatusCode::PAYMENT_REQUIRED); // budget exhausted → 402
     }
 
     #[tokio::test]

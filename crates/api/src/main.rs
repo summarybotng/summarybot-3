@@ -39,6 +39,14 @@ async fn main() -> Result<()> {
     if let Some(model) = env::var("LLM_MODEL").ok().filter(|m| !m.trim().is_empty()) {
         state = state.with_model(model.trim());
     }
+    // Process-default model price (micros per 1k tokens) so platform-key spend
+    // is measurable for per-tenant budgets (ADR-125 Phase 3). Default 0 (demo).
+    if let Some(price) = env::var("LLM_PRICE_PER_KTOKEN")
+        .ok()
+        .and_then(|p| p.trim().parse::<i64>().ok())
+    {
+        state = state.with_price(price);
+    }
     // Master key for encrypting stored tenant API keys (ADR-125 Phase 2b). When
     // unset, tenants can configure a keyless endpoint but not store a BYO key.
     if let Some(raw) = env::var("LLM_CONFIG_KEY")

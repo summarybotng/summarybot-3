@@ -169,15 +169,18 @@ pub async fn create_summary(
         })
         .collect();
 
-    // Resolve any per-tenant LLM override for this workspace (ADR-125 Phase 2a),
-    // then build the engine over that backend + the shared limiter.
-    let (base_url, model, api_key) = {
+    // Resolve any per-tenant LLM override for this workspace (ADR-125), gate on
+    // the tenant's budget, then build the engine over that backend + the shared
+    // limiter.
+    let (resolution, charge) = {
         let repo = state.repo.lock().expect("repo mutex");
-        crate::resolve_llm(&repo, &workspace, &state.model, state.master_key())
+        let r = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
+        let charge = crate::budget_gate(&repo, &r, now)?;
+        (r, charge)
     };
-    let ladder = state.ladder_for(&model);
+    let ladder = state.ladder_for(&resolution.model);
     let engine = ResilientLlm::new(
-        state.client_for_base(base_url, api_key),
+        state.client_for_base(resolution.base_url, resolution.api_key),
         state.limiter.clone(),
     );
     let outcome = SummarizationService::new(&engine, &ladder)
@@ -205,6 +208,10 @@ pub async fn create_summary(
     {
         let repo = state.repo.lock().expect("repo mutex");
         repo.save_record(&workspace, &record)?;
+        // Draw down the tenant's budget by what this call cost (ADR-125 Phase 3).
+        if let Some((tenant, window)) = &charge {
+            crate::budget_charge(&repo, tenant, *window, record.cost_micros)?;
+        }
     }
     state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
     Ok(Json(SummaryDto::from(record)))

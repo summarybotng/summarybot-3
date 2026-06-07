@@ -7,6 +7,7 @@ use anyhow::Result;
 use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
+mod budget;
 mod identity;
 mod job;
 mod llm_config;
@@ -17,6 +18,7 @@ mod session;
 mod summary_store;
 mod whatsapp;
 mod workspace;
+pub use budget::{BudgetRepository, BudgetRow};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
@@ -299,6 +301,16 @@ impl SqliteRepository {
                 base_url    TEXT,
                 model       TEXT,
                 api_key_enc TEXT
+            );
+            -- Per-tenant LLM budget for operator-lent platform-key usage
+            -- (ADR-125 Phase 3): a limit over a rolling window, with accrued
+            -- spend (from summary cost_micros).
+            CREATE TABLE IF NOT EXISTS tenant_budget (
+                tenant_id    TEXT PRIMARY KEY,
+                limit_micros INTEGER NOT NULL,
+                period_secs  INTEGER NOT NULL,
+                period_start INTEGER NOT NULL,
+                spent_micros INTEGER NOT NULL
             );",
         )?;
         // Idempotent column adds for schema evolution (SQLite lacks ADD COLUMN

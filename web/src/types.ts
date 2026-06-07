@@ -85,3 +85,12 @@ export interface LlmConfigUpdate {
   model?: string | null
   api_key?: string | null
 }
+
+export interface Budget {
+  configured: boolean
+  limit_micros: number
+  period_secs: number
+  spent_micros: number
+  remaining_micros: number
+  period_start: number
+}

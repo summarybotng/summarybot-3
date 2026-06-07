@@ -11,6 +11,8 @@ pub enum ApiError {
     Forbidden,
     NotFound,
     Conflict(String),
+    /// Tenant LLM budget exhausted (ADR-125 Phase 3) → 402.
+    BudgetExceeded(String),
     BadRequest(String),
     Internal(String),
 }
@@ -28,6 +30,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
+            ApiError::BudgetExceeded(m) => (StatusCode::PAYMENT_REQUIRED, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
