@@ -38,6 +38,17 @@ pub trait ScheduleRepository {
         consecutive_failures: u32,
         enabled: bool,
     ) -> Result<()>;
+    /// Replace a schedule's recurrence definition + recomputed `next_run`
+    /// (SCM-003), scoped to the workspace. Leaves the consecutive-failure count
+    /// untouched (editing the recurrence is not a run outcome). Returns whether
+    /// a row changed.
+    fn update_schedule(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+        schedule: &Schedule,
+        next_run: i64,
+    ) -> Result<bool>;
     /// Pause/resume a schedule (the management API). Returns whether a row changed.
     fn set_enabled(&self, workspace: &WorkspaceId, id: &str, enabled: bool) -> Result<bool>;
     /// Delete a schedule. Returns whether a row was removed.
@@ -146,6 +157,41 @@ impl ScheduleRepository for SqliteRepository {
             params![id, next_run, consecutive_failures, enabled],
         )?;
         Ok(())
+    }
+
+    fn update_schedule(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+        schedule: &Schedule,
+        next_run: i64,
+    ) -> Result<bool> {
+        let s = schedule;
+        let n = self.conn.execute(
+            "UPDATE schedules SET
+                schedule_type = ?3, at_hour = ?4, at_minute = ?5, days = ?6,
+                day_of_month = ?7, timezone = ?8, once_at = ?9,
+                custom_interval_secs = ?10, enabled = ?11, next_run = ?12,
+                channel = ?13, lookback_secs = ?14
+             WHERE id = ?1 AND workspace_id = ?2",
+            params![
+                id,
+                workspace.as_str(),
+                s.schedule_type.as_str(),
+                s.at.hour,
+                s.at.minute,
+                join_days(&s.day_numbers()),
+                s.day_of_month,
+                s.timezone_name(),
+                s.once_at,
+                s.custom_interval_secs,
+                s.enabled,
+                next_run,
+                s.channel.as_ref().map(|c| c.as_str()),
+                s.lookback_secs,
+            ],
+        )?;
+        Ok(n > 0)
     }
 
     fn set_enabled(&self, workspace: &WorkspaceId, id: &str, enabled: bool) -> Result<bool> {
@@ -290,6 +336,48 @@ mod tests {
             .map(|s| s.id)
             .collect();
         assert_eq!(ids, vec!["early", "late"]); // disabled excluded, ordered by next_run
+    }
+
+    #[test]
+    fn update_schedule_replaces_definition_and_preserves_failures() {
+        let repo = repo();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        let mut s = stored("sch_1", true, 1_000);
+        s.consecutive_failures = 3;
+        repo.create_schedule(&s).unwrap();
+
+        // Edit: switch to a daily 06:00 UTC schedule on a new channel.
+        let edited = Schedule::build(
+            ws.clone(),
+            "daily",
+            6,
+            0,
+            &[],
+            1,
+            "UTC",
+            None,
+            0,
+            true,
+            Some("chat-2"),
+            3_600,
+        )
+        .unwrap();
+        assert!(repo.update_schedule(&ws, "sch_1", &edited, 7_777).unwrap());
+
+        let got = repo.get_schedule(&ws, "sch_1").unwrap().unwrap();
+        assert_eq!(got.schedule.schedule_type.as_str(), "daily");
+        assert_eq!(got.schedule.at.hour, 6);
+        assert_eq!(got.schedule.timezone_name(), "UTC");
+        assert_eq!(got.schedule.channel.as_ref().unwrap().as_str(), "chat-2");
+        assert_eq!(got.schedule.lookback_secs, 3_600);
+        assert_eq!(got.next_run, 7_777);
+        // Failure count is untouched by a definition edit.
+        assert_eq!(got.consecutive_failures, 3);
+
+        // Unknown id / wrong workspace → no change.
+        assert!(!repo.update_schedule(&ws, "ghost", &edited, 1).unwrap());
+        let other = WorkspaceId::parse("ws-other").unwrap();
+        assert!(!repo.update_schedule(&other, "sch_1", &edited, 1).unwrap());
     }
 
     #[test]

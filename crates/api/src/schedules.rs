@@ -130,6 +130,51 @@ pub async fn create_schedule(
     Ok(Json(ScheduleDto::from(stored)))
 }
 
+/// `PUT /workspaces/:ws/schedules/:id` — replace a schedule's recurrence
+/// definition (SCM-003). The enabled/paused state and failure count are
+/// preserved; `next_run` is recomputed from the new recurrence.
+pub async fn update_schedule(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+    Json(body): Json<CreateScheduleRequest>,
+) -> Result<Json<ScheduleDto>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = workspace(ws)?;
+    let repo = state.repo.lock().expect("repo mutex");
+    let current = repo
+        .get_schedule(&workspace, &id)?
+        .ok_or(ApiError::NotFound)?;
+    // Rebuild the definition, preserving the current paused/enabled state.
+    let schedule = domain::Schedule::build(
+        workspace.clone(),
+        &body.schedule_type,
+        body.hour,
+        body.minute,
+        &body.days,
+        body.day_of_month,
+        &body.timezone,
+        body.once_at,
+        body.custom_interval_secs,
+        current.schedule.enabled,
+        body.channel.as_deref(),
+        body.lookback_secs,
+    )
+    .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let next_run = schedule
+        .next_run(now_secs())
+        .ok_or_else(|| ApiError::bad_request("schedule has no future run"))?;
+    if !repo.update_schedule(&workspace, &id, &schedule, next_run)? {
+        return Err(ApiError::NotFound);
+    }
+    Ok(Json(ScheduleDto::from(StoredSchedule {
+        id,
+        schedule,
+        next_run,
+        consecutive_failures: current.consecutive_failures,
+    })))
+}
+
 /// `GET /workspaces/:ws/schedules`
 pub async fn list_schedules(
     State(state): State<AppState>,

@@ -117,7 +117,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/workspaces/:ws/schedules/:id",
-            get(schedules::get_schedule).delete(schedules::delete_schedule),
+            get(schedules::get_schedule)
+                .put(schedules::update_schedule)
+                .delete(schedules::delete_schedule),
         )
         .route(
             "/workspaces/:ws/schedules/:id/pause",
@@ -190,6 +192,7 @@ async fn openapi() -> Json<serde_json::Value> {
             },
             "/workspaces/{ws}/schedules/{id}": {
                 "get": { "summary": "Schedule detail" },
+                "put": { "summary": "Update schedule recurrence (SCM-003)" },
                 "delete": { "summary": "Delete schedule" }
             },
             "/workspaces/{ws}/schedules/{id}/pause": { "post": { "summary": "Pause" } },
@@ -552,6 +555,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(deleted.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn schedule_update_changes_recurrence() {
+        let (state, token) = seeded_state();
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        // Create a daily 09:00 schedule.
+        let created = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/schedules")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"schedule_type":"daily","hour":9,"minute":0,"timezone":"UTC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = body_json(created).await["id"].as_str().unwrap().to_string();
+
+        // Pause it, then edit the recurrence — paused state must be preserved.
+        app.clone()
+            .oneshot(
+                Request::post(format!("/workspaces/ws-1/schedules/{id}/pause"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let updated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/workspaces/ws-1/schedules/{id}"))
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"schedule_type":"daily","hour":6,"minute":30,"timezone":"UTC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+        let uj = body_json(updated).await;
+        assert_eq!(uj["hour"], 6);
+        assert_eq!(uj["minute"], 30);
+        assert_eq!(uj["enabled"], false); // paused state preserved across the edit
+
+        // Updating an unknown schedule is a 404.
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/workspaces/ws-1/schedules/ghost")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"schedule_type":"daily","hour":1,"timezone":"UTC"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
