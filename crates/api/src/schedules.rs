@@ -281,7 +281,9 @@ pub async fn trigger_schedule(
     let stored = repo
         .get_schedule(&workspace, &id)?
         .ok_or(ApiError::NotFound)?;
-    let runner = SummarizingScheduleRunner::new(&*repo, &engine, &ladder);
+    let deliverers = state.deliverers();
+    let runner = SummarizingScheduleRunner::new(&*repo, &engine, &ladder)
+        .with_delivery(&deliverers, state.master_key().copied());
     match runner.run(&stored, now) {
         Ok(()) => {
             // The runner stores under this deterministic id when it produces one.

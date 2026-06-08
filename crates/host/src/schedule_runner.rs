@@ -7,13 +7,15 @@
 //! (summarize/deliver). Synchronous + deterministic given the injected services;
 //! the periodic async driver that calls the scheduler's `tick` is the server's.
 
-use crate::delivery::DeliveryService;
+use crate::delivery::{load_workspace_delivery, Deliverer, DeliveryService};
 use crate::llm::{LlmClient, LlmProvider, RequestPriority, ResilientLlm};
 use crate::scheduler::ScheduleRunner;
 use crate::summarize::{SummarizationService, SummarizeRequest};
 use domain::summarize::{ModelLadder, SummaryFormat, SummaryLength};
-use domain::DeliveryCapabilities;
-use repository::{StoredSchedule, StructuredSummaryRepository, SummaryRecord, WhatsAppRepository};
+use repository::{
+    DestinationRepository, StoredSchedule, StructuredSummaryRepository, SummaryRecord,
+    WhatsAppRepository,
+};
 
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
 /// LLM client so it's testable with fakes.
@@ -24,6 +26,10 @@ pub struct SummarizingScheduleRunner<'a, R, C: LlmClient> {
     length: SummaryLength,
     provider: LlmProvider,
     cap_micros: i64,
+    /// Deliverers for external destinations (DSH-010); empty = dashboard-only.
+    deliverers: &'a [Box<dyn Deliverer + 'a>],
+    /// Master key to decrypt stored destination addresses (`None` = none stored).
+    master: Option<[u8; 32]>,
 }
 
 impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
@@ -35,6 +41,8 @@ impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
             length: SummaryLength::Detailed,
             provider: LlmProvider::OpenRouter,
             cap_micros: i64::MAX,
+            deliverers: &[],
+            master: None,
         }
     }
 
@@ -49,11 +57,23 @@ impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
         self.cap_micros = cap_micros;
         self
     }
+
+    /// Configure external delivery (DSH-010): the deliverer set and the master
+    /// key used to decrypt stored destination addresses.
+    pub fn with_delivery(
+        mut self,
+        deliverers: &'a [Box<dyn Deliverer + 'a>],
+        master: Option<[u8; 32]>,
+    ) -> Self {
+        self.deliverers = deliverers;
+        self.master = master;
+        self
+    }
 }
 
 impl<R, C> ScheduleRunner for SummarizingScheduleRunner<'_, R, C>
 where
-    R: WhatsAppRepository + StructuredSummaryRepository,
+    R: WhatsAppRepository + StructuredSummaryRepository + DestinationRepository,
     C: LlmClient,
 {
     fn run(&self, stored: &StoredSchedule, now: i64) -> Result<(), String> {
@@ -94,14 +114,13 @@ where
             tags: vec![],
             summary: outcome.summary,
         };
+        // Fan out: always-on dashboard store + any configured destinations
+        // (DSH-010/011), gated by the workspace's capabilities.
+        let (destinations, caps) = load_workspace_delivery(self.repo, ws, self.master.as_ref())
+            .map_err(|e| e.to_string())?;
         DeliveryService::new(self.repo)
-            .deliver(
-                ws,
-                &record,
-                &[], // configured per-destination delivery is a later step
-                &DeliveryCapabilities::default(),
-                SummaryFormat::Markdown,
-            )
+            .with_deliverers(self.deliverers)
+            .deliver(ws, &record, &destinations, &caps, SummaryFormat::Markdown)
             .map_err(|e| e.to_string())?;
         Ok(())
     }

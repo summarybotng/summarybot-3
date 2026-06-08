@@ -9,6 +9,7 @@
 //! Phase 6 scheduler) and SSE/WebSocket over Redis are documented seams.
 
 mod auth;
+mod destinations;
 mod error;
 mod events;
 mod scheduler_driver;
@@ -150,6 +151,19 @@ impl AppState {
     /// The master key, if configured.
     pub(crate) fn master_key(&self) -> Option<&[u8; 32]> {
         self.config_key.as_deref()
+    }
+
+    /// The external delivery deliverers (DSH-010). With `http-llm`, a webhook
+    /// deliverer; without it (or without a master key to decrypt addresses),
+    /// the set is empty and only the always-on dashboard store is used.
+    pub(crate) fn deliverers(&self) -> Vec<Box<dyn host::Deliverer>> {
+        #[cfg(feature = "http-llm")]
+        {
+            if self.config_key.is_some() {
+                return vec![Box::new(host::WebhookDeliverer::default())];
+            }
+        }
+        Vec::new()
     }
 
     /// A single-model ladder for the process-default model.
@@ -345,6 +359,18 @@ pub fn build_router(state: AppState) -> Router {
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
         .route("/workspaces/:ws/events", get(events::workspace_events))
+        .route(
+            "/workspaces/:ws/destinations",
+            get(destinations::list_destinations).post(destinations::create_destination),
+        )
+        .route(
+            "/workspaces/:ws/destinations/:id",
+            axum::routing::delete(destinations::delete_destination),
+        )
+        .route(
+            "/workspaces/:ws/destinations/:id/test",
+            post(destinations::test_destination),
+        )
         // WhatsApp export upload (WHA-001) — allow a large body for the zip.
         .route(
             "/workspaces/:ws/whatsapp/imports",
@@ -636,6 +662,94 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json.as_array().unwrap().len(), 1);
         assert_eq!(json[0]["id"], "sum_1");
+    }
+
+    #[tokio::test]
+    async fn manages_webhook_destinations_without_leaking_the_url() {
+        let (state, token) = seeded_state();
+        // Encryption key is required to store a webhook URL at rest.
+        let app = build_router(state.with_config_key([9u8; 32]));
+        let auth = format!("Bearer {token}");
+
+        // Create.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/destinations")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"url":"https://hooks.example.com/services/SECRET/PATH"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let created = body_json(resp).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["kind"], "webhook");
+        assert_eq!(created["enabled"], true);
+        // The hint shows scheme+host only — never the secret path.
+        assert_eq!(created["hint"], "https://hooks.example.com");
+        assert!(!created.to_string().contains("SECRET"));
+
+        // List shows it (still no secret).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/workspaces/ws-1/destinations")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list = body_json(resp).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert!(!list.to_string().contains("SECRET"));
+
+        // Delete.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/workspaces/ws-1/destinations/{id}"))
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // Gone.
+        let resp = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/destinations")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(resp).await.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn create_webhook_destination_requires_an_encryption_key() {
+        let (state, token) = seeded_state(); // no config key
+        let app = build_router(state);
+        let resp = app
+            .oneshot(
+                Request::post("/workspaces/ws-1/destinations")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"url":"https://hooks.example.com/x"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

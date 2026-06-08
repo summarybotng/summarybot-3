@@ -1,5 +1,7 @@
 import type {
   Budget,
+  DeliveryTestResult,
+  Destination,
   LlmConfig,
   LlmConfigUpdate,
   Schedule,
@@ -246,6 +248,31 @@ export class Client {
     return this.json<WhatsappImport>(`/workspaces/${this.ws()}/whatsapp/imports?${p}`, {
       method: 'POST',
       body: file,
+    })
+  }
+
+  // --- delivery destinations (DSH-010/011) ---
+
+  listDestinations(): Promise<Destination[]> {
+    return this.json<Destination[]>(`/workspaces/${this.ws()}/destinations`)
+  }
+
+  /** Add a webhook destination (the URL is encrypted server-side, never returned). */
+  addWebhook(url: string): Promise<Destination> {
+    return this.json<Destination>(
+      `/workspaces/${this.ws()}/destinations`,
+      this.body('POST', { kind: 'webhook', url }),
+    )
+  }
+
+  deleteDestination(id: string): Promise<void> {
+    return this.json<void>(`/workspaces/${this.ws()}/destinations/${id}`, { method: 'DELETE' })
+  }
+
+  /** Send a sample payload to a destination to confirm it works. */
+  testDestination(id: string): Promise<DeliveryTestResult> {
+    return this.json<DeliveryTestResult>(`/workspaces/${this.ws()}/destinations/${id}/test`, {
+      method: 'POST',
     })
   }
 

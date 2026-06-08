@@ -105,3 +105,16 @@ export interface WhatsappImport {
   date_start: number | null
   date_end: number | null
 }
+
+export interface Destination {
+  id: string
+  kind: string
+  enabled: boolean
+  /** Scheme+host of the configured URL; the secret path is never returned. */
+  hint: string | null
+}
+
+export interface DeliveryTestResult {
+  ok: boolean
+  detail: string | null
+}

@@ -48,7 +48,9 @@ pub(crate) fn run_one_tick<C: LlmClient>(
     now: i64,
 ) -> anyhow::Result<TickReport> {
     let repo = state.repo.lock().expect("repo mutex");
-    let runner = SummarizingScheduleRunner::new(&*repo, engine, ladder);
+    let deliverers = state.deliverers();
+    let runner = SummarizingScheduleRunner::new(&*repo, engine, ladder)
+        .with_delivery(&deliverers, state.master_key().copied());
     SchedulerService::new(&*repo).tick(&runner, now)
 }
 

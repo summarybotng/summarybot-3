@@ -19,7 +19,11 @@ pub mod summarize;
 pub mod tenant_routing;
 pub mod whatsapp;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
-pub use delivery::{Deliverer, DeliveryOutcome, DeliveryReport, DeliveryService};
+#[cfg(feature = "http-llm")]
+pub use delivery::WebhookDeliverer;
+pub use delivery::{
+    load_workspace_delivery, Deliverer, DeliveryOutcome, DeliveryReport, DeliveryService,
+};
 pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
 pub use schedule_runner::SummarizingScheduleRunner;

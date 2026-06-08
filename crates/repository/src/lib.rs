@@ -8,6 +8,7 @@ use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
 mod budget;
+mod destination;
 mod identity;
 mod job;
 mod llm_config;
@@ -19,6 +20,7 @@ mod summary_store;
 mod whatsapp;
 mod workspace;
 pub use budget::{BudgetRepository, BudgetRow};
+pub use destination::{DestinationRepository, StoredDestination};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
@@ -311,6 +313,19 @@ impl SqliteRepository {
                 period_secs  INTEGER NOT NULL,
                 period_start INTEGER NOT NULL,
                 spent_micros INTEGER NOT NULL
+            );
+            -- Per-workspace summary delivery destinations (DSH-010/011): the
+            -- address (webhook URL / email) is encrypted at rest with the
+            -- operator master key, like a BYO LLM key. The dashboard store is
+            -- always-on and never stored here.
+            CREATE TABLE IF NOT EXISTS workspace_destinations (
+                workspace_id TEXT NOT NULL,
+                id           TEXT NOT NULL,
+                kind         TEXT NOT NULL,
+                address_enc  TEXT,
+                enabled      INTEGER NOT NULL DEFAULT 1,
+                created_at   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (workspace_id, id)
             );",
         )?;
         // Idempotent column adds for schema evolution (SQLite lacks ADD COLUMN
