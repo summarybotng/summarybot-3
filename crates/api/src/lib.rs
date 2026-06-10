@@ -166,11 +166,6 @@ impl AppState {
         Vec::new()
     }
 
-    /// A single-model ladder for the process-default model.
-    pub(crate) fn model_ladder(&self) -> ModelLadder {
-        self.ladder_for(&self.model)
-    }
-
     /// A single-model ladder for an explicit model name, priced from the
     /// process-default price (ADR-125 Phase 3) so platform-key spend is
     /// measurable. Per-model price tables are a future refinement.
