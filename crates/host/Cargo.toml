@@ -31,6 +31,13 @@ serde_json = "1"
 # OpenAI-compatible HTTP LLM client (ADR-125). Optional + feature-gated: the
 # default build/test stay network-free; enable with `--features http-llm`.
 ureq = { version = "2", optional = true, features = ["json"] }
+# SMTP client for the email delivery sink (ADR-126). Optional + feature-gated.
+# Blocking transport + rustls TLS (no system OpenSSL).
+lettre = { version = "0.11", optional = true, default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "rustls-tls",
+] }
 
 [features]
 # OpenAI-compatible HTTP LLM client (OpenRouter, OpenAI, local Ollama/LM Studio).
@@ -38,6 +45,8 @@ http-llm = ["dep:ureq"]
 # Confluence delivery sink plugin (ADR-126) — publishes summaries to Confluence
 # Cloud over REST. Optional + network-gated like http-llm.
 confluence = ["dep:ureq"]
+# Email (SMTP) delivery sink plugin (ADR-126).
+email = ["dep:lettre"]
 
 [[bin]]
 name = "host"

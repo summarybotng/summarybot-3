@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-08 — ADR-126 Phase 1 (sink-plugin seam) + Confluence plugin
+- **As of:** 2026-06-08 — ADR-126 sink plugins: webhook + Confluence + email
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -17,7 +17,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Scheduling & rolling digests | ✅ **at parity** | per-tenant LLM+budget now wired |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
-| Delivery | 🟡 **~55%** | plugin seam ✅, webhook ✅, Confluence ✅; email/platform-send ⛔/🔩 |
+| Delivery | 🟡 **~70%** | plugin seam ✅, webhook/Confluence/email ✅; platform channel/DM send 🔩 |
 | Discord / Slack ingestion | 🔩 **seam only** | trait exists, no live fetcher or bot |
 | Auth / OAuth | 🟡 **dev seam** | sessions/roles ✅; real OAuth redirect ⛔ |
 | Knowledge (wiki / vector search) | ⛔ **not started** | whole legacy subsystem absent (Phase 7) |
@@ -91,7 +91,7 @@ metrics).
 | Sink **plugin seam** (open kind + encrypted JSON config + schema-driven API/UI) | n/a | ✅ | ADR-126; `host/delivery.rs` registry + descriptors |
 | Webhook (generic + Slack/Discord incoming) | ✅ | ✅ | reference **sink plugin** (`--features http-llm`); encrypted config, test-send (verified live) |
 | Confluence publishing | ✅ | ✅ | **sink plugin** (`--features confluence`); Cloud REST, API token; schema-driven UI verified live (real publish not yet tested against a live instance) |
-| Email (SMTP) | ✅ | ⛔ | next sink plugin; no deliverer yet |
+| Email (SMTP) | ✅ | ✅ | **sink plugin** (`--features email`); lettre blocking SMTP, STARTTLS/TLS; schema-driven UI verified live (real send not yet tested against a live SMTP server) |
 | Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
 | Google Drive (publish summaries) | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); blocked on real OAuth |
 | Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown `render()`; others not ported |

@@ -14,6 +14,8 @@ publish.workspace = true
 http-llm = ["host/http-llm"]
 # Confluence delivery sink plugin (ADR-126). Optional + network-gated.
 confluence = ["host/confluence"]
+# Email (SMTP) delivery sink plugin (ADR-126). Optional + network-gated.
+email = ["host/email"]
 
 [dependencies]
 domain.workspace = true

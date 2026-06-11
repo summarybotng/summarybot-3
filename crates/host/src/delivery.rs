@@ -73,6 +73,8 @@ pub fn sink_descriptors() -> Vec<SinkDescriptor> {
     out.push(WEBHOOK_DESCRIPTOR);
     #[cfg(feature = "confluence")]
     out.push(CONFLUENCE_DESCRIPTOR);
+    #[cfg(feature = "email")]
+    out.push(EMAIL_DESCRIPTOR);
     out
 }
 
@@ -85,6 +87,8 @@ pub fn build_deliverers() -> Vec<Box<dyn Deliverer>> {
     out.push(Box::new(WebhookDeliverer::default()));
     #[cfg(feature = "confluence")]
     out.push(Box::new(ConfluenceDeliverer::default()));
+    #[cfg(feature = "email")]
+    out.push(Box::new(EmailDeliverer));
     out
 }
 
@@ -426,6 +430,135 @@ fn to_storage_html(rendered: &str) -> String {
     format!("<p>{escaped}</p>")
 }
 
+// ---- email (SMTP) sink plugin (ADR-126; legacy ADR-030) --------------------
+
+/// SMTP config: server + port, login credentials, and from/to addresses.
+#[cfg(feature = "email")]
+const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "email",
+    display_name: "Email (SMTP)",
+    fields: &[
+        FieldSpec {
+            name: "smtp_host",
+            label: "SMTP host (e.g. smtp.gmail.com)",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "smtp_port",
+            label: "SMTP port (587 STARTTLS / 465 TLS)",
+            secret: false,
+            required: false,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "username",
+            label: "Username",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "password",
+            label: "Password / app password",
+            secret: true,
+            required: true,
+            hint: FieldHint::None,
+        },
+        FieldSpec {
+            name: "from",
+            label: "From address",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "to",
+            label: "To address",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+    ],
+};
+
+/// Send each summary as a plain-text email over SMTP (DEL-004). Port 465 uses
+/// implicit TLS; anything else (default 587) uses STARTTLS. Single recipient for
+/// now — multiple recipients are a later refinement.
+#[cfg(feature = "email")]
+pub struct EmailDeliverer;
+
+#[cfg(feature = "email")]
+impl Deliverer for EmailDeliverer {
+    fn id(&self) -> &str {
+        "email"
+    }
+
+    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String> {
+        use lettre::transport::smtp::authentication::Credentials;
+        use lettre::{Message, SmtpTransport, Transport};
+
+        let field = |k: &str| config.get(k).and_then(Value::as_str).unwrap_or("").trim();
+        let host = field("smtp_host");
+        let username = field("username");
+        let password = field("password");
+        let from = field("from");
+        let to = field("to");
+        if host.is_empty()
+            || username.is_empty()
+            || password.is_empty()
+            || from.is_empty()
+            || to.is_empty()
+        {
+            return Err("email config is incomplete".to_string());
+        }
+        let port: u16 = match field("smtp_port") {
+            "" => 587,
+            p => p.parse().map_err(|_| format!("invalid smtp_port: {p}"))?,
+        };
+
+        let subject = email_subject(rendered);
+        let message = Message::builder()
+            .from(from.parse().map_err(|e| format!("bad from address: {e}"))?)
+            .to(to.parse().map_err(|e| format!("bad to address: {e}"))?)
+            .subject(subject)
+            .body(rendered.to_string())
+            .map_err(|e| format!("building email: {e}"))?;
+
+        // 465 = implicit TLS; otherwise STARTTLS (587).
+        let builder = if port == 465 {
+            SmtpTransport::relay(host)
+        } else {
+            SmtpTransport::starttls_relay(host)
+        }
+        .map_err(|e| format!("smtp setup: {e}"))?;
+        let mailer = builder
+            .port(port)
+            .credentials(Credentials::new(username.to_string(), password.to_string()))
+            .build();
+
+        mailer
+            .send(&message)
+            .map(|_| ())
+            .map_err(|e| format!("smtp send failed: {e}"))
+    }
+}
+
+/// An email subject from the summary's first line.
+#[cfg(feature = "email")]
+fn email_subject(rendered: &str) -> String {
+    let first = rendered
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("Summary")
+        .trim_start_matches('#')
+        .trim();
+    let snippet: String = first.chars().take(80).collect();
+    format!("SummaryBot: {snippet}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -670,5 +803,35 @@ mod tests {
         let (dests, caps) = load_workspace_delivery(&store, &ws(), None).unwrap();
         assert!(dests.is_empty());
         assert!(caps.enabled.is_empty());
+    }
+
+    #[cfg(feature = "email")]
+    #[test]
+    fn email_deliverer_rejects_incomplete_config_before_connecting() {
+        let d = EmailDeliverer;
+        assert_eq!(d.id(), "email");
+        // Missing username/password/from/to → fails fast, no SMTP attempt.
+        let err = d
+            .deliver(
+                &serde_json::json!({ "smtp_host": "smtp.example.com" }),
+                "hi",
+            )
+            .unwrap_err();
+        assert!(err.contains("incomplete"), "got: {err}");
+        // A bad port is reported without connecting.
+        let err = d
+            .deliver(
+                &serde_json::json!({
+                    "smtp_host": "smtp.example.com",
+                    "smtp_port": "not-a-number",
+                    "username": "u",
+                    "password": "p",
+                    "from": "a@b.com",
+                    "to": "c@d.com",
+                }),
+                "hi",
+            )
+            .unwrap_err();
+        assert!(err.contains("invalid smtp_port"), "got: {err}");
     }
 }
