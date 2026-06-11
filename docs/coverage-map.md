@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** commit `f1b6f43` (2026-06-08)
+- **As of:** 2026-06-08 — ADR-126 Phase 1 (sink-plugin seam) + Confluence plugin
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -17,7 +17,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Scheduling & rolling digests | ✅ **at parity** | per-tenant LLM+budget now wired |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
-| Delivery | 🟡 **~40%** | webhook ✅; email/Confluence/platform-send ⛔/🔩 |
+| Delivery | 🟡 **~55%** | plugin seam ✅, webhook ✅, Confluence ✅; email/platform-send ⛔/🔩 |
 | Discord / Slack ingestion | 🔩 **seam only** | trait exists, no live fetcher or bot |
 | Auth / OAuth | 🟡 **dev seam** | sessions/roles ✅; real OAuth redirect ⛔ |
 | Knowledge (wiki / vector search) | ⛔ **not started** | whole legacy subsystem absent (Phase 7) |
@@ -88,10 +88,11 @@ metrics).
 | Feature | Legacy | Rewrite | Notes |
 |---|---|---|---|
 | Dashboard store (always-on) | ✅ | ✅ | `repository/summary_store.rs` |
-| Webhook (generic + Slack/Discord incoming) | ✅ | ✅ | `WebhookDeliverer`, encrypted URL, test-send (DSH-010, verified live) |
-| Email (SMTP) | ✅ | 🔩 | `Email` kind gated in policy; **no deliverer** |
+| Sink **plugin seam** (open kind + encrypted JSON config + schema-driven API/UI) | n/a | ✅ | ADR-126; `host/delivery.rs` registry + descriptors |
+| Webhook (generic + Slack/Discord incoming) | ✅ | ✅ | reference **sink plugin** (`--features http-llm`); encrypted config, test-send (verified live) |
+| Confluence publishing | ✅ | ✅ | **sink plugin** (`--features confluence`); Cloud REST, API token; schema-driven UI verified live (real publish not yet tested against a live instance) |
+| Email (SMTP) | ✅ | ⛔ | next sink plugin; no deliverer yet |
 | Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
-| Confluence publishing | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); buildable now (API token) |
 | Google Drive (publish summaries) | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); blocked on real OAuth |
 | Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown `render()`; others not ported |
 | Push templates per destination | ✅ | ⛔ | — |

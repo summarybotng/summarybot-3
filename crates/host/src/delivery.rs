@@ -1,27 +1,97 @@
-//! Delivery dispatch (PRD §4) — host orchestration over the domain gating
-//! policy + the always-on dashboard store.
+//! Delivery dispatch (PRD §4; ADR-126 plugin sinks) — host orchestration over
+//! the domain gating policy + the always-on dashboard store.
 //!
 //! Every summary is **always** persisted to the structured store (the dashboard
 //! destination, PRD §4 item 3). Additional destinations are gated by the pure
 //! [`domain::resolve_delivery`] policy (DEL-010/011, DEN-*) and, if allowed,
-//! rendered and handed to a registered [`Deliverer`]. Concrete deliverers
-//! (Discord/Slack/email/webhook) do real network I/O and land with the Phase 5
-//! runtime; this defines the seam and a fake for testing the dispatch logic.
+//! rendered and handed to a registered [`Deliverer`].
+//!
+//! Sinks are **plugins** (ADR-126): each has a string `id` ("webhook",
+//! "confluence", …), a config schema, and a `Deliverer`. They're compiled in
+//! behind cargo features (network-free by default) and enabled + configured per
+//! workspace. A destination's config is an encrypted JSON blob (one field for a
+//! webhook URL, several for Confluence); the repository never sees plaintext.
 
 use domain::summarize::{render, SummaryFormat};
 use domain::{
-    resolve_delivery, DeliveryCapabilities, DeliveryDecision, DeliveryReject, Destination,
-    DestinationKind, WorkspaceId,
+    resolve_delivery, DeliveryCapabilities, DeliveryClass, DeliveryDecision, DeliveryReject,
+    Destination, WorkspaceId,
 };
 use repository::{DestinationRepository, StructuredSummaryRepository, SummaryRecord};
+use serde_json::Value;
 
-/// A sender for one non-dashboard destination kind. Sync for now (matches the
-/// codebase); real network impls arrive with the async runtime.
+/// A sink plugin: sends an already-rendered summary to one destination kind,
+/// given that destination's decrypted JSON config. Sync for now (matches the
+/// codebase); object-safe so plugins compose in a registry.
 pub trait Deliverer {
-    fn kind(&self) -> DestinationKind;
-    /// Send the already-rendered summary to `dest`. `Err` is a transport/format
-    /// failure message.
-    fn deliver(&self, dest: &Destination, rendered: &str) -> Result<(), String>;
+    /// The destination kind id this plugin handles ("webhook", "confluence", …).
+    fn id(&self) -> &str;
+    /// Send `rendered` using `config` (the decrypted per-destination JSON).
+    /// `Err` is a transport/config failure message.
+    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String>;
+}
+
+/// How a config field's value may be surfaced back to the client (the value is
+/// always stored encrypted; this only controls the non-secret display hint).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldHint {
+    /// Show the value as-is (e.g. a base URL, a space key).
+    Full,
+    /// Show only `scheme://host` of a URL (e.g. a webhook URL with a secret path).
+    Host,
+    /// Never echo (e.g. an API token).
+    None,
+}
+
+/// One field of a sink plugin's config schema.
+#[derive(Debug, Clone, Copy)]
+pub struct FieldSpec {
+    pub name: &'static str,
+    pub label: &'static str,
+    /// Render as a password input and never echo the value back.
+    pub secret: bool,
+    pub required: bool,
+    pub hint: FieldHint,
+}
+
+/// A sink plugin's descriptor — drives API validation and the dashboard form.
+#[derive(Debug, Clone)]
+pub struct SinkDescriptor {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub fields: &'static [FieldSpec],
+}
+
+/// Descriptors for every sink plugin compiled into this build (ADR-126). The
+/// dashboard renders a config form from these; the API validates against them.
+// Conditional (cfg-gated) pushes, so a vec! literal won't do.
+#[allow(clippy::vec_init_then_push)]
+pub fn sink_descriptors() -> Vec<SinkDescriptor> {
+    #[allow(unused_mut)]
+    let mut out: Vec<SinkDescriptor> = Vec::new();
+    #[cfg(feature = "http-llm")]
+    out.push(WEBHOOK_DESCRIPTOR);
+    #[cfg(feature = "confluence")]
+    out.push(CONFLUENCE_DESCRIPTOR);
+    out
+}
+
+/// The deliverer set for every sink plugin compiled into this build.
+#[allow(clippy::vec_init_then_push)]
+pub fn build_deliverers() -> Vec<Box<dyn Deliverer>> {
+    #[allow(unused_mut)]
+    let mut out: Vec<Box<dyn Deliverer>> = Vec::new();
+    #[cfg(feature = "http-llm")]
+    out.push(Box::new(WebhookDeliverer::default()));
+    #[cfg(feature = "confluence")]
+    out.push(Box::new(ConfluenceDeliverer::default()));
+    out
+}
+
+/// A gating destination paired with its decrypted config, ready to dispatch.
+pub struct ConfiguredDestination {
+    pub dest: Destination,
+    pub config: Value,
 }
 
 /// Per-destination result.
@@ -37,10 +107,11 @@ pub enum DeliveryOutcome {
     Failed(String),
 }
 
-/// What happened across all destinations for one summary.
+/// What happened across all destinations for one summary. Keyed by the open kind
+/// string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryReport {
-    pub results: Vec<(DestinationKind, DeliveryOutcome)>,
+    pub results: Vec<(String, DeliveryOutcome)>,
 }
 
 impl DeliveryReport {
@@ -68,19 +139,19 @@ impl<'a, R: StructuredSummaryRepository> DeliveryService<'a, R> {
         }
     }
 
-    /// Register the deliverer set used for external (non-dashboard) destinations.
+    /// Register the sink-plugin set used for external (non-dashboard) destinations.
     pub fn with_deliverers(mut self, deliverers: &'a [Box<dyn Deliverer + 'a>]) -> Self {
         self.deliverers = deliverers;
         self
     }
 
-    /// Persist to the dashboard (always-on) and deliver to each requested extra
+    /// Persist to the dashboard (always-on) and deliver to each configured extra
     /// destination, gated by the workspace capabilities.
     pub fn deliver(
         &self,
         workspace: &WorkspaceId,
         record: &SummaryRecord,
-        destinations: &[Destination],
+        destinations: &[ConfiguredDestination],
         caps: &DeliveryCapabilities,
         format: SummaryFormat,
     ) -> anyhow::Result<DeliveryReport> {
@@ -88,105 +159,102 @@ impl<'a, R: StructuredSummaryRepository> DeliveryService<'a, R> {
 
         // Always-on dashboard store (PRD §4 item 3).
         self.store.save_record(workspace, record)?;
-        results.push((DestinationKind::Dashboard, DeliveryOutcome::Stored));
+        results.push(("dashboard".to_string(), DeliveryOutcome::Stored));
 
         let rendered = render(&record.summary, format);
-        for dest in destinations {
-            if dest.kind == DestinationKind::Dashboard {
+        for cd in destinations {
+            if cd.dest.class == DeliveryClass::Dashboard {
                 continue; // already stored, unconditionally
             }
-            let outcome = match resolve_delivery(dest, caps) {
+            let outcome = match resolve_delivery(&cd.dest, caps) {
                 DeliveryDecision::Rejected(reason) => DeliveryOutcome::Rejected(reason),
-                DeliveryDecision::Allowed => self.dispatch(dest, &rendered),
+                DeliveryDecision::Allowed => self.dispatch(&cd.dest.kind, &cd.config, &rendered),
             };
-            results.push((dest.kind, outcome));
+            results.push((cd.dest.kind.clone(), outcome));
         }
         Ok(DeliveryReport { results })
     }
 
-    fn dispatch(&self, dest: &Destination, rendered: &str) -> DeliveryOutcome {
-        match self.deliverers.iter().find(|d| d.kind() == dest.kind) {
-            Some(d) => match d.deliver(dest, rendered) {
+    fn dispatch(&self, kind: &str, config: &Value, rendered: &str) -> DeliveryOutcome {
+        match self.deliverers.iter().find(|d| d.id() == kind) {
+            Some(d) => match d.deliver(config, rendered) {
                 Ok(()) => DeliveryOutcome::Delivered,
                 Err(e) => DeliveryOutcome::Failed(e),
             },
-            None => DeliveryOutcome::Failed(format!("no deliverer for {:?}", dest.kind)),
+            None => DeliveryOutcome::Failed(format!("no deliverer for {kind}")),
         }
     }
 }
 
-/// String form of a [`DestinationKind`] as stored in the repository.
-pub fn kind_str(kind: DestinationKind) -> &'static str {
-    match kind {
-        DestinationKind::Dashboard => "dashboard",
-        DestinationKind::PlatformChannel => "platform_channel",
-        DestinationKind::PlatformDm => "platform_dm",
-        DestinationKind::Email => "email",
-        DestinationKind::Webhook => "webhook",
+/// Decrypt a stored destination's config blob. New rows hold a JSON object;
+/// legacy webhook rows held a bare URL string — wrap those as `{"url": …}` so
+/// downstream always sees an object.
+fn decode_config(master: Option<&[u8; 32]>, enc: &str) -> Option<Value> {
+    let key = master?;
+    let plain = crate::decrypt_secret(key, enc).ok()?;
+    match serde_json::from_str::<Value>(&plain) {
+        Ok(v) if v.is_object() => Some(v),
+        _ => Some(serde_json::json!({ "url": plain })),
     }
 }
 
-/// Parse a stored `kind` string back to a [`DestinationKind`] (`None` if unknown
-/// — a forward-compatible row this build doesn't understand).
-pub fn parse_kind(kind: &str) -> Option<DestinationKind> {
-    Some(match kind {
-        "dashboard" => DestinationKind::Dashboard,
-        "platform_channel" => DestinationKind::PlatformChannel,
-        "platform_dm" => DestinationKind::PlatformDm,
-        "email" => DestinationKind::Email,
-        "webhook" => DestinationKind::Webhook,
-        _ => return None,
-    })
-}
-
-/// Build the [`Destination`] list + [`DeliveryCapabilities`] for a workspace from
-/// its stored destinations (DSH-010/011). Decrypts each address with the operator
-/// master key; a row that can't be decrypted (no key, or tampered) is skipped and
-/// not marked configured, so [`resolve_delivery`] rejects it rather than sending
-/// to a bad address. Only **enabled** destinations are returned for sending; a
-/// kind is `enabled`/`configured` in the caps when it has at least one such row.
+/// Build the configured-destination list + [`DeliveryCapabilities`] for a
+/// workspace from its stored destinations (DSH-010/011, ADR-126). Decrypts each
+/// config with the operator master key; a row that can't be decrypted (no key,
+/// or tampered) is skipped and not marked configured, so [`resolve_delivery`]
+/// rejects it rather than sending to a bad address. All stored sinks are
+/// `Service`-class; only **enabled** rows are returned.
 pub fn load_workspace_delivery(
     repo: &impl DestinationRepository,
     workspace: &WorkspaceId,
     master: Option<&[u8; 32]>,
-) -> anyhow::Result<(Vec<Destination>, DeliveryCapabilities)> {
+) -> anyhow::Result<(Vec<ConfiguredDestination>, DeliveryCapabilities)> {
     let mut destinations = Vec::new();
     let mut caps = DeliveryCapabilities::default();
     for row in repo.list_destinations(workspace)? {
         if !row.enabled {
             continue;
         }
-        let Some(kind) = parse_kind(&row.kind) else {
+        let Some(enc) = &row.address_enc else {
             continue;
         };
-        // Decrypt the address; skip rows we can't read (missing key / bad cipher).
-        let address = match (&row.address_enc, master) {
-            (Some(enc), Some(key)) => match crate::decrypt_secret(key, enc) {
-                Ok(plain) => Some(plain),
-                Err(_) => continue,
-            },
-            _ => continue,
+        let Some(config) = decode_config(master, enc) else {
+            continue;
         };
-        if !caps.enabled.contains(&kind) {
-            caps.enabled.push(kind);
+        if !caps.enabled.contains(&row.kind) {
+            caps.enabled.push(row.kind.clone());
         }
-        if !caps.configured.contains(&kind) {
-            caps.configured.push(kind);
+        if !caps.configured.contains(&row.kind) {
+            caps.configured.push(row.kind.clone());
         }
-        destinations.push(Destination {
-            kind,
-            platform: None,
-            address,
+        destinations.push(ConfiguredDestination {
+            dest: Destination::service(row.kind),
+            config,
         });
     }
     Ok((destinations, caps))
 }
 
-/// Concrete webhook deliverer (DSH-010): POST the rendered summary as JSON to a
-/// configured URL. Covers generic webhooks and incoming-webhook URLs for Slack
-/// (`{"text": ...}`) / Discord (`{"content": ...}`) — we send all three keys so a
-/// single payload satisfies the common receivers. Network I/O, so feature-gated
-/// like the HTTP LLM client; the default build stays offline.
+// ---- webhook sink plugin (ADR-126; DSH-010) --------------------------------
+
+/// Webhook config schema: a single URL (secret path, host-only hint).
+#[cfg(feature = "http-llm")]
+const WEBHOOK_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "webhook",
+    display_name: "Webhook",
+    fields: &[FieldSpec {
+        name: "url",
+        label: "Webhook URL",
+        secret: true,
+        required: true,
+        hint: FieldHint::Host,
+    }],
+};
+
+/// POST the rendered summary as JSON to a configured URL. Covers generic
+/// webhooks and incoming-webhook URLs for Slack (`{"text":…}`) / Discord
+/// (`{"content":…}`) — all three keys are sent so one payload satisfies the
+/// common receivers.
 #[cfg(feature = "http-llm")]
 pub struct WebhookDeliverer {
     timeout_secs: u64,
@@ -201,18 +269,16 @@ impl Default for WebhookDeliverer {
 
 #[cfg(feature = "http-llm")]
 impl Deliverer for WebhookDeliverer {
-    fn kind(&self) -> DestinationKind {
-        DestinationKind::Webhook
+    fn id(&self) -> &str {
+        "webhook"
     }
 
-    fn deliver(&self, dest: &Destination, rendered: &str) -> Result<(), String> {
-        let url = dest
-            .address
-            .as_deref()
+    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String> {
+        let url = config
+            .get("url")
+            .and_then(Value::as_str)
             .filter(|u| !u.is_empty())
             .ok_or_else(|| "webhook destination has no url".to_string())?;
-        // `text`/`content` satisfy Slack/Discord incoming webhooks; `summary`
-        // is the generic field. The body is the already-rendered markdown.
         let body = serde_json::json!({
             "text": rendered,
             "content": rendered,
@@ -229,11 +295,142 @@ impl Deliverer for WebhookDeliverer {
     }
 }
 
+// ---- Confluence sink plugin (ADR-126; legacy ADR-099) ----------------------
+
+/// Confluence Cloud config: base URL, space key, account email + API token.
+#[cfg(feature = "confluence")]
+const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "confluence",
+    display_name: "Confluence",
+    fields: &[
+        FieldSpec {
+            name: "base_url",
+            label: "Base URL (e.g. https://acme.atlassian.net)",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "space_key",
+            label: "Space key",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "email",
+            label: "Account email",
+            secret: false,
+            required: true,
+            hint: FieldHint::Full,
+        },
+        FieldSpec {
+            name: "api_token",
+            label: "API token",
+            secret: true,
+            required: true,
+            hint: FieldHint::None,
+        },
+    ],
+};
+
+/// Publish each summary as a new Confluence page (DEL-006). Cloud REST v1:
+/// `POST {base_url}/wiki/rest/api/content` with Basic auth (`email:api_token`).
+/// The rendered markdown is wrapped as minimal storage-format XHTML — rich
+/// markdown→storage conversion is a later refinement.
+#[cfg(feature = "confluence")]
+pub struct ConfluenceDeliverer {
+    timeout_secs: u64,
+}
+
+#[cfg(feature = "confluence")]
+impl Default for ConfluenceDeliverer {
+    fn default() -> Self {
+        Self { timeout_secs: 20 }
+    }
+}
+
+#[cfg(feature = "confluence")]
+impl Deliverer for ConfluenceDeliverer {
+    fn id(&self) -> &str {
+        "confluence"
+    }
+
+    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String> {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+
+        let field = |k: &str| config.get(k).and_then(Value::as_str).unwrap_or("").trim();
+        let base_url = field("base_url").trim_end_matches('/');
+        let space_key = field("space_key");
+        let email = field("email");
+        let token = field("api_token");
+        if base_url.is_empty() || space_key.is_empty() || email.is_empty() || token.is_empty() {
+            return Err("confluence config is incomplete".to_string());
+        }
+
+        let title = confluence_title(rendered);
+        let body = serde_json::json!({
+            "type": "page",
+            "title": title,
+            "space": { "key": space_key },
+            "body": {
+                "storage": { "value": to_storage_html(rendered), "representation": "storage" }
+            }
+        });
+        let auth = format!("Basic {}", STANDARD.encode(format!("{email}:{token}")));
+        let endpoint = format!("{base_url}/wiki/rest/api/content");
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .build();
+        match agent
+            .post(&endpoint)
+            .set("Authorization", &auth)
+            .set("Content-Type", "application/json")
+            .send_json(body)
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, _)) => Err(format!("confluence returned http {code}")),
+            Err(ureq::Error::Transport(t)) => Err(format!("confluence transport error: {t}")),
+        }
+    }
+}
+
+/// A page title from the summary's first line, made unique (Confluence titles
+/// are unique per space) with a clock suffix.
+#[cfg(feature = "confluence")]
+fn confluence_title(rendered: &str) -> String {
+    let first = rendered
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("Summary")
+        .trim_start_matches('#')
+        .trim();
+    let snippet: String = first.chars().take(80).collect();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("SummaryBot: {snippet} ({ts})")
+}
+
+/// Minimal markdown→Confluence storage XHTML: escape, newlines→`<br/>`, wrap.
+#[cfg(feature = "confluence")]
+fn to_storage_html(rendered: &str) -> String {
+    let escaped = rendered
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\n', "<br/>");
+    format!("<p>{escaped}</p>")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use domain::summarize::{ExtractedSummary, ResolvedCitation};
-    use domain::{MessageId, Platform};
+    use domain::MessageId;
     use repository::SqliteRepository;
     use std::cell::RefCell;
 
@@ -266,26 +463,25 @@ mod tests {
         }
     }
 
-    /// Records what it was asked to deliver.
+    /// Records what it was asked to deliver, for a given kind id.
     struct SpyDeliverer {
-        kind: DestinationKind,
+        id: &'static str,
         sent: RefCell<Vec<String>>,
     }
     impl Deliverer for SpyDeliverer {
-        fn kind(&self) -> DestinationKind {
-            self.kind
+        fn id(&self) -> &str {
+            self.id
         }
-        fn deliver(&self, _dest: &Destination, rendered: &str) -> Result<(), String> {
+        fn deliver(&self, _config: &Value, rendered: &str) -> Result<(), String> {
             self.sent.borrow_mut().push(rendered.to_string());
             Ok(())
         }
     }
 
-    fn chan(platform: Platform, addr: &str) -> Destination {
-        Destination {
-            kind: DestinationKind::PlatformChannel,
-            platform: Some(platform),
-            address: Some(addr.to_string()),
+    fn cfg(kind: &str) -> ConfiguredDestination {
+        ConfiguredDestination {
+            dest: Destination::service(kind),
+            config: serde_json::json!({ "url": "https://x" }),
         }
     }
 
@@ -304,60 +500,59 @@ mod tests {
             .unwrap();
         assert_eq!(
             report.results,
-            vec![(DestinationKind::Dashboard, DeliveryOutcome::Stored)]
+            vec![("dashboard".to_string(), DeliveryOutcome::Stored)]
         );
-        // And it's actually persisted.
         assert!(store.get_record(&ws(), "sum_1").unwrap().is_some());
     }
 
     #[test]
-    fn allowed_platform_destination_is_delivered_rendered() {
+    fn allowed_service_destination_is_delivered_rendered() {
         let store = SqliteRepository::in_memory().unwrap();
         let deliverers: Vec<Box<dyn Deliverer>> = vec![Box::new(SpyDeliverer {
-            kind: DestinationKind::PlatformChannel,
+            id: "webhook",
             sent: RefCell::new(vec![]),
         })];
         let svc = DeliveryService::new(&store).with_deliverers(&deliverers);
         let caps = DeliveryCapabilities {
-            connected_platforms: vec![Platform::Discord],
-            enabled: vec![DestinationKind::PlatformChannel],
-            configured: vec![],
-        };
-        let report = svc
-            .deliver(
-                &ws(),
-                &record(),
-                &[chan(Platform::Discord, "c1")],
-                &caps,
-                SummaryFormat::Markdown,
-            )
-            .unwrap();
-        assert!(report
-            .results
-            .contains(&(DestinationKind::PlatformChannel, DeliveryOutcome::Delivered)));
-        assert_eq!(report.delivered_count(), 2); // dashboard + channel
-    }
-
-    #[test]
-    fn unconnected_platform_destination_is_rejected() {
-        let store = SqliteRepository::in_memory().unwrap();
-        let svc = DeliveryService::new(&store);
-        let caps = DeliveryCapabilities {
-            enabled: vec![DestinationKind::PlatformChannel],
+            enabled: vec!["webhook".into()],
+            configured: vec!["webhook".into()],
             ..DeliveryCapabilities::default()
         };
         let report = svc
             .deliver(
                 &ws(),
                 &record(),
-                &[chan(Platform::Discord, "c1")],
+                &[cfg("webhook")],
+                &caps,
+                SummaryFormat::Markdown,
+            )
+            .unwrap();
+        assert!(report
+            .results
+            .contains(&("webhook".to_string(), DeliveryOutcome::Delivered)));
+        assert_eq!(report.delivered_count(), 2); // dashboard + webhook
+    }
+
+    #[test]
+    fn unconfigured_service_destination_is_rejected() {
+        let store = SqliteRepository::in_memory().unwrap();
+        let svc = DeliveryService::new(&store);
+        let caps = DeliveryCapabilities {
+            enabled: vec!["webhook".into()], // enabled but not configured
+            ..DeliveryCapabilities::default()
+        };
+        let report = svc
+            .deliver(
+                &ws(),
+                &record(),
+                &[cfg("webhook")],
                 &caps,
                 SummaryFormat::Markdown,
             )
             .unwrap();
         assert!(report.results.contains(&(
-            DestinationKind::PlatformChannel,
-            DeliveryOutcome::Rejected(DeliveryReject::PlatformNotConnected)
+            "webhook".to_string(),
+            DeliveryOutcome::Rejected(DeliveryReject::NotConfigured)
         )));
     }
 
@@ -366,39 +561,21 @@ mod tests {
         let store = SqliteRepository::in_memory().unwrap();
         let svc = DeliveryService::new(&store); // no deliverers registered
         let caps = DeliveryCapabilities {
-            connected_platforms: vec![Platform::Discord],
-            enabled: vec![DestinationKind::PlatformChannel],
+            enabled: vec!["webhook".into()],
+            configured: vec!["webhook".into()],
             ..DeliveryCapabilities::default()
         };
         let report = svc
             .deliver(
                 &ws(),
                 &record(),
-                &[chan(Platform::Discord, "c1")],
+                &[cfg("webhook")],
                 &caps,
                 SummaryFormat::Markdown,
             )
             .unwrap();
-        let (_, outcome) = report
-            .results
-            .iter()
-            .find(|(k, _)| *k == DestinationKind::PlatformChannel)
-            .unwrap();
+        let (_, outcome) = report.results.iter().find(|(k, _)| k == "webhook").unwrap();
         assert!(matches!(outcome, DeliveryOutcome::Failed(_)));
-    }
-
-    #[test]
-    fn kind_string_round_trips() {
-        for k in [
-            DestinationKind::Dashboard,
-            DestinationKind::PlatformChannel,
-            DestinationKind::PlatformDm,
-            DestinationKind::Email,
-            DestinationKind::Webhook,
-        ] {
-            assert_eq!(parse_kind(kind_str(k)), Some(k));
-        }
-        assert_eq!(parse_kind("from-the-future"), None);
     }
 
     #[test]
@@ -406,7 +583,7 @@ mod tests {
         use repository::{DestinationRepository, StoredDestination};
         let master = [7u8; 32];
         let store = SqliteRepository::in_memory().unwrap();
-        let enc = crate::encrypt_secret(&master, "https://hooks.example/abc").unwrap();
+        let enc = crate::encrypt_secret(&master, r#"{"url":"https://hooks.example/abc"}"#).unwrap();
         store
             .upsert_destination(
                 &ws(),
@@ -426,7 +603,7 @@ mod tests {
                 &StoredDestination {
                     id: "d2".into(),
                     kind: "webhook".into(),
-                    address_enc: Some(crate::encrypt_secret(&master, "https://off").unwrap()),
+                    address_enc: Some(crate::encrypt_secret(&master, r#"{"url":"off"}"#).unwrap()),
                     enabled: false,
                     created_at: 2,
                 },
@@ -435,18 +612,42 @@ mod tests {
 
         let (dests, caps) = load_workspace_delivery(&store, &ws(), Some(&master)).unwrap();
         assert_eq!(dests.len(), 1);
-        assert_eq!(dests[0].kind, DestinationKind::Webhook);
+        assert_eq!(dests[0].dest.kind, "webhook");
         assert_eq!(
-            dests[0].address.as_deref(),
+            dests[0].config.get("url").and_then(Value::as_str),
             Some("https://hooks.example/abc")
         );
-        assert!(caps.enabled.contains(&DestinationKind::Webhook));
-        assert!(caps.configured.contains(&DestinationKind::Webhook));
-
-        // The decrypted destination passes the gate.
+        assert!(caps.enabled.iter().any(|k| k == "webhook"));
+        assert!(caps.configured.iter().any(|k| k == "webhook"));
         assert_eq!(
-            resolve_delivery(&dests[0], &caps),
+            resolve_delivery(&dests[0].dest, &caps),
             DeliveryDecision::Allowed
+        );
+    }
+
+    #[test]
+    fn load_workspace_delivery_wraps_legacy_bare_url() {
+        use repository::{DestinationRepository, StoredDestination};
+        let master = [7u8; 32];
+        let store = SqliteRepository::in_memory().unwrap();
+        // Legacy row: a bare URL (not JSON).
+        let enc = crate::encrypt_secret(&master, "https://legacy.example/hook").unwrap();
+        store
+            .upsert_destination(
+                &ws(),
+                &StoredDestination {
+                    id: "d1".into(),
+                    kind: "webhook".into(),
+                    address_enc: Some(enc),
+                    enabled: true,
+                    created_at: 1,
+                },
+            )
+            .unwrap();
+        let (dests, _) = load_workspace_delivery(&store, &ws(), Some(&master)).unwrap();
+        assert_eq!(
+            dests[0].config.get("url").and_then(Value::as_str),
+            Some("https://legacy.example/hook")
         );
     }
 
@@ -466,7 +667,6 @@ mod tests {
                 },
             )
             .unwrap();
-        // No master key configured at all → nothing usable.
         let (dests, caps) = load_workspace_delivery(&store, &ws(), None).unwrap();
         assert!(dests.is_empty());
         assert!(caps.enabled.is_empty());

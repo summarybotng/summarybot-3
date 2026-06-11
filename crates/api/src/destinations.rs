@@ -1,72 +1,133 @@
-//! Summary delivery destinations endpoints (DSH-010/011).
+//! Summary delivery destinations endpoints (DSH-010/011; ADR-126 plugin sinks).
 //!
 //! Manage where a workspace's summaries are delivered *besides* the always-on
-//! dashboard. Today: webhooks (generic + Slack/Discord incoming-webhook URLs).
-//! The URL is a secret — it's encrypted at rest with the operator master key
-//! (ADR-125 Phase 2b) and never returned to the client; the list shows only a
-//! scheme+host hint. Workspace-scoped + authenticated.
+//! dashboard. Sinks are plugins (webhook, Confluence, …) described by a config
+//! schema; this layer is schema-driven — it validates submitted config against
+//! the plugin descriptor, stores it as one encrypted JSON blob, and never echoes
+//! secret fields back (only a per-field non-secret hint). Workspace-scoped +
+//! authenticated.
 
 use crate::auth::AuthUser;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, State};
 use axum::Json;
+use host::{FieldHint, SinkDescriptor};
 use repository::{DestinationRepository, StoredDestination};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// A destination as shown to the client — never includes the secret address.
+/// A destination as shown to the client — never includes secret config values.
 #[derive(Serialize)]
 pub struct DestinationDto {
     pub id: String,
     pub kind: String,
     pub enabled: bool,
-    /// Scheme+host of the configured URL (e.g. `https://hooks.slack.com`), so a
-    /// user can recognize it without exposing the secret path.
+    /// Non-secret summary of the config (e.g. `https://hooks.slack.com · #ops`).
     pub hint: Option<String>,
 }
 
-/// Create a webhook destination.
-#[derive(Deserialize)]
-pub struct CreateDestinationRequest {
-    /// Destination kind; only `webhook` is supported today.
-    #[serde(default = "default_kind")]
-    pub kind: String,
-    /// The webhook URL (http/https). Stored encrypted.
-    pub url: String,
+/// A plugin descriptor exposed to the dashboard so it can render a config form.
+#[derive(Serialize)]
+pub struct PluginDto {
+    pub id: String,
+    pub display_name: String,
+    pub fields: Vec<PluginFieldDto>,
 }
 
-fn default_kind() -> String {
-    "webhook".to_string()
+#[derive(Serialize)]
+pub struct PluginFieldDto {
+    pub name: String,
+    pub label: String,
+    pub secret: bool,
+    pub required: bool,
+}
+
+/// Create a destination: a plugin kind + its config object.
+#[derive(Deserialize)]
+pub struct CreateDestinationRequest {
+    pub kind: String,
+    #[serde(default)]
+    pub config: serde_json::Map<String, Value>,
 }
 
 fn workspace(ws: String) -> Result<domain::WorkspaceId, ApiError> {
     domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))
 }
 
+fn descriptor(kind: &str) -> Option<SinkDescriptor> {
+    host::sink_descriptors().into_iter().find(|d| d.id == kind)
+}
+
 /// Scheme+host of a URL, for a non-secret display hint.
-fn host_hint(url: &str) -> Option<String> {
+fn host_only(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://")?;
     let host = rest.split('/').next().unwrap_or(rest);
-    if host.is_empty() {
-        None
-    } else {
-        Some(format!("{scheme}://{host}"))
-    }
+    (!host.is_empty()).then(|| format!("{scheme}://{host}"))
+}
+
+/// Build the non-secret hint for a stored destination from its plugin schema.
+fn hint(kind: &str, config: &Value, master: Option<&[u8; 32]>) -> Option<String> {
+    let desc = descriptor(kind)?;
+    let parts: Vec<String> = desc
+        .fields
+        .iter()
+        .filter_map(|f| {
+            let v = config.get(f.name).and_then(Value::as_str)?;
+            match f.hint {
+                FieldHint::Full => Some(v.to_string()),
+                FieldHint::Host => host_only(v),
+                FieldHint::None => None,
+            }
+        })
+        .collect();
+    let _ = master;
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn decrypt_config(row: &StoredDestination, master: Option<&[u8; 32]>) -> Option<Value> {
+    let (enc, key) = (row.address_enc.as_deref()?, master?);
+    let plain = host::decrypt_secret(key, enc).ok()?;
+    serde_json::from_str(&plain).ok()
 }
 
 fn to_dto(row: &StoredDestination, master: Option<&[u8; 32]>) -> DestinationDto {
-    let hint = match (&row.address_enc, master) {
-        (Some(enc), Some(key)) => host::decrypt_secret(key, enc)
-            .ok()
-            .and_then(|u| host_hint(&u)),
-        _ => None,
-    };
+    let hint = decrypt_config(row, master).and_then(|c| hint(&row.kind, &c, master));
     DestinationDto {
         id: row.id.clone(),
         kind: row.kind.clone(),
         enabled: row.enabled,
         hint,
     }
+}
+
+/// `GET /workspaces/:ws/destinations/plugins` — sink plugins available in this
+/// build, with their config schema (so the dashboard can render a form).
+pub async fn list_plugins(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+) -> Result<Json<Vec<PluginDto>>, ApiError> {
+    user.require_workspace(&ws)?;
+    let _ = state;
+    let plugins = host::sink_descriptors()
+        .into_iter()
+        .map(|d| PluginDto {
+            id: d.id.to_string(),
+            display_name: d.display_name.to_string(),
+            fields: d
+                .fields
+                .iter()
+                .map(|f| PluginFieldDto {
+                    name: f.name.to_string(),
+                    label: f.label.to_string(),
+                    secret: f.secret,
+                    required: f.required,
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(Json(plugins))
 }
 
 /// `GET /workspaces/:ws/destinations`
@@ -83,7 +144,7 @@ pub async fn list_destinations(
     Ok(Json(rows.iter().map(|r| to_dto(r, master)).collect()))
 }
 
-/// `POST /workspaces/:ws/destinations` — add a webhook (DSH-010).
+/// `POST /workspaces/:ws/destinations` — add a sink destination (DSH-010).
 pub async fn create_destination(
     State(state): State<AppState>,
     user: AuthUser,
@@ -93,30 +154,51 @@ pub async fn create_destination(
     user.require_workspace(&ws)?;
     let workspace = workspace(ws)?;
 
-    if body.kind != "webhook" {
-        return Err(ApiError::bad_request(format!(
-            "unsupported destination kind: {}",
-            body.kind
-        )));
+    let desc = descriptor(&body.kind).ok_or_else(|| {
+        ApiError::bad_request(format!("unsupported destination kind: {}", body.kind))
+    })?;
+
+    // Validate against the plugin schema: required fields present + non-empty,
+    // and any URL field must be http(s).
+    let mut config = serde_json::Map::new();
+    for f in desc.fields {
+        let raw = body
+            .config
+            .get(f.name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if raw.is_empty() {
+            if f.required {
+                return Err(ApiError::bad_request(format!(
+                    "missing required field: {}",
+                    f.name
+                )));
+            }
+            continue;
+        }
+        if f.name.contains("url") && !(raw.starts_with("https://") || raw.starts_with("http://")) {
+            return Err(ApiError::bad_request(format!(
+                "{} must be an http(s) URL",
+                f.name
+            )));
+        }
+        config.insert(f.name.to_string(), Value::String(raw.to_string()));
     }
-    let url = body.url.trim();
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(ApiError::bad_request(
-            "url must be an http(s) webhook URL".to_string(),
-        ));
-    }
-    // The URL is a secret; we must be able to encrypt it at rest.
+
+    // Config is stored encrypted; we need the master key to do so.
     let Some(master) = state.master_key() else {
         return Err(ApiError::bad_request(
-            "server has no encryption key configured (set LLM_CONFIG_KEY) — cannot store a webhook URL safely".to_string(),
+            "server has no encryption key configured (set LLM_CONFIG_KEY) — cannot store destination config safely".to_string(),
         ));
     };
+    let blob = Value::Object(config).to_string();
     let address_enc =
-        host::encrypt_secret(master, url).map_err(|e| ApiError::Internal(e.to_string()))?;
+        host::encrypt_secret(master, &blob).map_err(|e| ApiError::Internal(e.to_string()))?;
 
     let row = StoredDestination {
         id: format!("dst_{}", unique_suffix()),
-        kind: "webhook".into(),
+        kind: body.kind,
         address_enc: Some(address_enc),
         enabled: true,
         created_at: crate::auth::now_secs(),
@@ -142,16 +224,16 @@ pub async fn delete_destination(
     }
 }
 
-/// Result of a webhook test send.
+/// Result of a destination test send.
 #[derive(Serialize)]
 pub struct TestResult {
     pub ok: bool,
     pub detail: Option<String>,
 }
 
-/// `POST /workspaces/:ws/destinations/:id/test` — send a sample payload to the
-/// destination so a user can confirm it works (DSH-010). Requires the `http-llm`
-/// build (network delivery) and the master key to decrypt the address.
+/// `POST /workspaces/:ws/destinations/:id/test` — send a sample payload so a
+/// user can confirm the destination works (DSH-010). Requires the plugin's
+/// deliverer to be compiled in and the master key to decrypt the config.
 pub async fn test_destination(
     State(state): State<AppState>,
     user: AuthUser,
@@ -170,35 +252,24 @@ pub async fn test_destination(
         .ok_or(ApiError::NotFound)?;
     drop(repo);
 
-    let kind = host::delivery::parse_kind(&row.kind)
-        .ok_or_else(|| ApiError::bad_request("unknown destination kind".to_string()))?;
-    let address = match (&row.address_enc, master) {
-        (Some(enc), Some(key)) => {
-            host::decrypt_secret(key, enc).map_err(|e| ApiError::Internal(e.to_string()))?
-        }
-        _ => {
-            return Ok(Json(TestResult {
-                ok: false,
-                detail: Some("destination has no readable address".to_string()),
-            }))
-        }
-    };
-    let Some(deliverer) = deliverers.iter().find(|d| d.kind() == kind) else {
+    let Some(config) = decrypt_config(&row, master) else {
         return Ok(Json(TestResult {
             ok: false,
-            detail: Some(
-                "no deliverer available (build the server with --features http-llm)".to_string(),
-            ),
+            detail: Some("destination config could not be read".to_string()),
         }));
     };
-    let dest = domain::Destination {
-        kind,
-        platform: None,
-        address: Some(address),
+    let Some(deliverer) = deliverers.iter().find(|d| d.id() == row.kind) else {
+        return Ok(Json(TestResult {
+            ok: false,
+            detail: Some(format!(
+                "no '{}' deliverer in this build (enable its cargo feature)",
+                row.kind
+            )),
+        }));
     };
     match deliverer.deliver(
-        &dest,
-        "SummaryBot test delivery — your webhook is configured correctly.",
+        &config,
+        "SummaryBot test delivery — your destination is configured correctly.",
     ) {
         Ok(()) => Ok(Json(TestResult {
             ok: true,

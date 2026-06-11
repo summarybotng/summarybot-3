@@ -24,8 +24,8 @@ mod workspace;
 pub use budget::{current_window, remaining_micros, within_budget, Budget, Spend, Window};
 pub use coverage::{analyze_coverage, CoverageGap, CoverageReport, GapKind, Span};
 pub use delivery::{
-    resolve as resolve_delivery, visible_kinds, DeliveryCapabilities, DeliveryDecision,
-    DeliveryReject, Destination, DestinationKind,
+    resolve as resolve_delivery, DeliveryCapabilities, DeliveryClass, DeliveryDecision,
+    DeliveryReject, Destination,
 };
 pub use failure::FailureClass;
 pub use identity::{

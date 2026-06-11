@@ -153,17 +153,15 @@ impl AppState {
         self.config_key.as_deref()
     }
 
-    /// The external delivery deliverers (DSH-010). With `http-llm`, a webhook
-    /// deliverer; without it (or without a master key to decrypt addresses),
-    /// the set is empty and only the always-on dashboard store is used.
+    /// The sink-plugin deliverers compiled into this build (ADR-126): webhook
+    /// (`http-llm`), Confluence (`confluence`), etc. Empty without a master key,
+    /// since plugin configs are stored encrypted and can't be decrypted to send.
     pub(crate) fn deliverers(&self) -> Vec<Box<dyn host::Deliverer>> {
-        #[cfg(feature = "http-llm")]
-        {
-            if self.config_key.is_some() {
-                return vec![Box::new(host::WebhookDeliverer::default())];
-            }
+        if self.config_key.is_some() {
+            host::build_deliverers()
+        } else {
+            Vec::new()
         }
-        Vec::new()
     }
 
     /// A single-model ladder for an explicit model name, priced from the
@@ -354,6 +352,10 @@ pub fn build_router(state: AppState) -> Router {
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
         .route("/workspaces/:ws/events", get(events::workspace_events))
+        .route(
+            "/workspaces/:ws/destinations/plugins",
+            get(destinations::list_plugins),
+        )
         .route(
             "/workspaces/:ws/destinations",
             get(destinations::list_destinations).post(destinations::create_destination),
@@ -659,6 +661,9 @@ mod tests {
         assert_eq!(json[0]["id"], "sum_1");
     }
 
+    // Webhook is the reference sink plugin (ADR-126); its descriptor + deliverer
+    // are compiled in under `http-llm`, so these CRUD tests run in that pass.
+    #[cfg(feature = "http-llm")]
     #[tokio::test]
     async fn manages_webhook_destinations_without_leaking_the_url() {
         let (state, token) = seeded_state();
@@ -674,7 +679,7 @@ mod tests {
                     .header("authorization", &auth)
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"url":"https://hooks.example.com/services/SECRET/PATH"}"#,
+                        r#"{"kind":"webhook","config":{"url":"https://hooks.example.com/services/SECRET/PATH"}}"#,
                     ))
                     .unwrap(),
             )
@@ -730,6 +735,7 @@ mod tests {
         assert_eq!(body_json(resp).await.as_array().unwrap().len(), 0);
     }
 
+    #[cfg(feature = "http-llm")]
     #[tokio::test]
     async fn create_webhook_destination_requires_an_encryption_key() {
         let (state, token) = seeded_state(); // no config key
@@ -739,7 +745,9 @@ mod tests {
                 Request::post("/workspaces/ws-1/destinations")
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"url":"https://hooks.example.com/x"}"#))
+                    .body(Body::from(
+                        r#"{"kind":"webhook","config":{"url":"https://hooks.example.com/x"}}"#,
+                    ))
                     .unwrap(),
             )
             .await

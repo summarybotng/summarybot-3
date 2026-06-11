@@ -12,6 +12,8 @@ publish.workspace = true
 # (LLM_BASE_URL — e.g. the operator's Mac mini) or OpenRouter (OPENROUTER_API_KEY).
 # See ADR-125.
 http-llm = ["host/http-llm"]
+# Confluence delivery sink plugin (ADR-126). Optional + network-gated.
+confluence = ["host/confluence"]
 
 [dependencies]
 domain.workspace = true

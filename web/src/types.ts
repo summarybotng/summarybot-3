@@ -110,8 +110,22 @@ export interface Destination {
   id: string
   kind: string
   enabled: boolean
-  /** Scheme+host of the configured URL; the secret path is never returned. */
+  /** Non-secret summary of the config; secret fields are never returned. */
   hint: string | null
+}
+
+export interface PluginField {
+  name: string
+  label: string
+  secret: boolean
+  required: boolean
+}
+
+/** A delivery sink plugin available in this build (ADR-126). */
+export interface Plugin {
+  id: string
+  display_name: string
+  fields: PluginField[]
 }
 
 export interface DeliveryTestResult {

@@ -3,6 +3,7 @@ import type {
   DeliveryTestResult,
   Destination,
   LlmConfig,
+  Plugin,
   LlmConfigUpdate,
   Schedule,
   ScheduleRun,
@@ -257,11 +258,16 @@ export class Client {
     return this.json<Destination[]>(`/workspaces/${this.ws()}/destinations`)
   }
 
-  /** Add a webhook destination (the URL is encrypted server-side, never returned). */
-  addWebhook(url: string): Promise<Destination> {
+  /** Sink plugins available in this build, with their config schema (ADR-126). */
+  listPlugins(): Promise<Plugin[]> {
+    return this.json<Plugin[]>(`/workspaces/${this.ws()}/destinations/plugins`)
+  }
+
+  /** Add a destination of `kind` with its config (stored encrypted, never returned). */
+  addDestination(kind: string, config: Record<string, string>): Promise<Destination> {
     return this.json<Destination>(
       `/workspaces/${this.ws()}/destinations`,
-      this.body('POST', { kind: 'webhook', url }),
+      this.body('POST', { kind, config }),
     )
   }
 

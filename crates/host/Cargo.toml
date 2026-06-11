@@ -35,6 +35,9 @@ ureq = { version = "2", optional = true, features = ["json"] }
 [features]
 # OpenAI-compatible HTTP LLM client (OpenRouter, OpenAI, local Ollama/LM Studio).
 http-llm = ["dep:ureq"]
+# Confluence delivery sink plugin (ADR-126) — publishes summaries to Confluence
+# Cloud over REST. Optional + network-gated like http-llm.
+confluence = ["dep:ureq"]
 
 [[bin]]
 name = "host"
