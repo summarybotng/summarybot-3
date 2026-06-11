@@ -172,11 +172,16 @@ pub async fn create_summary(
     // Resolve any per-tenant LLM override for this workspace (ADR-125), gate on
     // the tenant's budget, then build the engine over that backend + the shared
     // limiter.
-    let (resolution, charge) = {
+    let (resolution, charge, instructions) = {
+        use repository::WorkspaceSettingsRepository;
         let repo = state.repo.lock().expect("repo mutex");
         let r = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
         let charge = crate::budget_gate(&repo, &r, now)?;
-        (r, charge)
+        let instructions = repo
+            .get_settings(&workspace)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .summary_instructions;
+        (r, charge, instructions)
     };
     let ladder = state.ladder_for(&resolution.model);
     let engine = ResilientLlm::new(
@@ -190,6 +195,7 @@ pub async fn create_summary(
             provider: LlmProvider::OpenRouter,
             priority: RequestPriority::Manual,
             cap_micros: i64::MAX,
+            instructions: instructions.as_deref(),
         })
         .map_err(|e| ApiError::bad_request(format!("{e:?}")))?;
 

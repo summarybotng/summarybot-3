@@ -19,6 +19,7 @@ mod session;
 mod summary_store;
 mod whatsapp;
 mod workspace;
+mod workspace_settings;
 pub use budget::{BudgetRepository, BudgetRow};
 pub use destination::{DestinationRepository, StoredDestination};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
@@ -31,6 +32,7 @@ pub use session::SessionRepository;
 pub use summary_store::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
+pub use workspace_settings::{WorkspaceSettings, WorkspaceSettingsRepository};
 
 /// A summary as persisted, with its assigned row id and owning workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,6 +328,12 @@ impl SqliteRepository {
                 enabled      INTEGER NOT NULL DEFAULT 1,
                 created_at   INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (workspace_id, id)
+            );
+            -- Per-workspace summarization settings (SUM-007): free-text guidance
+            -- appended to the prompt (e.g. a perspective/focus).
+            CREATE TABLE IF NOT EXISTS workspace_settings (
+                workspace_id         TEXT PRIMARY KEY,
+                summary_instructions TEXT
             );",
         )?;
         run_migrations(&conn)?;

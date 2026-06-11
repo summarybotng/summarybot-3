@@ -14,7 +14,7 @@ use crate::summarize::{SummarizationService, SummarizeRequest};
 use domain::summarize::{ModelLadder, SummaryLength};
 use repository::{
     DestinationRepository, StoredSchedule, StructuredSummaryRepository, SummaryRecord,
-    WhatsAppRepository,
+    WhatsAppRepository, WorkspaceSettingsRepository,
 };
 
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
@@ -73,7 +73,10 @@ impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
 
 impl<R, C> ScheduleRunner for SummarizingScheduleRunner<'_, R, C>
 where
-    R: WhatsAppRepository + StructuredSummaryRepository + DestinationRepository,
+    R: WhatsAppRepository
+        + StructuredSummaryRepository
+        + DestinationRepository
+        + WorkspaceSettingsRepository,
     C: LlmClient,
 {
     fn run(&self, stored: &StoredSchedule, now: i64) -> Result<(), String> {
@@ -92,6 +95,13 @@ where
             return Ok(());
         }
 
+        // Per-workspace prompt guidance (SUM-007).
+        let instructions = self
+            .repo
+            .get_settings(ws)
+            .map_err(|e| e.to_string())?
+            .summary_instructions;
+
         let outcome = SummarizationService::new(self.engine, self.ladder)
             .summarize(&SummarizeRequest {
                 messages: &messages,
@@ -99,6 +109,7 @@ where
                 provider: self.provider,
                 priority: RequestPriority::Low, // scheduled work yields to manual
                 cap_micros: self.cap_micros,
+                instructions: instructions.as_deref(),
             })
             .map_err(|e| format!("{e:?}"))?;
 

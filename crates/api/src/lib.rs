@@ -16,6 +16,7 @@ mod events;
 mod oauth;
 mod scheduler_driver;
 mod schedules;
+mod settings;
 mod summaries;
 mod tenancy;
 mod whatsapp;
@@ -355,6 +356,10 @@ pub fn build_router(state: AppState) -> Router {
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
         .route("/workspaces/:ws/events", get(events::workspace_events))
+        .route(
+            "/workspaces/:ws/settings",
+            get(settings::get_settings).put(settings::set_settings),
+        )
         .route(
             "/workspaces/:ws/destinations/plugins",
             get(destinations::list_plugins),

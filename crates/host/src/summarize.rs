@@ -41,6 +41,9 @@ pub struct SummarizeRequest<'a> {
     pub priority: RequestPriority,
     /// Hard cost cap in micro-dollars (use `i64::MAX` for none).
     pub cap_micros: i64,
+    /// Optional per-workspace guidance appended to the prompt (SUM-007), e.g.
+    /// "summarize from a product-management perspective; emphasize decisions".
+    pub instructions: Option<&'a str>,
 }
 
 /// A produced summary plus its cost and provenance.
@@ -148,7 +151,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
             .expect("start index in range")
             .context_tokens;
         let desired_output = output_budget(req.length);
-        let total_tokens = estimate_tokens(&assemble_prompt(&substantial));
+        let total_tokens = estimate_tokens(&assemble_prompt(&substantial, req.instructions));
         let plan = allocate(
             total_tokens,
             context_tokens,
@@ -250,7 +253,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         degraded: &mut bool,
     ) -> Result<SummaryOutcome, SummarizeError> {
         let message_ids: Vec<MessageId> = messages.iter().map(|m| m.id.clone()).collect();
-        let prompt = assemble_prompt(messages);
+        let prompt = assemble_prompt(messages, req.instructions);
         let input_tokens = estimate_tokens(&prompt);
 
         let mut current = self.ladder.start_index(length);
@@ -348,7 +351,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                 .map(|(i, s)| synthetic_message(i, s))
                 .collect();
             let refs: Vec<&NormalizedMessage> = synthetic.iter().collect();
-            let tokens = estimate_tokens(&assemble_prompt(&refs));
+            let tokens = estimate_tokens(&assemble_prompt(&refs, req.instructions));
             let plan = allocate(
                 tokens,
                 context_tokens,
@@ -564,7 +567,7 @@ fn output_budget(length: SummaryLength) -> i64 {
 /// only the earliest messages are lost, which is a graceful degradation. The
 /// deterministic demo client ignores the instruction (it only reads `[i]` lines);
 /// a real model needs it to produce the structured output.
-fn assemble_prompt(messages: &[&NormalizedMessage]) -> String {
+fn assemble_prompt(messages: &[&NormalizedMessage], instructions: Option<&str>) -> String {
     let mut s = String::from("Numbered chat messages:\n");
     for (i, m) in messages.iter().enumerate() {
         s.push_str(&format!("[{i}] {}: {}\n", m.author_name, m.content));
@@ -580,6 +583,12 @@ fn assemble_prompt(messages: &[&NormalizedMessage]) -> String {
          Set message_index from a message's [index] prefix. Use empty arrays for \
          anything you can't fill.",
     );
+    // Per-workspace guidance (SUM-007), last so it's prominent and survives any
+    // context-window truncation of the messages above.
+    if let Some(extra) = instructions.map(str::trim).filter(|e| !e.is_empty()) {
+        s.push_str("\nAdditional instructions: ");
+        s.push_str(extra);
+    }
     s
 }
 
@@ -686,7 +695,20 @@ mod tests {
             provider: LlmProvider::OpenRouter,
             priority: RequestPriority::Manual,
             cap_micros: cap,
+            instructions: None,
         }
+    }
+
+    #[test]
+    fn assemble_prompt_appends_workspace_instructions() {
+        let msgs = messages();
+        let refs: Vec<&NormalizedMessage> = msgs.iter().collect();
+        let base = assemble_prompt(&refs, None);
+        assert!(!base.contains("Additional instructions"));
+        let custom = assemble_prompt(&refs, Some("Focus on decisions and risks."));
+        assert!(custom.contains("Additional instructions: Focus on decisions and risks."));
+        // Empty/whitespace guidance is ignored.
+        assert_eq!(assemble_prompt(&refs, Some("   ")), base);
     }
 
     #[test]

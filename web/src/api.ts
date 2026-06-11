@@ -252,6 +252,18 @@ export class Client {
     })
   }
 
+  // --- per-workspace summarization settings (SUM-007) ---
+
+  getWorkspaceSettings(): Promise<{ summary_instructions: string | null }> {
+    return this.json(`/workspaces/${this.ws()}/settings`)
+  }
+
+  setWorkspaceSettings(summary_instructions: string | null): Promise<{
+    summary_instructions: string | null
+  }> {
+    return this.json(`/workspaces/${this.ws()}/settings`, this.body('PUT', { summary_instructions }))
+  }
+
   // --- delivery destinations (DSH-010/011) ---
 
   listDestinations(): Promise<Destination[]> {

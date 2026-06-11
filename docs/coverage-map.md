@@ -57,7 +57,7 @@ metrics).
 | Grounded citations | ✅ | ✅ | message-index → id resolution; carried through reduce |
 | Summary lengths (brief/detailed/comprehensive) | ✅ | ✅ | — |
 | Per-perspective prompts (dev/marketing/exec…) | ✅ | ⛔ | single prompt strategy; perspectives not ported |
-| Custom prompts per workspace | ✅ | ⛔ | prompt assembled inline; no template service (SUM-007) |
+| Custom prompts per workspace | ✅ | 🟡 | free-text per-workspace summary instructions appended to the prompt (SUM-007, Settings UI); named per-perspective presets not ported |
 | Retry / resilience / rate limiting | ✅ | ✅ | `ResilientLlm` + token-bucket limiter (ADR-123/124) |
 | Summary caching (memory/Redis) | ✅ | ➖ | not ported; not currently needed |
 

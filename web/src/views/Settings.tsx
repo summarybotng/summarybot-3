@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { ApiError } from '../api'
 import type { Budget, LlmConfig } from '../types'
@@ -19,6 +19,29 @@ export function Settings() {
   const [apiKey, setApiKey] = useState('')
   const [msg, setMsg] = useState<string | null>(null)
   const [budget, setBudget] = useState<Budget | null>(null)
+  const [instructions, setInstructions] = useState('')
+  const [instrMsg, setInstrMsg] = useState<string | null>(null)
+
+  // Per-workspace summary instructions (SUM-007).
+  useEffect(() => {
+    if (!client) return
+    client
+      .getWorkspaceSettings()
+      .then((s) => setInstructions(s.summary_instructions ?? ''))
+      .catch(() => {})
+  }, [client])
+
+  async function saveInstructions() {
+    if (!client) return
+    setInstrMsg(null)
+    try {
+      const s = await client.setWorkspaceSettings(instructions.trim() || null)
+      setInstructions(s.summary_instructions ?? '')
+      setInstrMsg('Saved — new summaries for this workspace will use it.')
+    } catch {
+      setInstrMsg('Save failed.')
+    }
+  }
   const [limitUsd, setLimitUsd] = useState('')
   const [periodDays, setPeriodDays] = useState('30')
 
@@ -139,6 +162,31 @@ export function Settings() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
+      <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <h2 className="font-semibold text-slate-800">Summary instructions (this workspace)</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Optional guidance appended to every summary prompt for this workspace — e.g. a
+          perspective or focus. Leave blank for the default.
+        </p>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          rows={3}
+          maxLength={2000}
+          placeholder="e.g. Summarize from a product-management perspective; emphasize decisions, risks, and owners."
+          className="mt-3 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+        />
+        <div className="mt-2 flex items-center gap-3">
+          <button
+            onClick={() => void saveInstructions()}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg"
+          >
+            Save instructions
+          </button>
+          {instrMsg && <span className="text-sm text-slate-600">{instrMsg}</span>}
+        </div>
+      </div>
+
       <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
         <h2 className="font-semibold text-slate-800">LLM provider (per tenant)</h2>
         <p className="mt-1 text-sm text-slate-500">

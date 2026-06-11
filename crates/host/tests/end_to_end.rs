@@ -89,6 +89,7 @@ fn ingest_then_summarize_then_deliver() {
             provider: LlmProvider::OpenRouter,
             priority: RequestPriority::Manual,
             cap_micros: i64::MAX,
+            instructions: None,
         })
         .expect("summary produced");
 
