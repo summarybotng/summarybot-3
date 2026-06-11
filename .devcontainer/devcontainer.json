@@ -13,8 +13,7 @@
   ],
 
   "postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash && npm install ruflo",
-  "postStartCommand": "npx ruflo init --force",
-
+  "postStartCommand": "npx ruflo init",
 
   "forwardPorts": [],
 
