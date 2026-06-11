@@ -21,21 +21,25 @@ use repository::{DestinationRepository, StructuredSummaryRepository, SummaryReco
 use serde_json::Value;
 
 /// A summary pre-rendered in every format, so each sink can pick the one it
-/// wants (webhook → markdown, email/Confluence → html, …) without re-rendering.
+/// wants (webhook → markdown/json, email/Confluence → html, …) without
+/// re-rendering.
 #[derive(Debug, Clone)]
 pub struct RenderedSummary {
     pub markdown: String,
     pub plain: String,
     pub html: String,
+    /// Structured fields, for machine-readable sinks (webhook `data`).
+    pub data: Value,
 }
 
 impl RenderedSummary {
-    /// Build all formats from a summary.
+    /// Build all formats + structured data from a summary.
     pub fn new(summary: &domain::summarize::ExtractedSummary) -> Self {
         Self {
             markdown: render(summary, SummaryFormat::Markdown),
             plain: render(summary, SummaryFormat::Plain),
             html: render(summary, SummaryFormat::Html),
+            data: summary_data(summary),
         }
     }
 
@@ -45,6 +49,7 @@ impl RenderedSummary {
             markdown: text.to_string(),
             plain: text.to_string(),
             html: format!("<p>{}</p>", text),
+            data: serde_json::json!({ "text": text }),
         }
     }
 
@@ -56,6 +61,25 @@ impl RenderedSummary {
             .find(|l| !l.is_empty())
             .unwrap_or("Summary")
     }
+}
+
+/// Faithful structured JSON of a summary (for the webhook `data` field). Built
+/// by hand so the pure domain type stays serialization-free.
+fn summary_data(s: &domain::summarize::ExtractedSummary) -> Value {
+    serde_json::json!({
+        "text": s.text,
+        "key_points": s.key_points,
+        "action_items": s.action_items.iter().map(|a| serde_json::json!({
+            "text": a.text,
+            "assignee": a.assignee,
+        })).collect::<Vec<_>>(),
+        "technical_terms": s.technical_terms,
+        "participants": s.participants,
+        "citations": s.citations.iter().map(|c| serde_json::json!({
+            "message_id": c.message_id.as_str(),
+            "quote": c.quote,
+        })).collect::<Vec<_>>(),
+    })
 }
 
 /// A sink plugin: sends a rendered summary to one destination kind, given that
@@ -324,13 +348,14 @@ impl Deliverer for WebhookDeliverer {
             .and_then(Value::as_str)
             .filter(|u| !u.is_empty())
             .ok_or_else(|| "webhook destination has no url".to_string())?;
-        // `text`/`content` satisfy Slack/Discord; `summary`/`html` are extras for
-        // generic receivers.
+        // `text`/`content` satisfy Slack/Discord; `summary`/`html`/`data` are
+        // extras for generic receivers (`data` is the machine-readable summary).
         let body = serde_json::json!({
             "text": summary.markdown,
             "content": summary.markdown,
             "summary": summary.markdown,
             "html": summary.html,
+            "data": summary.data,
         });
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
@@ -766,6 +791,17 @@ mod tests {
             dest: Destination::service(kind),
             config: serde_json::json!({ "url": "https://x" }),
         }
+    }
+
+    #[test]
+    fn rendered_bundle_carries_structured_data() {
+        let r = RenderedSummary::new(&record().summary);
+        assert_eq!(r.data["text"], "We shipped.");
+        assert_eq!(r.data["key_points"][0], "Launched");
+        assert_eq!(r.data["participants"][0], "Alice");
+        assert_eq!(r.data["citations"][0]["message_id"], "m0");
+        // Title comes from the plain render's first line.
+        assert_eq!(r.title(), "We shipped.");
     }
 
     #[test]

@@ -94,7 +94,7 @@ metrics).
 | Email (SMTP) | ✅ | ✅ | **sink plugin** (`--features email`); lettre blocking SMTP, STARTTLS/TLS; schema-driven UI verified live (real send not yet tested against a live SMTP server) |
 | Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
 | Google Drive (publish summaries) | ✅ | ✅ | **sink plugin** (`--features gdrive`); publishes HTML as a Google Doc via Drive multipart upload, OAuth refresh-token per workspace. Real upload not yet tested against live Drive; obtaining the refresh token still needs a connect-flow UX (token pasted for now) |
-| Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown + plain + **html** ✅ (email sends HTML, Confluence uses HTML); json not ported |
+| Output formats (markdown/html/json/text) | ✅ | ✅ | markdown + plain + html ✅ (email HTML, Confluence HTML); webhook payload carries a structured **`data`** JSON object |
 | Push templates per destination | ✅ | ⛔ | — |
 
 ## Web UI / dashboard
