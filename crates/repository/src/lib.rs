@@ -328,15 +328,68 @@ impl SqliteRepository {
                 PRIMARY KEY (workspace_id, id)
             );",
         )?;
-        // Idempotent column adds for schema evolution (SQLite lacks ADD COLUMN
-        // IF NOT EXISTS). Errors with "duplicate column name" on an up-to-date
-        // DB — expected and ignored; fresh DBs already have it via CREATE above.
-        let _ = conn.execute(
-            "ALTER TABLE tenant_llm_config ADD COLUMN api_key_enc TEXT",
-            [],
-        );
+        run_migrations(&conn)?;
         Ok(Self { conn })
     }
+}
+
+/// Ordered, tracked schema migrations applied after the idempotent baseline
+/// (the big `CREATE TABLE IF NOT EXISTS` batch above, recorded as the baseline).
+/// Each runs once; `schema_migrations` records what's applied so adding a future
+/// `(id, sql)` here evolves any existing DB in order — no more ad-hoc ALTERs.
+const MIGRATIONS: &[(&str, &str)] = &[
+    // The baseline CREATE already includes `api_key_enc`; this migration brings
+    // pre-baseline DBs up to date (and is a no-op recorded cleanly on fresh ones).
+    (
+        "0002_tenant_llm_api_key_enc",
+        "ALTER TABLE tenant_llm_config ADD COLUMN api_key_enc TEXT",
+    ),
+];
+
+/// Apply any unapplied migrations in order. Tolerates an additive ALTER whose
+/// column already exists (a fresh DB whose baseline CREATE already has it) so the
+/// migration is still recorded as applied.
+fn run_migrations(conn: &Connection) -> Result<()> {
+    use rusqlite::OptionalExtension;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            id          TEXT PRIMARY KEY,
+            applied_at  INTEGER NOT NULL
+        );",
+    )?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Record the baseline so the ledger reflects the full current schema.
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('0001_baseline', ?1)",
+        rusqlite::params![now],
+    )?;
+    for (id, sql) in MIGRATIONS {
+        let applied = conn
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE id = ?1",
+                rusqlite::params![id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if applied {
+            continue;
+        }
+        match conn.execute_batch(sql) {
+            Ok(()) => {}
+            // Additive ALTER whose column is already present (fresh DB) — fine.
+            Err(e) if e.to_string().contains("duplicate column name") => {}
+            Err(e) => return Err(e.into()),
+        }
+        conn.execute(
+            "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![id, now],
+        )?;
+    }
+    Ok(())
 }
 
 impl SummaryRepository for SqliteRepository {
@@ -385,6 +438,39 @@ mod tests {
             message_count: 2,
             word_count: 3,
         }
+    }
+
+    #[test]
+    fn migrations_are_recorded_and_idempotent() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let count = |r: &SqliteRepository| -> i64 {
+            r.conn
+                .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        // Baseline + the api_key_enc migration are recorded.
+        assert!(count(&repo) >= 2);
+        assert!(repo
+            .conn
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE id = '0002_tenant_llm_api_key_enc'",
+                [],
+                |_| Ok(())
+            )
+            .is_ok());
+        // Re-running the runner on the same connection changes nothing.
+        let before = count(&repo);
+        run_migrations(&repo.conn).unwrap();
+        assert_eq!(count(&repo), before);
+        // And the migrated column is usable.
+        repo.conn
+            .execute(
+                "INSERT INTO tenant_llm_config (tenant_id, api_key_enc) VALUES ('t', 'enc')",
+                [],
+            )
+            .unwrap();
     }
 
     #[test]

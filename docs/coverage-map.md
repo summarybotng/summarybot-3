@@ -139,7 +139,7 @@ metrics).
 | Feature | Legacy | Rewrite | Notes |
 |---|---|---|---|
 | SQLite persistence + repository pattern | ✅ | ✅ | `repository/` traits + `SqliteRepository` |
-| Migration framework | ✅ (58+ tracked) | 🔩 | schema created ad-hoc in repo init; no runner |
+| Migration framework | ✅ (58+ tracked) | ✅ | `schema_migrations` ledger + ordered runner; idempotent baseline, future changes append as `(id, sql)` |
 | Audit log | ✅ | 🟡 | `audit_log` table exists; limited surfacing |
 | Docker / Fly / Render deploy configs | ✅ | ⛔ | single binary; no container/deploy config |
 | Monitoring / metrics | ✅ | ⛔ | stderr logs only |
