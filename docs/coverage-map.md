@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** commit `3b4cb64` (2026-06-08)
+- **As of:** commit `f1b6f43` (2026-06-08)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -42,7 +42,7 @@ metrics).
 | Dedup (file + message level) | ✅ | ✅ | SHA-256 + synthetic fingerprint (WHA-010/012) |
 | Discord message fetch | ✅ (discord.py) | 🔩 | `PlatformFetcher` trait + `FakeFetcher`; no live client |
 | Slack message fetch | ✅ (OAuth + history) | 🔩 | trait only; no Slack SDK / OAuth |
-| Google Drive sync | ✅ | ⛔ | — |
+| Google Drive sync (as a source) | ✅ | ➖ | not carried as an ingestion source; v3 uses Drive only as a publish sink (see Delivery, ADR-126) |
 | Voice-note transcription (Whisper) | ✅ (optional) | ⛔ | — |
 | Message normalization + triviality filter | ✅ | ✅ | `domain/message.rs` `is_substantial()` (MSG-008) |
 
@@ -91,7 +91,8 @@ metrics).
 | Webhook (generic + Slack/Discord incoming) | ✅ | ✅ | `WebhookDeliverer`, encrypted URL, test-send (DSH-010, verified live) |
 | Email (SMTP) | ✅ | 🔩 | `Email` kind gated in policy; **no deliverer** |
 | Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
-| Confluence publishing | ✅ | ⛔ | not in `DestinationKind`; absent |
+| Confluence publishing | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); buildable now (API token) |
+| Google Drive (publish summaries) | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); blocked on real OAuth |
 | Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown `render()`; others not ported |
 | Push templates per destination | ✅ | ⛔ | — |
 
