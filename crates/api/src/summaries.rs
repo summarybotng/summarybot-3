@@ -215,13 +215,7 @@ pub async fn create_summary(
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
         host::DeliveryService::new(&*repo)
             .with_deliverers(&deliverers)
-            .deliver(
-                &workspace,
-                &record,
-                &destinations,
-                &caps,
-                domain::summarize::SummaryFormat::Markdown,
-            )
+            .deliver(&workspace, &record, &destinations, &caps)
             .map_err(|e| ApiError::Internal(e.to_string()))?;
         // Draw down the tenant's budget by what this call cost (ADR-125 Phase 3).
         if let Some((tenant, window)) = &charge {

@@ -267,10 +267,10 @@ pub async fn test_destination(
             )),
         }));
     };
-    match deliverer.deliver(
-        &config,
+    let sample = host::RenderedSummary::from_text(
         "SummaryBot test delivery — your destination is configured correctly.",
-    ) {
+    );
+    match deliverer.deliver(&config, &sample) {
         Ok(()) => Ok(Json(TestResult {
             ok: true,
             detail: None,

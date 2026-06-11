@@ -11,7 +11,7 @@ use crate::delivery::{load_workspace_delivery, Deliverer, DeliveryService};
 use crate::llm::{LlmClient, LlmProvider, RequestPriority, ResilientLlm};
 use crate::scheduler::ScheduleRunner;
 use crate::summarize::{SummarizationService, SummarizeRequest};
-use domain::summarize::{ModelLadder, SummaryFormat, SummaryLength};
+use domain::summarize::{ModelLadder, SummaryLength};
 use repository::{
     DestinationRepository, StoredSchedule, StructuredSummaryRepository, SummaryRecord,
     WhatsAppRepository,
@@ -120,7 +120,7 @@ where
             .map_err(|e| e.to_string())?;
         DeliveryService::new(self.repo)
             .with_deliverers(self.deliverers)
-            .deliver(ws, &record, &destinations, &caps, SummaryFormat::Markdown)
+            .deliver(ws, &record, &destinations, &caps)
             .map_err(|e| e.to_string())?;
         Ok(())
     }

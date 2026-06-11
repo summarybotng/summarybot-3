@@ -15,6 +15,8 @@ pub enum SummaryFormat {
     Markdown,
     /// Plain text (no markup) for platforms/contexts that don't render markdown.
     Plain,
+    /// HTML (escaped) for email bodies and Confluence-style pages.
+    Html,
 }
 
 /// Render `summary` in `format`.
@@ -22,7 +24,51 @@ pub fn render(summary: &ExtractedSummary, format: SummaryFormat) -> String {
     match format {
         SummaryFormat::Markdown => render_markdown(summary),
         SummaryFormat::Plain => render_plain(summary),
+        SummaryFormat::Html => render_html(summary),
     }
+}
+
+/// Escape text for safe inclusion in HTML (also valid for Confluence storage).
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn render_html(s: &ExtractedSummary) -> String {
+    let mut out = String::new();
+    if !s.text.trim().is_empty() {
+        out.push_str(&format!("<p>{}</p>\n", esc(s.text.trim())));
+    }
+    let section = |out: &mut String, title: &str, items: &[String]| {
+        if !items.is_empty() {
+            out.push_str(&format!("<h2>{title}</h2>\n<ul>\n"));
+            for i in items {
+                out.push_str(&format!("<li>{}</li>\n", esc(i)));
+            }
+            out.push_str("</ul>\n");
+        }
+    };
+    section(&mut out, "Key Points", &s.key_points);
+    if !s.action_items.is_empty() {
+        out.push_str("<h2>Action Items</h2>\n<ul>\n");
+        for a in &s.action_items {
+            match &a.assignee {
+                Some(who) => out.push_str(&format!("<li>{} — {}</li>\n", esc(&a.text), esc(who))),
+                None => out.push_str(&format!("<li>{}</li>\n", esc(&a.text))),
+            }
+        }
+        out.push_str("</ul>\n");
+    }
+    if !s.participants.is_empty() {
+        out.push_str(&format!(
+            "<h2>Participants</h2>\n<p>{}</p>\n",
+            esc(&s.participants.join(", "))
+        ));
+    }
+    section(&mut out, "Technical Terms", &s.technical_terms);
+    out.trim_end().to_string()
 }
 
 fn render_markdown(s: &ExtractedSummary) -> String {
@@ -150,6 +196,20 @@ mod tests {
         assert!(!txt.contains("[ ]"));
         assert!(txt.contains("Key Points:"));
         assert!(txt.contains("Participants: Alice, Bob"));
+    }
+
+    #[test]
+    fn html_is_escaped_and_structured() {
+        let mut s = summary();
+        s.text = "ship <b>now</b> & soon".into();
+        let html = render(&s, SummaryFormat::Html);
+        assert!(html.contains("<p>ship &lt;b&gt;now&lt;/b&gt; &amp; soon</p>"));
+        assert!(html.contains("<h2>Key Points</h2>"));
+        assert!(html.contains("<li>Launch on Friday</li>"));
+        assert!(html.contains("<li>write changelog — Alice</li>"));
+        // No raw markdown markup.
+        assert!(!html.contains("## "));
+        assert!(!html.contains("- ["));
     }
 
     #[test]

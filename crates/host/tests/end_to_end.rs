@@ -6,7 +6,7 @@
 //! summary with a grounded citation resolved to a real stored message id; and
 //! delivery persists it to the always-on dashboard store.
 
-use domain::summarize::{Model, ModelLadder, ModelPrice, SummaryFormat, SummaryLength};
+use domain::summarize::{Model, ModelLadder, ModelPrice, SummaryLength};
 use domain::{
     parse_export, ChannelId, DateOrder, DeliveryCapabilities, Secret, UserId, WorkspaceId,
 };
@@ -114,13 +114,7 @@ fn ingest_then_summarize_then_deliver() {
         summary: outcome.summary.clone(),
     };
     let report = DeliveryService::new(&repo)
-        .deliver(
-            &ws,
-            &record,
-            &[],
-            &DeliveryCapabilities::default(),
-            SummaryFormat::Markdown,
-        )
+        .deliver(&ws, &record, &[], &DeliveryCapabilities::default())
         .unwrap();
     assert_eq!(report.delivered_count(), 1); // dashboard store
 

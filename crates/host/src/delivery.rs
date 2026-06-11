@@ -20,15 +20,53 @@ use domain::{
 use repository::{DestinationRepository, StructuredSummaryRepository, SummaryRecord};
 use serde_json::Value;
 
-/// A sink plugin: sends an already-rendered summary to one destination kind,
-/// given that destination's decrypted JSON config. Sync for now (matches the
-/// codebase); object-safe so plugins compose in a registry.
+/// A summary pre-rendered in every format, so each sink can pick the one it
+/// wants (webhook → markdown, email/Confluence → html, …) without re-rendering.
+#[derive(Debug, Clone)]
+pub struct RenderedSummary {
+    pub markdown: String,
+    pub plain: String,
+    pub html: String,
+}
+
+impl RenderedSummary {
+    /// Build all formats from a summary.
+    pub fn new(summary: &domain::summarize::ExtractedSummary) -> Self {
+        Self {
+            markdown: render(summary, SummaryFormat::Markdown),
+            plain: render(summary, SummaryFormat::Plain),
+            html: render(summary, SummaryFormat::Html),
+        }
+    }
+
+    /// A trivial bundle from one text (for test sends).
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            markdown: text.to_string(),
+            plain: text.to_string(),
+            html: format!("<p>{}</p>", text),
+        }
+    }
+
+    /// First non-empty line of the plain text — a natural title/subject.
+    pub fn title(&self) -> &str {
+        self.plain
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("Summary")
+    }
+}
+
+/// A sink plugin: sends a rendered summary to one destination kind, given that
+/// destination's decrypted JSON config. Sync for now (matches the codebase);
+/// object-safe so plugins compose in a registry.
 pub trait Deliverer {
     /// The destination kind id this plugin handles ("webhook", "confluence", …).
     fn id(&self) -> &str;
-    /// Send `rendered` using `config` (the decrypted per-destination JSON).
-    /// `Err` is a transport/config failure message.
-    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String>;
+    /// Send `summary` (pre-rendered in all formats) using `config` (the decrypted
+    /// per-destination JSON). `Err` is a transport/config failure message.
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String>;
 }
 
 /// How a config field's value may be surfaced back to the client (the value is
@@ -157,7 +195,6 @@ impl<'a, R: StructuredSummaryRepository> DeliveryService<'a, R> {
         record: &SummaryRecord,
         destinations: &[ConfiguredDestination],
         caps: &DeliveryCapabilities,
-        format: SummaryFormat,
     ) -> anyhow::Result<DeliveryReport> {
         let mut results = Vec::new();
 
@@ -165,7 +202,7 @@ impl<'a, R: StructuredSummaryRepository> DeliveryService<'a, R> {
         self.store.save_record(workspace, record)?;
         results.push(("dashboard".to_string(), DeliveryOutcome::Stored));
 
-        let rendered = render(&record.summary, format);
+        let rendered = RenderedSummary::new(&record.summary);
         for cd in destinations {
             if cd.dest.class == DeliveryClass::Dashboard {
                 continue; // already stored, unconditionally
@@ -179,9 +216,9 @@ impl<'a, R: StructuredSummaryRepository> DeliveryService<'a, R> {
         Ok(DeliveryReport { results })
     }
 
-    fn dispatch(&self, kind: &str, config: &Value, rendered: &str) -> DeliveryOutcome {
+    fn dispatch(&self, kind: &str, config: &Value, summary: &RenderedSummary) -> DeliveryOutcome {
         match self.deliverers.iter().find(|d| d.id() == kind) {
-            Some(d) => match d.deliver(config, rendered) {
+            Some(d) => match d.deliver(config, summary) {
                 Ok(()) => DeliveryOutcome::Delivered,
                 Err(e) => DeliveryOutcome::Failed(e),
             },
@@ -277,16 +314,19 @@ impl Deliverer for WebhookDeliverer {
         "webhook"
     }
 
-    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String> {
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
         let url = config
             .get("url")
             .and_then(Value::as_str)
             .filter(|u| !u.is_empty())
             .ok_or_else(|| "webhook destination has no url".to_string())?;
+        // `text`/`content` satisfy Slack/Discord; `summary`/`html` are extras for
+        // generic receivers.
         let body = serde_json::json!({
-            "text": rendered,
-            "content": rendered,
-            "summary": rendered,
+            "text": summary.markdown,
+            "content": summary.markdown,
+            "summary": summary.markdown,
+            "html": summary.html,
         });
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
@@ -360,7 +400,7 @@ impl Deliverer for ConfluenceDeliverer {
         "confluence"
     }
 
-    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String> {
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
         use base64::engine::general_purpose::STANDARD;
         use base64::Engine;
 
@@ -373,13 +413,14 @@ impl Deliverer for ConfluenceDeliverer {
             return Err("confluence config is incomplete".to_string());
         }
 
-        let title = confluence_title(rendered);
+        let title = confluence_title(summary.title());
         let body = serde_json::json!({
             "type": "page",
             "title": title,
             "space": { "key": space_key },
+            // Our HTML render is valid Confluence storage-format XHTML.
             "body": {
-                "storage": { "value": to_storage_html(rendered), "representation": "storage" }
+                "storage": { "value": summary.html, "representation": "storage" }
             }
         });
         let auth = format!("Basic {}", STANDARD.encode(format!("{email}:{token}")));
@@ -400,34 +441,16 @@ impl Deliverer for ConfluenceDeliverer {
     }
 }
 
-/// A page title from the summary's first line, made unique (Confluence titles
-/// are unique per space) with a clock suffix.
+/// A unique page title (Confluence titles are unique per space) from a snippet
+/// plus a clock suffix.
 #[cfg(feature = "confluence")]
-fn confluence_title(rendered: &str) -> String {
-    let first = rendered
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("Summary")
-        .trim_start_matches('#')
-        .trim();
-    let snippet: String = first.chars().take(80).collect();
+fn confluence_title(first_line: &str) -> String {
+    let snippet: String = first_line.trim().chars().take(80).collect();
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     format!("SummaryBot: {snippet} ({ts})")
-}
-
-/// Minimal markdown→Confluence storage XHTML: escape, newlines→`<br/>`, wrap.
-#[cfg(feature = "confluence")]
-fn to_storage_html(rendered: &str) -> String {
-    let escaped = rendered
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\n', "<br/>");
-    format!("<p>{escaped}</p>")
 }
 
 // ---- email (SMTP) sink plugin (ADR-126; legacy ADR-030) --------------------
@@ -483,9 +506,9 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
     ],
 };
 
-/// Send each summary as a plain-text email over SMTP (DEL-004). Port 465 uses
-/// implicit TLS; anything else (default 587) uses STARTTLS. Single recipient for
-/// now — multiple recipients are a later refinement.
+/// Send each summary as a multipart (plain + HTML) email over SMTP (DEL-004).
+/// Port 465 uses implicit TLS; anything else (default 587) uses STARTTLS. Single
+/// recipient for now — multiple recipients are a later refinement.
 #[cfg(feature = "email")]
 pub struct EmailDeliverer;
 
@@ -495,7 +518,8 @@ impl Deliverer for EmailDeliverer {
         "email"
     }
 
-    fn deliver(&self, config: &Value, rendered: &str) -> Result<(), String> {
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+        use lettre::message::{header::ContentType, MultiPart, SinglePart};
         use lettre::transport::smtp::authentication::Credentials;
         use lettre::{Message, SmtpTransport, Transport};
 
@@ -518,12 +542,23 @@ impl Deliverer for EmailDeliverer {
             p => p.parse().map_err(|_| format!("invalid smtp_port: {p}"))?,
         };
 
-        let subject = email_subject(rendered);
+        let html_doc = format!("<!doctype html><html><body>{}</body></html>", summary.html);
+        let body = MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(summary.plain.clone()),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html_doc),
+            );
         let message = Message::builder()
             .from(from.parse().map_err(|e| format!("bad from address: {e}"))?)
             .to(to.parse().map_err(|e| format!("bad to address: {e}"))?)
-            .subject(subject)
-            .body(rendered.to_string())
+            .subject(email_subject(summary.title()))
+            .multipart(body)
             .map_err(|e| format!("building email: {e}"))?;
 
         // 465 = implicit TLS; otherwise STARTTLS (587).
@@ -545,17 +580,10 @@ impl Deliverer for EmailDeliverer {
     }
 }
 
-/// An email subject from the summary's first line.
+/// An email subject from the summary's title line.
 #[cfg(feature = "email")]
-fn email_subject(rendered: &str) -> String {
-    let first = rendered
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("Summary")
-        .trim_start_matches('#')
-        .trim();
-    let snippet: String = first.chars().take(80).collect();
+fn email_subject(title: &str) -> String {
+    let snippet: String = title.trim().chars().take(80).collect();
     format!("SummaryBot: {snippet}")
 }
 
@@ -605,8 +633,8 @@ mod tests {
         fn id(&self) -> &str {
             self.id
         }
-        fn deliver(&self, _config: &Value, rendered: &str) -> Result<(), String> {
-            self.sent.borrow_mut().push(rendered.to_string());
+        fn deliver(&self, _config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+            self.sent.borrow_mut().push(summary.markdown.clone());
             Ok(())
         }
     }
@@ -623,13 +651,7 @@ mod tests {
         let store = SqliteRepository::in_memory().unwrap();
         let svc = DeliveryService::new(&store);
         let report = svc
-            .deliver(
-                &ws(),
-                &record(),
-                &[],
-                &DeliveryCapabilities::default(),
-                SummaryFormat::Markdown,
-            )
+            .deliver(&ws(), &record(), &[], &DeliveryCapabilities::default())
             .unwrap();
         assert_eq!(
             report.results,
@@ -652,13 +674,7 @@ mod tests {
             ..DeliveryCapabilities::default()
         };
         let report = svc
-            .deliver(
-                &ws(),
-                &record(),
-                &[cfg("webhook")],
-                &caps,
-                SummaryFormat::Markdown,
-            )
+            .deliver(&ws(), &record(), &[cfg("webhook")], &caps)
             .unwrap();
         assert!(report
             .results
@@ -675,13 +691,7 @@ mod tests {
             ..DeliveryCapabilities::default()
         };
         let report = svc
-            .deliver(
-                &ws(),
-                &record(),
-                &[cfg("webhook")],
-                &caps,
-                SummaryFormat::Markdown,
-            )
+            .deliver(&ws(), &record(), &[cfg("webhook")], &caps)
             .unwrap();
         assert!(report.results.contains(&(
             "webhook".to_string(),
@@ -699,13 +709,7 @@ mod tests {
             ..DeliveryCapabilities::default()
         };
         let report = svc
-            .deliver(
-                &ws(),
-                &record(),
-                &[cfg("webhook")],
-                &caps,
-                SummaryFormat::Markdown,
-            )
+            .deliver(&ws(), &record(), &[cfg("webhook")], &caps)
             .unwrap();
         let (_, outcome) = report.results.iter().find(|(k, _)| k == "webhook").unwrap();
         assert!(matches!(outcome, DeliveryOutcome::Failed(_)));
@@ -810,11 +814,12 @@ mod tests {
     fn email_deliverer_rejects_incomplete_config_before_connecting() {
         let d = EmailDeliverer;
         assert_eq!(d.id(), "email");
+        let sample = RenderedSummary::from_text("hi");
         // Missing username/password/from/to → fails fast, no SMTP attempt.
         let err = d
             .deliver(
                 &serde_json::json!({ "smtp_host": "smtp.example.com" }),
-                "hi",
+                &sample,
             )
             .unwrap_err();
         assert!(err.contains("incomplete"), "got: {err}");
@@ -829,7 +834,7 @@ mod tests {
                     "from": "a@b.com",
                     "to": "c@d.com",
                 }),
-                "hi",
+                &sample,
             )
             .unwrap_err();
         assert!(err.contains("invalid smtp_port"), "got: {err}");

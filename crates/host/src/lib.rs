@@ -23,7 +23,8 @@ pub mod whatsapp;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use delivery::{
     build_deliverers, load_workspace_delivery, sink_descriptors, ConfiguredDestination, Deliverer,
-    DeliveryOutcome, DeliveryReport, DeliveryService, FieldHint, FieldSpec, SinkDescriptor,
+    DeliveryOutcome, DeliveryReport, DeliveryService, FieldHint, FieldSpec, RenderedSummary,
+    SinkDescriptor,
 };
 pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};

@@ -94,7 +94,7 @@ metrics).
 | Email (SMTP) | ✅ | ✅ | **sink plugin** (`--features email`); lettre blocking SMTP, STARTTLS/TLS; schema-driven UI verified live (real send not yet tested against a live SMTP server) |
 | Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
 | Google Drive (publish summaries) | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); blocked on real OAuth |
-| Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown `render()`; others not ported |
+| Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown + plain + **html** ✅ (email sends HTML, Confluence uses HTML); json not ported |
 | Push templates per destination | ✅ | ⛔ | — |
 
 ## Web UI / dashboard
