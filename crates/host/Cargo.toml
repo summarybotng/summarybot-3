@@ -47,6 +47,8 @@ http-llm = ["dep:ureq"]
 confluence = ["dep:ureq"]
 # Email (SMTP) delivery sink plugin (ADR-126).
 email = ["dep:lettre"]
+# OAuth 2.0 authorization-code flow (login + integration credentials, ADR-126).
+oauth = ["dep:ureq"]
 
 [[bin]]
 name = "host"

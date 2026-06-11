@@ -13,6 +13,7 @@ mod identity;
 mod job;
 mod membership;
 mod message;
+mod oauth;
 mod rolling;
 mod routing;
 mod schedule;
@@ -41,6 +42,7 @@ pub use message::{
     clean_content, extract_code_blocks, Attachment, AttachmentKind, ChannelId, CodeBlock,
     MessageId, NormalizedMessage,
 };
+pub use oauth::{percent_encode, OAuthProvider};
 pub use rolling::{
     decide_rolling, AccumulationStrategy, PeriodWindow, RollingAction, RollingPeriod, RollingState,
 };

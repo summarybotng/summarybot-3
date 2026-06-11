@@ -11,6 +11,8 @@ pub mod auth;
 pub mod delivery;
 pub mod invite;
 pub mod llm;
+#[cfg(feature = "oauth")]
+pub mod oauth;
 pub mod platform;
 pub mod schedule_runner;
 pub mod scheduler;
