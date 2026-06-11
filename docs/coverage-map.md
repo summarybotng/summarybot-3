@@ -17,7 +17,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Scheduling & rolling digests | ✅ **at parity** | per-tenant LLM+budget now wired |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
-| Delivery | 🟡 **~70%** | plugin seam ✅, webhook/Confluence/email ✅; platform channel/DM send 🔩 |
+| Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
 | Discord / Slack ingestion | 🔩 **seam only** | trait exists, no live fetcher or bot |
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants not yet membership-derived |
 | Knowledge (wiki / vector search) | ⛔ **not started** | whole legacy subsystem absent (Phase 7) |
@@ -93,7 +93,7 @@ metrics).
 | Confluence publishing | ✅ | ✅ | **sink plugin** (`--features confluence`); Cloud REST, API token; schema-driven UI verified live (real publish not yet tested against a live instance) |
 | Email (SMTP) | ✅ | ✅ | **sink plugin** (`--features email`); lettre blocking SMTP, STARTTLS/TLS; schema-driven UI verified live (real send not yet tested against a live SMTP server) |
 | Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
-| Google Drive (publish summaries) | ✅ | ⛔ | planned as optional **sink plugin** (ADR-126); blocked on real OAuth |
+| Google Drive (publish summaries) | ✅ | ✅ | **sink plugin** (`--features gdrive`); publishes HTML as a Google Doc via Drive multipart upload, OAuth refresh-token per workspace. Real upload not yet tested against live Drive; obtaining the refresh token still needs a connect-flow UX (token pasted for now) |
 | Output formats (markdown/html/json/text) | ✅ | 🟡 | markdown + plain + **html** ✅ (email sends HTML, Confluence uses HTML); json not ported |
 | Push templates per destination | ✅ | ⛔ | — |
 

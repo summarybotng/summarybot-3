@@ -113,6 +113,8 @@ pub fn sink_descriptors() -> Vec<SinkDescriptor> {
     out.push(CONFLUENCE_DESCRIPTOR);
     #[cfg(feature = "email")]
     out.push(EMAIL_DESCRIPTOR);
+    #[cfg(feature = "gdrive")]
+    out.push(GDRIVE_DESCRIPTOR);
     out
 }
 
@@ -127,6 +129,8 @@ pub fn build_deliverers() -> Vec<Box<dyn Deliverer>> {
     out.push(Box::new(ConfluenceDeliverer::default()));
     #[cfg(feature = "email")]
     out.push(Box::new(EmailDeliverer));
+    #[cfg(feature = "gdrive")]
+    out.push(Box::new(GoogleDriveDeliverer::default()));
     out
 }
 
@@ -587,6 +591,124 @@ fn email_subject(title: &str) -> String {
     format!("SummaryBot: {snippet}")
 }
 
+// ---- Google Drive sink plugin (ADR-126) ------------------------------------
+
+/// Google Drive config: a per-workspace refresh token (obtained via the Google
+/// OAuth consent with the `drive.file` scope) and an optional destination folder.
+/// The operator's OAuth *app* creds come from the process env
+/// (`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`).
+#[cfg(feature = "gdrive")]
+const GDRIVE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "gdrive",
+    display_name: "Google Drive",
+    fields: &[
+        FieldSpec {
+            name: "refresh_token",
+            label: "Google OAuth refresh token (drive.file scope)",
+            secret: true,
+            required: true,
+            hint: FieldHint::None,
+        },
+        FieldSpec {
+            name: "folder_id",
+            label: "Destination folder id (optional)",
+            secret: false,
+            required: false,
+            hint: FieldHint::Full,
+        },
+    ],
+};
+
+/// Publish each summary as a Google Doc (DEL via Drive). Refreshes a short-lived
+/// access token from the stored refresh token (operator app creds from env),
+/// then multipart-uploads the HTML render with `mimeType
+/// application/vnd.google-apps.document` so Drive converts it to a Doc.
+#[cfg(feature = "gdrive")]
+pub struct GoogleDriveDeliverer {
+    timeout_secs: u64,
+}
+
+#[cfg(feature = "gdrive")]
+impl Default for GoogleDriveDeliverer {
+    fn default() -> Self {
+        Self { timeout_secs: 30 }
+    }
+}
+
+#[cfg(feature = "gdrive")]
+impl Deliverer for GoogleDriveDeliverer {
+    fn id(&self) -> &str {
+        "gdrive"
+    }
+
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+        let refresh_token = config
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| "google drive destination has no refresh token".to_string())?;
+        let folder_id = config
+            .get("folder_id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+
+        // Operator's Google OAuth app (shared with login).
+        let client_id = std::env::var("GOOGLE_CLIENT_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "server has no GOOGLE_CLIENT_ID configured".to_string())?;
+        let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| "server has no GOOGLE_CLIENT_SECRET configured".to_string())?;
+        let provider = domain::OAuthProvider {
+            name: "google".into(),
+            auth_url: String::new(),
+            token_url: "https://oauth2.googleapis.com/token".into(),
+            userinfo_url: None,
+            client_id,
+            scopes: vec![],
+            extra_auth_params: vec![],
+        };
+        let access = crate::oauth::refresh(&provider, &client_secret, refresh_token)?.access_token;
+
+        // multipart/related: JSON metadata + HTML media → a converted Google Doc.
+        let boundary = format!("sbnd{}", crate::oauth::random_url_token(12)?);
+        let mut metadata = serde_json::json!({
+            "name": format!("SummaryBot: {}", summary.title()),
+            "mimeType": "application/vnd.google-apps.document",
+        });
+        if !folder_id.is_empty() {
+            metadata["parents"] = serde_json::json!([folder_id]);
+        }
+        let html_doc = format!("<html><body>{}</body></html>", summary.html);
+        let body = format!(
+            "--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n\
+             --{b}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n{html}\r\n--{b}--",
+            b = boundary,
+            meta = metadata,
+            html = html_doc,
+        );
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .build();
+        match agent
+            .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+            .set("Authorization", &format!("Bearer {access}"))
+            .set(
+                "Content-Type",
+                &format!("multipart/related; boundary={boundary}"),
+            )
+            .send_bytes(body.as_bytes())
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, _)) => Err(format!("google drive returned http {code}")),
+            Err(ureq::Error::Transport(t)) => Err(format!("google drive transport error: {t}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -838,5 +960,19 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("invalid smtp_port"), "got: {err}");
+    }
+
+    #[cfg(feature = "gdrive")]
+    #[test]
+    fn gdrive_deliverer_rejects_missing_refresh_token() {
+        let d = GoogleDriveDeliverer::default();
+        assert_eq!(d.id(), "gdrive");
+        let err = d
+            .deliver(
+                &serde_json::json!({ "folder_id": "abc" }),
+                &RenderedSummary::from_text("hi"),
+            )
+            .unwrap_err();
+        assert!(err.contains("refresh token"), "got: {err}");
     }
 }
