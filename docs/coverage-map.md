@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-08 — ADR-126 sink plugins: webhook + Confluence + email
+- **As of:** 2026-06-08 — ADR-126 sink plugins (webhook/Confluence/email) + OAuth login
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -19,7 +19,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
 | Delivery | 🟡 **~70%** | plugin seam ✅, webhook/Confluence/email ✅; platform channel/DM send 🔩 |
 | Discord / Slack ingestion | 🔩 **seam only** | trait exists, no live fetcher or bot |
-| Auth / OAuth | 🟡 **dev seam** | sessions/roles ✅; real OAuth redirect ⛔ |
+| Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants not yet membership-derived |
 | Knowledge (wiki / vector search) | ⛔ **not started** | whole legacy subsystem absent (Phase 7) |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
 | Ops (Docker, migrations, metrics) | 🟡 **thin** | single binary; ad-hoc schema; minimal telemetry |
@@ -115,8 +115,10 @@ metrics).
 | Feature | Legacy | Rewrite | Notes |
 |---|---|---|---|
 | Sessions / JWT / refresh / logout | ✅ | ✅ | HS256, revocation (`host/auth`) |
-| OAuth redirect (Discord/Google/Slack) | ✅ | 🔩 | login accepts pre-verified claims; **no real redirect flow** |
-| Email magic-link | ✅ | 🔩 | provider stub |
+| OAuth redirect (Google/Discord) | ✅ | ✅ | authorization-code + PKCE + signed state (`--features oauth`); needs provider keys; live flow not yet run end-to-end |
+| OAuth (Slack) | ✅ | ⛔ | not added |
+| Email magic-link | ✅ | 🔩 | dev provider stub (no real link delivery) |
+| Workspace grants from membership | ✅ | ⛔ | login still grants requested workspaces; should derive from memberships |
 | Tenants: provision / update / route by domain | partial | ✅ | `api/tenancy.rs`, `host/tenant_routing.rs` |
 | Members + roles (Owner/Admin/Member/Guest) | ✅ (RBAC) | ✅ | `domain/membership.rs` |
 | Invitations | partial | ✅ | `host/invite.rs` |

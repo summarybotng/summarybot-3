@@ -16,6 +16,8 @@ http-llm = ["host/http-llm"]
 confluence = ["host/confluence"]
 # Email (SMTP) delivery sink plugin (ADR-126). Optional + network-gated.
 email = ["host/email"]
+# OAuth 2.0 login flow (ADR-126). Optional + network-gated.
+oauth = ["host/oauth", "dep:base64"]
 
 [dependencies]
 domain.workspace = true
@@ -30,6 +32,8 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.5", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# URL-safe base64 for the OAuth callback's session fragment. Gated by `oauth`.
+base64 = { version = "0.22", optional = true }
 
 [dev-dependencies]
 # Tower's ServiceExt::oneshot drives the router in tests without a real socket.

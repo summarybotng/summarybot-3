@@ -12,6 +12,8 @@ mod auth;
 mod destinations;
 mod error;
 mod events;
+#[cfg(feature = "oauth")]
+mod oauth;
 mod scheduler_driver;
 mod schedules;
 mod summaries;
@@ -334,7 +336,8 @@ pub(crate) fn budget_charge(
 
 /// Build the router with all routes + the correlation-id middleware.
 pub fn build_router(state: AppState) -> Router {
-    Router::new()
+    #[allow(unused_mut)]
+    let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(auth::login))
@@ -460,7 +463,17 @@ pub fn build_router(state: AppState) -> Router {
             "/tenants/:tenant/invites/revoke",
             post(tenancy::revoke_invite),
         )
-        .route("/invites/accept", post(tenancy::accept_invite))
+        .route("/invites/accept", post(tenancy::accept_invite));
+
+    // Real OAuth login flow (ADR-126), when compiled in.
+    #[cfg(feature = "oauth")]
+    {
+        router = router
+            .route("/auth/oauth/:provider/start", get(oauth::start))
+            .route("/auth/oauth/:provider/callback", get(oauth::callback));
+    }
+
+    router
         .layer(axum::middleware::from_fn(auth::correlation_id))
         .with_state(state)
 }

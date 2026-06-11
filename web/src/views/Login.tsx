@@ -44,10 +44,35 @@ export function Login() {
           disabled={busy}
           className="mt-6 w-full rounded-lg bg-accent px-4 py-2 font-medium text-accent-fg disabled:opacity-60"
         >
-          {busy ? 'Signing in…' : 'Sign in'}
+          {busy ? 'Signing in…' : 'Dev sign-in'}
         </button>
+
+        <div className="mt-4 flex items-center gap-3 text-xs text-slate-400">
+          <span className="h-px flex-1 bg-slate-200" />
+          or
+          <span className="h-px flex-1 bg-slate-200" />
+        </div>
+
+        {/* Real OAuth (ADR-126). Works when the server is built with
+            --features oauth and the provider is configured; otherwise the
+            start endpoint returns a clear error. */}
+        <div className="mt-4 space-y-2">
+          {(['google', 'discord'] as const).map((p) => (
+            <a
+              key={p}
+              href={`/auth/oauth/${p}/start?workspaces=${encodeURIComponent(
+                workspace.trim() || 'ws-demo',
+              )}`}
+              className="block w-full rounded-lg border border-slate-300 px-4 py-2 text-center text-sm font-medium capitalize text-slate-700 hover:border-accent"
+            >
+              Sign in with {p}
+            </a>
+          ))}
+        </div>
+
         <p className="mt-4 text-center text-xs text-slate-400">
-          Dev sign-in (email provider). OAuth redirect is a later step.
+          Dev sign-in uses the email provider. OAuth needs the server built with{' '}
+          <code className="rounded bg-slate-100 px-1">--features oauth</code> + provider keys.
         </p>
       </form>
     </div>
