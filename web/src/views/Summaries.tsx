@@ -136,6 +136,17 @@ export function Summaries() {
                   <p className="mt-0.5 text-xs text-slate-400">
                     {when(s.created_at)} · {s.model}
                     {s.degraded && ' · degraded'}
+                    {s.coherence_score != null && (
+                      <span
+                        className={
+                          s.coherence_score < 0.5 ? 'text-red-500' : 'text-slate-400'
+                        }
+                        title="Coherence: share of claims grounded in source messages"
+                      >
+                        {' · '}
+                        {(s.coherence_score * 100).toFixed(0)}% grounded
+                      </span>
+                    )}
                     {s.pinned && ' · 📌'}
                   </p>
                 </button>

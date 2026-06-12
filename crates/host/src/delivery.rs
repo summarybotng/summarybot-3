@@ -757,6 +757,7 @@ mod tests {
             pinned: false,
             archived: false,
             tags: vec![],
+            coherence_score: None,
             summary: ExtractedSummary {
                 text: "We shipped.".into(),
                 key_points: vec!["Launched".into()],

@@ -14,7 +14,7 @@ use rusqlite::types::ToSql;
 use rusqlite::{params, OptionalExtension};
 
 /// A stored summary with its provenance and management flags (§5.1).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SummaryRecord {
     pub id: String,
     /// The channel/scope this summary covered, if any.
@@ -27,6 +27,8 @@ pub struct SummaryRecord {
     pub archived: bool,
     pub tags: Vec<String>,
     pub summary: ExtractedSummary,
+    /// Coherence-gate grounded score in `[0,1]` (COH-001); `None` if unassessed.
+    pub coherence_score: Option<f32>,
 }
 
 /// Filter + pagination for a summary listing (PRD §5.1: DSH-002/004/005). All
@@ -110,8 +112,9 @@ impl StructuredSummaryRepository for SqliteRepository {
         tx.execute(
             "INSERT INTO summary_records
                (id, workspace_id, channel_id, model, cost_micros, degraded, created_at,
-                text, key_points, technical_terms, participants, pinned, archived, tags)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                text, key_points, technical_terms, participants, pinned, archived, tags,
+                coherence_score)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 record.id,
                 workspace.as_str(),
@@ -127,6 +130,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                 record.pinned,
                 record.archived,
                 join(&record.tags),
+                record.coherence_score,
             ],
         )?;
         for (i, a) in record.summary.action_items.iter().enumerate() {
@@ -152,7 +156,8 @@ impl StructuredSummaryRepository for SqliteRepository {
             .conn
             .query_row(
                 "SELECT channel_id, model, cost_micros, degraded, created_at,
-                        text, key_points, technical_terms, participants, pinned, archived, tags
+                        text, key_points, technical_terms, participants, pinned, archived, tags,
+                        coherence_score
                  FROM summary_records WHERE id = ?1 AND workspace_id = ?2",
                 params![id, workspace.as_str()],
                 |row| {
@@ -169,6 +174,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                         row.get::<_, bool>(9)?,
                         row.get::<_, bool>(10)?,
                         row.get::<_, String>(11)?,
+                        row.get::<_, Option<f32>>(12)?,
                     ))
                 },
             )
@@ -186,6 +192,7 @@ impl StructuredSummaryRepository for SqliteRepository {
             pinned,
             archived,
             tags,
+            coherence_score,
         )) = main
         else {
             return Ok(None);
@@ -242,6 +249,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                 action_items,
                 citations,
             },
+            coherence_score,
         }))
     }
 
@@ -403,6 +411,7 @@ mod tests {
             pinned: false,
             archived: false,
             tags: vec!["release".into()],
+            coherence_score: Some(0.8),
             summary: ExtractedSummary {
                 text: "We shipped.".into(),
                 key_points: vec!["Launched Friday".into(), "Changelog done".into()],

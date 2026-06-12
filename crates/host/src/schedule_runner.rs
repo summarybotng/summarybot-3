@@ -123,6 +123,7 @@ where
             pinned: false,
             archived: false,
             tags: vec![],
+            coherence_score: Some(outcome.coherence.score),
             summary: outcome.summary,
         };
         // Fan out: always-on dashboard store + any configured destinations

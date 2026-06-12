@@ -31,6 +31,8 @@ export interface Summary {
   model: string
   cost_micros: number
   degraded: boolean
+  /** Coherence-gate grounded score in [0,1]; null if unassessed (COH-001). */
+  coherence_score: number | null
   pinned: boolean
   archived: boolean
   tags: string[]

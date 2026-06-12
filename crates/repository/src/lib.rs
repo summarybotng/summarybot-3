@@ -371,6 +371,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0002_tenant_llm_api_key_enc",
         "ALTER TABLE tenant_llm_config ADD COLUMN api_key_enc TEXT",
     ),
+    // Coherence-gate score on summaries (COH-001; ADR-127) — added via migration
+    // (not in the baseline CREATE), so fresh and existing DBs get it identically.
+    (
+        "0003_summary_coherence_score",
+        "ALTER TABLE summary_records ADD COLUMN coherence_score REAL",
+    ),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose

@@ -47,13 +47,16 @@ pub struct SummarizeRequest<'a> {
 }
 
 /// A produced summary plus its cost and provenance.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SummaryOutcome {
     pub summary: ExtractedSummary,
     pub model: String,
     pub cost_micros: i64,
     /// True if the cap forced a cheaper model than the length warranted (Q#5).
     pub degraded: bool,
+    /// Coherence gate result vs. the source messages (COH-001). `score` 1.0 with
+    /// no flags when unassessed (no sources).
+    pub coherence: domain::CoherenceReport,
 }
 
 /// Why summarization failed outright.
@@ -141,6 +144,9 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
 
         let mut guard = CostGuard::new(req.cap_micros);
         let mut degraded = false;
+        // Source texts for the coherence gate (COH-001), checked against the
+        // final summary regardless of single-pass vs. map-reduce.
+        let source_texts: Vec<&str> = substantial.iter().map(|m| m.content.as_str()).collect();
 
         // Plan chunking against the *start* model's window (the ladder may still
         // escalate within a window; this only decides map-reduce vs single pass).
@@ -160,14 +166,16 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         );
 
         if plan.chunks <= 1 {
-            return self.summarize_window(
+            let mut outcome = self.summarize_window(
                 req,
                 &substantial,
                 req.length,
                 desired_output,
                 &mut guard,
                 &mut degraded,
-            );
+            )?;
+            outcome.coherence = domain::check_coherence(&outcome.summary, &source_texts);
+            return Ok(outcome);
         }
 
         // Map: a brief partial per contiguous chunk; carry forward real
@@ -211,6 +219,10 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                 model: model_name(),
                 cost_micros: guard.spent_micros(),
                 degraded,
+                coherence: domain::CoherenceReport {
+                    score: 1.0,
+                    ungrounded: vec![],
+                },
             }
         } else {
             match self.reduce(req, partials, context_tokens, &mut guard, &mut degraded) {
@@ -225,6 +237,10 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                         model: model_name(),
                         cost_micros: guard.spent_micros(),
                         degraded,
+                        coherence: domain::CoherenceReport {
+                            score: 1.0,
+                            ungrounded: vec![],
+                        },
                     }
                 }
             }
@@ -233,6 +249,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         // point at synthetic partials, so they're discarded).
         outcome.summary.citations = dedup_citations(carried);
         outcome.degraded = degraded;
+        outcome.coherence = domain::check_coherence(&outcome.summary, &source_texts);
         Ok(outcome)
     }
 
@@ -308,7 +325,13 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                                 model: response.model,
                                 cost_micros: guard.spent_micros(),
                                 degraded: *degraded,
-                            })
+                                // Computed once over the full source set in
+                                // `summarize` (this window may be a chunk).
+                                coherence: domain::CoherenceReport {
+                                    score: 1.0,
+                                    ungrounded: vec![],
+                                },
+                            });
                         }
                         // Recoverable quality problem: try a stronger model.
                         Err(q) => {

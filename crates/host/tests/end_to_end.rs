@@ -112,6 +112,7 @@ fn ingest_then_summarize_then_deliver() {
         pinned: false,
         archived: false,
         tags: vec![],
+        coherence_score: Some(outcome.coherence.score),
         summary: outcome.summary.clone(),
     };
     let report = DeliveryService::new(&repo)

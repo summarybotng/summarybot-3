@@ -132,7 +132,7 @@ metrics).
 | Knowledge units extracted from summaries (KNO-001) | ✅ | ✅ | headline + key points + action items, with provenance (ADR-127) |
 | Vector store / semantic search (KNO-002/003/005) | ✅ | ✅ | local embeddings (Mac-mini `nomic-embed-text`) + SQLite brute-force cosine behind a swap-in seam; verified live; HNSW/RuVector deferred |
 | Embeddings from a local model (KNO-007) | ✅ | ✅ | OpenAI-compatible `/v1/embeddings`; demo embedder offline; model pinned per unit |
-| Coherence / hallucination gate (COH-001) | ✅ | ⛔ | next increment |
+| Coherence / hallucination gate (COH-001) | ✅ | ✅ | lexical grounding check; grounded score persisted + shown on summaries (LLM-judge is a stronger follow-up) |
 | Wiki synthesis (pages, regenerate) (WIK-*) | ✅ (extensive) | ⛔ | next increment |
 | AI wiki curator (CUR-*) | ✅ | ⛔ | deferred (ADR-127) |
 
