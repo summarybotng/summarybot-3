@@ -147,7 +147,7 @@ metrics).
 | Migration framework | ✅ (58+ tracked) | ✅ | `schema_migrations` ledger + ordered runner; idempotent baseline, future changes append as `(id, sql)` |
 | Audit log | ✅ | 🟡 | `audit_log` table exists; limited surfacing |
 | Docker / Fly / Render deploy configs | ✅ | ⛔ | single binary; no container/deploy config |
-| Monitoring / metrics | ✅ | ⛔ | stderr logs only |
+| Monitoring / metrics | ✅ | 🟡 | `GET /metrics` Prometheus gauges (tenants/workspaces/summaries/schedules/spend) + stderr logs; request-rate counters are a follow-up |
 | WASM sandbox boundary | n/a | 🟡 | architecture proven; only WhatsApp parse runs in WASM |
 
 ---

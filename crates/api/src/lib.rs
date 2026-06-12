@@ -356,6 +356,7 @@ pub fn build_router(state: AppState) -> Router {
     #[allow(unused_mut)]
     let mut router = Router::new()
         .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(auth::login))
         .route("/auth/refresh", post(auth::refresh))
@@ -522,6 +523,42 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+/// `GET /metrics` — Prometheus text-exposition gauges for monitoring. Unauthed
+/// like `/healthz` (scrape-friendly); exposes only process-wide counts, never
+/// tenant data. v1 is DB-derived gauges; request-rate counters are a follow-up.
+async fn metrics(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> Result<String, ApiError> {
+    let c = {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.ops_counts()
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+    let body = format!(
+        "# HELP summarybot_tenants Total tenants provisioned.\n\
+         # TYPE summarybot_tenants gauge\n\
+         summarybot_tenants {tenants}\n\
+         # HELP summarybot_workspaces Total workspaces.\n\
+         # TYPE summarybot_workspaces gauge\n\
+         summarybot_workspaces {workspaces}\n\
+         # HELP summarybot_summaries Total stored summaries.\n\
+         # TYPE summarybot_summaries gauge\n\
+         summarybot_summaries {summaries}\n\
+         # HELP summarybot_schedules Total schedules.\n\
+         # TYPE summarybot_schedules gauge\n\
+         summarybot_schedules {schedules}\n\
+         # HELP summarybot_spend_micros Total summarization spend (micro-dollars).\n\
+         # TYPE summarybot_spend_micros counter\n\
+         summarybot_spend_micros {spend}\n",
+        tenants = c.tenants,
+        workspaces = c.workspaces,
+        summaries = c.summaries,
+        schedules = c.schedules,
+        spend = c.total_spend_micros,
+    );
+    Ok(body)
+}
+
 /// Minimal OpenAPI document (OpenAPI-first §12.6 item 1). A full generated spec
 /// (utoipa) is a follow-up; this enumerates the live routes for clients/tools.
 async fn openapi() -> Json<serde_json::Value> {
@@ -530,6 +567,7 @@ async fn openapi() -> Json<serde_json::Value> {
         "info": { "title": "SummaryBot API", "version": "0.1.0" },
         "paths": {
             "/healthz": { "get": { "summary": "Liveness check" } },
+            "/metrics": { "get": { "summary": "Prometheus metrics (process-wide gauges)" } },
             "/auth/login": { "post": { "summary": "Exchange verified provider claims for tokens" } },
             "/auth/refresh": { "post": { "summary": "Rotate a refresh token for a new token pair" } },
             "/auth/logout": { "post": { "summary": "Revoke the current session" } },
@@ -691,6 +729,22 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(resp.headers().contains_key("x-correlation-id"));
+    }
+
+    #[tokio::test]
+    async fn metrics_exposes_prometheus_gauges() {
+        let (state, _) = seeded_state();
+        let resp = build_router(state)
+            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("summarybot_workspaces"));
+        assert!(body.contains("# TYPE summarybot_spend_micros counter"));
     }
 
     #[tokio::test]

@@ -67,10 +67,42 @@ pub struct SqliteRepository {
     conn: Connection,
 }
 
+/// Coarse operational counts for the `/metrics` endpoint — process-wide gauges
+/// derived from the DB, not per-tenant data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OpsCounts {
+    pub tenants: i64,
+    pub workspaces: i64,
+    pub summaries: i64,
+    pub schedules: i64,
+    pub total_spend_micros: i64,
+}
+
 impl SqliteRepository {
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         Self::with_connection(conn)
+    }
+
+    /// Aggregate process-wide counts for monitoring (no tenant data leaves here).
+    pub fn ops_counts(&self) -> Result<OpsCounts> {
+        let count = |table: &str| -> Result<i64> {
+            Ok(self
+                .conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+        };
+        let total_spend_micros: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_micros), 0) FROM summary_records",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(OpsCounts {
+            tenants: count("tenants")?,
+            workspaces: count("workspaces")?,
+            summaries: count("summary_records")?,
+            schedules: count("schedules")?,
+            total_spend_micros,
+        })
     }
 
     /// Open (creating if absent) a file-backed database and apply the schema.
