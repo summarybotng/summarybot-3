@@ -13,7 +13,8 @@ import type {
   TokenResponse,
   WhatsappImport,
   WikiPage,
-  DiscordSync,
+  ConnectionStatus,
+  SourceSync,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -274,26 +275,32 @@ export class Client {
     return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
   }
 
-  // --- Discord live ingestion (ADR-128; --features discord) ---
+  // --- live source ingestion: Discord / Slack (ADR-128) ---
 
-  /** Whether a Discord bot token is configured for this workspace. */
-  discordStatus(): Promise<{ token_set: boolean }> {
-    return this.json(`/workspaces/${this.ws()}/connections/discord`)
+  /** Token + support status for a live platform (discord|slack). */
+  connectionStatus(platform: string): Promise<ConnectionStatus> {
+    return this.json(`/workspaces/${this.ws()}/connections/${platform}`)
   }
 
-  setDiscordToken(token: string): Promise<{ token_set: boolean }> {
-    return this.json(`/workspaces/${this.ws()}/connections/discord/token`, this.body('PUT', { token }))
+  setConnectionToken(platform: string, token: string): Promise<ConnectionStatus> {
+    return this.json(`/workspaces/${this.ws()}/connections/${platform}/token`, this.body('PUT', { token }))
   }
 
-  clearDiscordToken(): Promise<void> {
-    return this.json(`/workspaces/${this.ws()}/connections/discord/token`, { method: 'DELETE' })
+  clearConnectionToken(platform: string): Promise<void> {
+    return this.json(`/workspaces/${this.ws()}/connections/${platform}/token`, { method: 'DELETE' })
   }
 
-  /** Fetch a guild's recent messages into the store. */
-  syncDiscord(guildId: string, lookbackSecs: number, channels: string[] = []): Promise<DiscordSync> {
-    return this.json<DiscordSync>(
-      `/workspaces/${this.ws()}/connections/discord/sync`,
-      this.body('POST', { guild_id: guildId, lookback_secs: lookbackSecs, channels }),
+  /** Fetch a source's recent messages into the store. `scopeId` is the Discord
+   *  guild id (Slack ignores it). */
+  syncSource(
+    platform: string,
+    lookbackSecs: number,
+    scopeId?: string,
+    channels: string[] = [],
+  ): Promise<SourceSync> {
+    return this.json<SourceSync>(
+      `/workspaces/${this.ws()}/connections/${platform}/sync`,
+      this.body('POST', { scope_id: scopeId || null, lookback_secs: lookbackSecs, channels }),
     )
   }
 

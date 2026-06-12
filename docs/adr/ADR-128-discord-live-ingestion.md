@@ -68,3 +68,20 @@ unchanged. We add *ingestion*, not a second summarization path.
   flattened to their text/description for now (a refinement if needed).
 - Rate limits: v1 respects Discord's per-route 429 `retry-after` with a bounded
   wait; aggressive backfill of very large channels is out of scope for v1.
+
+## Update — Slack (same session)
+
+The design generalized cleanly to **Slack** as the second live source. A
+`SlackFetcher` (Slack Web API: `conversations.list` / `conversations.history`,
+bot token `xoxb-…`) mirrors `DiscordFetcher`; the pure layer (Slack `ts` →
+unix-seconds, message-JSON → `NormalizedMessage`, system-subtype filter) is
+unit-tested offline. The connection API is now **platform-generic**
+(`/workspaces/:ws/connections/:platform[/token|/sync]`), dispatching to a
+`make_platform_fetcher(platform, token, scope_id)` factory whose arms are
+feature-gated (`discord`, `slack`); `status` reports `supported` so the UI knows
+whether a build can fetch. The web side is one parameterized `Source` component
+behind Discord and Slack tabs. Differences captured: Slack tokens are
+workspace-scoped (no guild/`scope_id`), history needs the bot to be a channel
+member (`not_in_channel` surfaced per-channel), and Slack reports API errors in
+the JSON body (`ok:false`) rather than the HTTP status. Verified the same way —
+a bogus token reaches Slack and returns `invalid_auth`.

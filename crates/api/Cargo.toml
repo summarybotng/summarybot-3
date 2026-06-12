@@ -22,6 +22,8 @@ oauth = ["host/oauth", "dep:base64"]
 gdrive = ["host/gdrive"]
 # Discord live message ingestion (ADR-128). Optional + network-gated.
 discord = ["host/discord"]
+# Slack live message ingestion (ADR-128). Optional + network-gated.
+slack = ["host/slack"]
 
 [dependencies]
 domain.workspace = true

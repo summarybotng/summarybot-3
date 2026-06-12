@@ -19,6 +19,7 @@ pub mod platform;
 pub mod schedule_runner;
 pub mod scheduler;
 pub mod secretbox;
+pub mod slack;
 pub mod summarize;
 pub mod tenant_routing;
 pub mod whatsapp;
@@ -36,10 +37,14 @@ pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 #[cfg(feature = "http-llm")]
 pub use knowledge::HttpEmbedder;
 pub use knowledge::{DemoEmbedder, Embedder, KnowledgeService, SearchHit};
+pub use platform::make_platform_fetcher;
 pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
 pub use schedule_runner::SummarizingScheduleRunner;
 pub use scheduler::{ScheduleRunner, SchedulerService, TickReport};
 pub use secretbox::{decrypt_secret, encrypt_secret, parse_master_key};
+#[cfg(feature = "slack")]
+pub use slack::SlackFetcher;
+pub use slack::{parse_message as parse_slack_message, slack_ts_to_unix_secs};
 pub use summarize::{SummarizationService, SummarizeError, SummarizeRequest, SummaryOutcome};
 pub use tenant_routing::resolve_tenant_by_host;
 use wasmtime::component::{Component, Linker, ResourceTable};

@@ -55,6 +55,9 @@ gdrive = ["dep:ureq", "oauth"]
 # Discord live message ingestion (ADR-128) — fetches a guild's channels over the
 # Discord REST API (blocking) into the message store. Network-gated like http-llm.
 discord = ["dep:ureq"]
+# Slack live message ingestion (ADR-128) — fetches a workspace's channels over
+# the Slack Web API (blocking) into the message store. Network-gated.
+slack = ["dep:ureq"]
 
 [[bin]]
 name = "host"

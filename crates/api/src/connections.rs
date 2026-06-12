@@ -1,60 +1,88 @@
-//! Discord live ingestion endpoints (ADR-128) — store the bot token (encrypted)
-//! and sync a guild's recent messages into the message store, from which the
-//! existing summarize / schedule paths read unchanged.
-//!
-//! Feature-gated (`discord`): without it the routes aren't registered and the
-//! network client isn't compiled, keeping the default build offline.
+//! Live platform connection endpoints (ADR-128) — store a bot token (encrypted)
+//! and sync a source's recent messages into the message store, from which the
+//! existing summarize / schedule paths read unchanged. Platform-generic: the
+//! `:platform` path segment selects Discord or Slack; the fetcher is built by
+//! [`host::make_platform_fetcher`], which errors if that platform's ingestion
+//! feature isn't compiled in. Token storage works regardless (it's just an
+//! encrypted blob); `status.supported` tells the UI whether sync will work.
 
 use crate::auth::AuthUser;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use domain::Platform;
 use serde::{Deserialize, Serialize};
 
-/// Platform key for Discord credentials/connections.
-const PLATFORM: &str = "discord";
+/// Parse + validate the platform path segment as a *live* source (Discord/Slack;
+/// not WhatsApp, which is upload-only).
+fn live_platform(raw: &str) -> Result<Platform, ApiError> {
+    match Platform::parse(raw) {
+        Ok(p @ (Platform::Discord | Platform::Slack)) => Ok(p),
+        Ok(Platform::WhatsApp) => Err(ApiError::bad_request(
+            "WhatsApp is upload-only, not a live source",
+        )),
+        Err(_) => Err(ApiError::bad_request("unknown platform")),
+    }
+}
+
+/// Whether this build compiled in ingestion for `platform`.
+fn supported(platform: Platform) -> bool {
+    match platform {
+        Platform::Discord => cfg!(feature = "discord"),
+        Platform::Slack => cfg!(feature = "slack"),
+        Platform::WhatsApp => false,
+    }
+}
 
 #[derive(Serialize)]
 pub struct ConnectionStatusDto {
-    /// Whether a bot token is stored for this workspace (the secret is never
-    /// returned).
+    /// Whether a bot token is stored for this workspace + platform (never the
+    /// secret itself).
     pub token_set: bool,
+    /// Whether this server build can actually fetch from the platform.
+    pub supported: bool,
 }
 
-/// `GET /workspaces/:ws/connections/discord` — whether a bot token is configured.
+/// `GET /workspaces/:ws/connections/:platform` — token + support status.
 pub async fn status(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(ws): Path<String>,
+    Path((ws, platform)): Path<(String, String)>,
 ) -> Result<Json<ConnectionStatusDto>, ApiError> {
     use repository::PlatformCredentialRepository;
     user.require_workspace(&ws)?;
+    let platform = live_platform(&platform)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let repo = state.repo.lock().expect("repo mutex");
     let token_set = repo
-        .get_platform_token(&workspace, PLATFORM)
+        .get_platform_token(&workspace, platform.as_str())
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .is_some();
-    Ok(Json(ConnectionStatusDto { token_set }))
+    Ok(Json(ConnectionStatusDto {
+        token_set,
+        supported: supported(platform),
+    }))
 }
 
 #[derive(Deserialize)]
 pub struct SetTokenRequest {
-    /// The Discord **bot** token (stored encrypted at rest, AES-256-GCM).
+    /// The platform **bot** token (Discord bot token / Slack `xoxb-…`), stored
+    /// encrypted at rest (AES-256-GCM).
     pub token: String,
 }
 
-/// `PUT /workspaces/:ws/connections/discord/token` — set/replace the bot token.
+/// `PUT /workspaces/:ws/connections/:platform/token` — set/replace the token.
 pub async fn set_token(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(ws): Path<String>,
+    Path((ws, platform)): Path<(String, String)>,
     Json(body): Json<SetTokenRequest>,
 ) -> Result<Json<ConnectionStatusDto>, ApiError> {
     use repository::PlatformCredentialRepository;
     user.require_workspace(&ws)?;
+    let platform = live_platform(&platform)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let token = body.token.trim();
@@ -69,24 +97,33 @@ pub async fn set_token(
     let token_enc =
         host::encrypt_secret(master, token).map_err(|e| ApiError::Internal(e.to_string()))?;
     let repo = state.repo.lock().expect("repo mutex");
-    repo.set_platform_token(&workspace, PLATFORM, &token_enc, crate::auth::now_secs())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Json(ConnectionStatusDto { token_set: true }))
+    repo.set_platform_token(
+        &workspace,
+        platform.as_str(),
+        &token_enc,
+        crate::auth::now_secs(),
+    )
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(ConnectionStatusDto {
+        token_set: true,
+        supported: supported(platform),
+    }))
 }
 
-/// `DELETE /workspaces/:ws/connections/discord/token` — clear the bot token.
+/// `DELETE /workspaces/:ws/connections/:platform/token` — clear the token.
 pub async fn delete_token(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(ws): Path<String>,
+    Path((ws, platform)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     use repository::PlatformCredentialRepository;
     user.require_workspace(&ws)?;
+    let platform = live_platform(&platform)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let repo = state.repo.lock().expect("repo mutex");
     let removed = repo
-        .delete_platform_token(&workspace, PLATFORM)
+        .delete_platform_token(&workspace, platform.as_str())
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     if removed {
         Ok(StatusCode::NO_CONTENT)
@@ -97,9 +134,11 @@ pub async fn delete_token(
 
 #[derive(Deserialize)]
 pub struct SyncRequest {
-    /// The Discord guild (server) id to pull from.
-    pub guild_id: String,
-    /// Specific channel ids; omit/empty to sync all of the guild's text channels.
+    /// Source scope id: the Discord guild (server) id. Slack ignores it (the bot
+    /// token is workspace-scoped).
+    #[serde(default)]
+    pub scope_id: Option<String>,
+    /// Specific channel ids; omit/empty to sync all of the source's channels.
     #[serde(default)]
     pub channels: Vec<String>,
     /// How far back to fetch, in seconds (e.g. 86400 = last day).
@@ -124,24 +163,22 @@ pub struct SyncResponse {
     pub errors: Vec<SyncErrorDto>,
 }
 
-/// `POST /workspaces/:ws/connections/discord/sync` — fetch the guild's recent
+/// `POST /workspaces/:ws/connections/:platform/sync` — fetch the source's recent
 /// messages and persist them into the message store (ADR-128). Idempotent on the
 /// native message id, so overlapping windows converge rather than duplicate.
 pub async fn sync(
     State(state): State<AppState>,
     user: AuthUser,
-    Path(ws): Path<String>,
+    Path((ws, platform)): Path<(String, String)>,
     Json(body): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, ApiError> {
-    use host::{DiscordFetcher, FetchScope, PlatformFetcher};
+    use host::FetchScope;
     use repository::{PlatformCredentialRepository, WhatsAppRepository};
 
     user.require_workspace(&ws)?;
+    let platform = live_platform(&platform)?;
     let workspace =
         domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    if body.guild_id.trim().is_empty() {
-        return Err(ApiError::bad_request("guild_id must not be empty"));
-    }
     if body.lookback_secs <= 0 {
         return Err(ApiError::bad_request("lookback_secs must be positive"));
     }
@@ -157,14 +194,22 @@ pub async fn sync(
         };
         let repo = state.repo.lock().expect("repo mutex");
         let enc = repo
-            .get_platform_token(&workspace, PLATFORM)
+            .get_platform_token(&workspace, platform.as_str())
             .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::bad_request("no Discord bot token set for this workspace"))?;
+            .ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "no {} bot token set for this workspace",
+                    platform.as_str()
+                ))
+            })?;
         host::decrypt_secret(master, &enc).map_err(|e| ApiError::Internal(e.to_string()))?
     };
 
-    // Fetch off the lock (network I/O); resolve scope first.
-    let fetcher = DiscordFetcher::new(token, body.guild_id.trim());
+    // Build the fetcher (errors if the platform's feature isn't compiled in).
+    let fetcher = host::make_platform_fetcher(platform, token, body.scope_id.clone())
+        .map_err(ApiError::bad_request)?;
+
+    // Resolve scope, fetch off the lock (network I/O).
     let scope = if body.channels.is_empty() {
         FetchScope::Workspace
     } else {

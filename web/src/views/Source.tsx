@@ -1,40 +1,82 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { ApiError } from '../api'
-import type { DiscordSync, Summary } from '../types'
+import type { ConnectionStatus, SourceSync, Summary } from '../types'
 
-// Discord live ingestion (ADR-128). Store a bot token (encrypted server-side),
-// then sync a guild's recent messages into the store; from there the existing
-// "summarize now" path produces a summary. Requires the server built with
-// `--features discord` — otherwise the endpoints 404 and we show a hint.
-export function Discord() {
+type Platform = 'discord' | 'slack'
+
+interface Copy {
+  title: string
+  tokenHelp: React.ReactNode
+  tokenPlaceholder: string
+  needsScope: boolean
+  scopePlaceholder: string
+}
+
+const COPY: Record<Platform, Copy> = {
+  discord: {
+    title: 'Discord',
+    tokenHelp: (
+      <>
+        Create a bot in the Discord Developer Portal, invite it to your server with{' '}
+        <em>Read Messages / Message History</em>, and paste its token.
+      </>
+    ),
+    tokenPlaceholder: 'bot token',
+    needsScope: true,
+    scopePlaceholder: 'guild (server) id',
+  },
+  slack: {
+    title: 'Slack',
+    tokenHelp: (
+      <>
+        Create a Slack app, add the <em>channels:history</em> + <em>channels:read</em> bot scopes,
+        install it, and paste the bot token (<code className="rounded bg-slate-100 px-1">xoxb-…</code>).
+        Invite the bot to each channel you want summarized.
+      </>
+    ),
+    tokenPlaceholder: 'xoxb-… bot token',
+    needsScope: false,
+    scopePlaceholder: '',
+  },
+}
+
+// Live source ingestion (ADR-128). Generic over Discord/Slack: store a bot token
+// (encrypted server-side), sync a source's recent messages into the store, then
+// summarize each synced channel via the existing summarize-now path. Requires the
+// server built with the platform's feature — otherwise `supported` is false and
+// we show a hint.
+export function Source({ platform }: { platform: Platform }) {
   const { client } = useAuth()
-  const [available, setAvailable] = useState<boolean | null>(null)
-  const [tokenSet, setTokenSet] = useState(false)
+  const copy = COPY[platform]
+  const [status, setStatus] = useState<ConnectionStatus | null>(null)
   const [token, setToken] = useState('')
   const [savingToken, setSavingToken] = useState(false)
 
-  const [guildId, setGuildId] = useState('')
+  const [scopeId, setScopeId] = useState('')
   const [channels, setChannels] = useState('')
   const [lookbackDays, setLookbackDays] = useState(1)
   const [syncing, setSyncing] = useState(false)
-  const [result, setResult] = useState<DiscordSync | null>(null)
+  const [result, setResult] = useState<SourceSync | null>(null)
   const [err, setErr] = useState<string | null>(null)
 
   const [summarizing, setSummarizing] = useState<string | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
   const [summaryNote, setSummaryNote] = useState<string | null>(null)
 
+  // Reset transient state when switching platform tab.
   useEffect(() => {
+    setStatus(null)
+    setResult(null)
+    setSummary(null)
+    setSummaryNote(null)
+    setErr(null)
     if (!client) return
     client
-      .discordStatus()
-      .then((s) => {
-        setAvailable(true)
-        setTokenSet(s.token_set)
-      })
-      .catch((e) => setAvailable(e instanceof ApiError && e.status === 404 ? false : true))
-  }, [client])
+      .connectionStatus(platform)
+      .then(setStatus)
+      .catch(() => setStatus({ token_set: false, supported: true }))
+  }, [client, platform])
 
   async function saveToken(e: React.FormEvent) {
     e.preventDefault()
@@ -42,8 +84,7 @@ export function Discord() {
     setSavingToken(true)
     setErr(null)
     try {
-      const s = await client.setDiscordToken(token.trim())
-      setTokenSet(s.token_set)
+      setStatus(await client.setConnectionToken(platform, token.trim()))
       setToken('')
     } catch (e) {
       setErr(e instanceof ApiError ? `Could not save token (${e.status})` : 'Could not save token.')
@@ -54,13 +95,13 @@ export function Discord() {
 
   async function clearToken() {
     if (!client) return
-    await client.clearDiscordToken().catch(() => {})
-    setTokenSet(false)
+    await client.clearConnectionToken(platform).catch(() => {})
+    setStatus((s) => (s ? { ...s, token_set: false } : s))
   }
 
   async function sync(e: React.FormEvent) {
     e.preventDefault()
-    if (!client || !guildId.trim()) return
+    if (!client || (copy.needsScope && !scopeId.trim())) return
     setSyncing(true)
     setErr(null)
     setResult(null)
@@ -71,7 +112,9 @@ export function Discord() {
         .split(',')
         .map((c) => c.trim())
         .filter(Boolean)
-      setResult(await client.syncDiscord(guildId.trim(), lookbackDays * 86400, chans))
+      setResult(
+        await client.syncSource(platform, lookbackDays * 86400, scopeId.trim() || undefined, chans),
+      )
     } catch (e) {
       setErr(
         e instanceof ApiError ? `Sync failed (${e.status}): ${e.message.slice(0, 200)}` : 'Sync failed.',
@@ -97,42 +140,43 @@ export function Discord() {
     }
   }
 
-  if (available === false) {
+  if (status && !status.supported) {
     return (
       <div className="mx-auto max-w-2xl">
         <div className="rounded-xl bg-white p-4 text-sm text-slate-500 shadow-sm ring-1 ring-slate-200">
-          Discord ingestion isn't enabled on this server. Rebuild the API with{' '}
-          <code className="rounded bg-slate-100 px-1">--features discord</code> to fetch live Discord
-          messages.
+          {copy.title} ingestion isn't enabled on this server. Rebuild the API with{' '}
+          <code className="rounded bg-slate-100 px-1">--features {platform}</code> to fetch live{' '}
+          {copy.title} messages.
         </div>
       </div>
     )
   }
 
+  const tokenSet = status?.token_set ?? false
+  const canSync = tokenSet && (!copy.needsScope || scopeId.trim().length > 0)
+
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       {/* Bot token */}
       <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-        <h2 className="font-semibold text-slate-800">Discord bot token</h2>
+        <h2 className="font-semibold text-slate-800">{copy.title} bot token</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Create a bot in the Discord Developer Portal, invite it to your server with{' '}
-          <em>Read Messages / Message History</em>, and paste its token. It's stored encrypted and
-          never shown again.
+          {copy.tokenHelp} It's stored encrypted and never shown again.
         </p>
-        {tokenSet ? (
+        {tokenSet && (
           <div className="mt-3 flex items-center gap-3 text-sm">
             <span className="rounded bg-green-100 px-2 py-0.5 text-green-700">token set</span>
             <button onClick={() => void clearToken()} className="text-slate-500 underline">
               clear
             </button>
           </div>
-        ) : null}
+        )}
         <form onSubmit={saveToken} className="mt-3 flex gap-2">
           <input
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder={tokenSet ? 'replace token…' : 'bot token'}
+            placeholder={tokenSet ? 'replace token…' : copy.tokenPlaceholder}
             className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
           />
           <button
@@ -149,20 +193,22 @@ export function Discord() {
       <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
         <h2 className="font-semibold text-slate-800">Sync messages</h2>
         <p className="mt-1 text-sm text-slate-500">
-          Pull a server's recent messages into this workspace. Re-syncing is safe — already-stored
-          messages are skipped.
+          Pull a {copy.title} source's recent messages into this workspace. Re-syncing is safe —
+          already-stored messages are skipped.
         </p>
         <form onSubmit={sync} className="mt-4 space-y-3">
-          <input
-            value={guildId}
-            onChange={(e) => setGuildId(e.target.value)}
-            placeholder="guild (server) id"
-            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
-          />
+          {copy.needsScope && (
+            <input
+              value={scopeId}
+              onChange={(e) => setScopeId(e.target.value)}
+              placeholder={copy.scopePlaceholder}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+            />
+          )}
           <input
             value={channels}
             onChange={(e) => setChannels(e.target.value)}
-            placeholder="channel ids, comma-separated (blank = all text channels)"
+            placeholder="channel ids, comma-separated (blank = all channels)"
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
           />
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -178,7 +224,7 @@ export function Discord() {
           </label>
           <button
             type="submit"
-            disabled={syncing || !guildId.trim() || !tokenSet}
+            disabled={syncing || !canSync}
             className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-50"
           >
             {syncing ? 'Syncing…' : 'Sync now'}

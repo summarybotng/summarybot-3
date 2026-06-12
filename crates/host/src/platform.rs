@@ -71,6 +71,38 @@ pub trait PlatformFetcher {
     fn context(&self, channels: &[ChannelId]) -> PlatformContext;
 }
 
+/// Build the live fetcher for a platform from a bot token (ADR-128). `scope_id`
+/// is the platform's source scope: Discord needs a guild id; Slack ignores it
+/// (the token is workspace-scoped). Returns an error if the platform isn't a
+/// live source, or its feature isn't compiled into this build.
+#[allow(unused_variables)]
+pub fn make_platform_fetcher(
+    platform: Platform,
+    token: String,
+    scope_id: Option<String>,
+) -> Result<Box<dyn PlatformFetcher>, String> {
+    match platform {
+        Platform::Discord => {
+            #[cfg(feature = "discord")]
+            {
+                let guild = scope_id.ok_or("Discord needs a guild_id")?;
+                Ok(Box::new(crate::discord::DiscordFetcher::new(token, guild)))
+            }
+            #[cfg(not(feature = "discord"))]
+            Err("Discord ingestion not compiled in (build with --features discord)".to_string())
+        }
+        Platform::Slack => {
+            #[cfg(feature = "slack")]
+            {
+                Ok(Box::new(crate::slack::SlackFetcher::new(token)))
+            }
+            #[cfg(not(feature = "slack"))]
+            Err("Slack ingestion not compiled in (build with --features slack)".to_string())
+        }
+        Platform::WhatsApp => Err("WhatsApp is upload-only, not a live fetch source".to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

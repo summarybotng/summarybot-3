@@ -133,7 +133,12 @@ export interface WikiPage {
   updated_at: number
 }
 
-export interface DiscordSync {
+export interface ConnectionStatus {
+  token_set: boolean
+  supported: boolean
+}
+
+export interface SourceSync {
   channel_ids: string[]
   fetched: number
   stored: number

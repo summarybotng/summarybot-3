@@ -8,9 +8,17 @@ import { Settings } from './views/Settings'
 import { Whatsapp } from './views/Whatsapp'
 import { Delivery } from './views/Delivery'
 import { Knowledge } from './views/Knowledge'
-import { Discord } from './views/Discord'
+import { Source } from './views/Source'
 
-type Tab = 'summaries' | 'schedules' | 'whatsapp' | 'discord' | 'delivery' | 'knowledge' | 'settings'
+type Tab =
+  | 'summaries'
+  | 'schedules'
+  | 'whatsapp'
+  | 'discord'
+  | 'slack'
+  | 'delivery'
+  | 'knowledge'
+  | 'settings'
 
 export default function App() {
   const { client, signOut } = useAuth()
@@ -54,7 +62,16 @@ export default function App() {
         </div>
         <nav className="mx-auto flex max-w-3xl gap-1 px-4">
           {(
-            ['summaries', 'schedules', 'whatsapp', 'discord', 'delivery', 'knowledge', 'settings'] as Tab[]
+            [
+              'summaries',
+              'schedules',
+              'whatsapp',
+              'discord',
+              'slack',
+              'delivery',
+              'knowledge',
+              'settings',
+            ] as Tab[]
           ).map((t) => (
             <button
               key={t}
@@ -75,7 +92,8 @@ export default function App() {
         {tab === 'summaries' && <Summaries />}
         {tab === 'schedules' && <Schedules />}
         {tab === 'whatsapp' && <Whatsapp />}
-        {tab === 'discord' && <Discord />}
+        {tab === 'discord' && <Source platform="discord" />}
+        {tab === 'slack' && <Source platform="slack" />}
         {tab === 'delivery' && <Delivery />}
         {tab === 'knowledge' && <Knowledge />}
         {tab === 'settings' && <Settings />}
