@@ -10,6 +10,7 @@ use repository::{StoredSummary, SummaryRepository};
 pub mod auth;
 pub mod delivery;
 pub mod discord;
+pub mod ingest;
 pub mod invite;
 pub mod knowledge;
 pub mod llm;
@@ -33,6 +34,7 @@ pub use delivery::{
 #[cfg(feature = "discord")]
 pub use discord::DiscordFetcher;
 pub use discord::{parse_message as parse_discord_message, snowflake_to_unix_secs};
+pub use ingest::{sync_into_store, SyncReport};
 pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 #[cfg(feature = "http-llm")]
 pub use knowledge::HttpEmbedder;

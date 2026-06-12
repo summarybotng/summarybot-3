@@ -15,6 +15,8 @@ export function Schedules() {
   const [minute, setMinute] = useState(0)
   const [tz, setTz] = useState('UTC')
   const [channel, setChannel] = useState('')
+  const [platform, setPlatform] = useState('')
+  const [sourceId, setSourceId] = useState('')
   const [note, setNote] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -35,8 +37,11 @@ export function Schedules() {
       minute,
       timezone: tz,
       channel: channel.trim() || null,
+      platform: platform || null,
+      source_id: sourceId.trim() || null,
     })
     setChannel('')
+    setSourceId('')
     await load()
   }
 
@@ -104,6 +109,30 @@ export function Schedules() {
             Create
           </button>
         </div>
+        {/* Optional live source: fetch fresh messages before each run (ADR-128). */}
+        <div className="mt-2 flex gap-2">
+          <select
+            value={platform}
+            onChange={(e) => setPlatform(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
+            title="Pull fresh messages from a live source before each run"
+          >
+            <option value="">stored messages only</option>
+            <option value="discord">fetch from Discord</option>
+            <option value="slack">fetch from Slack</option>
+          </select>
+          {platform === 'discord' && (
+            <input
+              value={sourceId}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              placeholder="guild (server) id"
+            />
+          )}
+        </div>
+        <p className="mt-1 text-xs text-slate-400">
+          A live source fetches new messages before each run (needs a bot token on the source's tab).
+        </p>
       </form>
 
       {note && (
@@ -125,6 +154,7 @@ export function Schedules() {
                   <p className="mt-0.5 text-xs text-slate-400">
                     {s.enabled ? 'enabled' : 'paused'} · next {when(s.next_run)}
                     {s.channel ? ` · #${s.channel}` : ' · (unscoped)'}
+                    {s.platform && ` · ↻ ${s.platform}`}
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap justify-end gap-1">

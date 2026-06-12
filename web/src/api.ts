@@ -78,6 +78,9 @@ export interface CreateScheduleBody {
   timezone?: string
   channel?: string | null
   lookback_secs?: number
+  /** Optional live source to fetch before each run (ADR-128): discord | slack. */
+  platform?: string | null
+  source_id?: string | null
 }
 
 /** An authenticated API client bound to a session, with refresh-on-401. */

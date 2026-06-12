@@ -17,6 +17,7 @@ mod membership;
 mod platform_credential;
 mod schedule;
 mod schedule_run;
+mod schedule_source;
 mod session;
 mod summary_store;
 mod whatsapp;
@@ -33,6 +34,7 @@ pub use membership::MembershipRepository;
 pub use platform_credential::PlatformCredentialRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
+pub use schedule_source::{ScheduleSource, ScheduleSourceRepository};
 pub use session::SessionRepository;
 pub use summary_store::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
@@ -376,6 +378,12 @@ impl SqliteRepository {
                 token_enc    TEXT    NOT NULL,
                 created_at   INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (workspace_id, platform)
+            );
+
+            CREATE TABLE IF NOT EXISTS schedule_sources (
+                schedule_id TEXT NOT NULL PRIMARY KEY,
+                platform    TEXT NOT NULL,
+                source_id   TEXT
             );",
         )?;
         run_migrations(&conn)?;

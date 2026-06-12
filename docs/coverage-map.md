@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-12 — ADR-128 Discord + Slack live ingestion: REST fetch → message store, encrypted bot token, generic `connections/:platform` API + Source tabs
+- **As of:** 2026-06-12 — ADR-128 Discord + Slack live ingestion + **scheduled live sync** (a schedule fetches fresh messages before each run)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -18,7 +18,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
 | Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
-| Discord / Slack ingestion | ✅ **both live** | Discord + Slack REST fetch → message store via a generic `connections/:platform` API (ADR-128, `--features discord`/`slack`); channel/DM **send** + polling scheduler remain |
+| Discord / Slack ingestion | ✅ **both live + scheduled** | Discord + Slack REST fetch → message store (generic `connections/:platform` API); a schedule can fetch fresh messages before each run (ADR-128). Channel/DM **send** + an independent background poller remain |
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants not yet membership-derived |
 | Knowledge (wiki / vector search) | ✅ **v1 done** | semantic search + coherence gate + wiki synthesis live (ADR-127); AI curator deferred |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
@@ -78,6 +78,7 @@ metrics).
 | Recurrence (once/hourly/daily/weekly/monthly/custom) | ✅ | ✅ | `domain/schedule.rs` |
 | Persistent background scheduler | ✅ (APScheduler) | ✅ | `api/scheduler_driver.rs`; grace + auto-disable |
 | Per-tenant LLM + budget on scheduled runs | ✅ | ✅ | `TenantAwareRunner` (cfc9fd9) |
+| Live source fetch on scheduled runs | ✅ | ✅ | a schedule can bind a Discord/Slack source and fetch fresh messages before summarizing (`schedule_sources`, best-effort; ADR-128) |
 | Rolling-period summaries | ✅ | ✅ | `domain/rolling.rs` (ADR-101) |
 | Lookback windows | ✅ | ✅ | per-schedule `lookback_secs` |
 | Manage via API (create/list/pause/trigger/history) | ✅ | ✅ | `api/schedules.rs` |
@@ -152,7 +153,7 @@ metrics).
 
 ## Remaining work to reach legacy parity (rough priority)
 
-1. **Live platform I/O** — Discord + Slack fetch are live (ADR-128); remaining: channel/DM **send** (deliverer side) and a background polling scheduler so live sources update without a manual sync.
+1. **Live platform I/O** — Discord + Slack fetch are live, and a schedule can fetch fresh messages before each run (ADR-128). Remaining: channel/DM **send** (deliverer side) and a background poller that syncs on its own cadence (independent of summary schedules).
 2. **Delivery completion** — email (SMTP) deliverer; Confluence publishing; output formats beyond markdown.
 3. **Real OAuth** — replace the dev login seam with Discord/Google/Slack redirect flows.
 4. **Knowledge subsystem (Phase 7)** — wiki + vector search + synthesis + coherence gate. Big, self-contained; legacy's most distinctive feature set.

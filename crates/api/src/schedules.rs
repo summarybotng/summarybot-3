@@ -43,6 +43,13 @@ pub struct CreateScheduleRequest {
     /// How far back each run reads messages (seconds).
     #[serde(default = "default_lookback")]
     pub lookback_secs: i64,
+    /// Optional live source to pull fresh messages from before each run
+    /// (ADR-128): `discord` or `slack`. Omit to summarize only stored messages.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// Source scope id for the live fetch (Discord guild id; Slack ignores it).
+    #[serde(default)]
+    pub source_id: Option<String>,
 }
 
 fn default_dom() -> u32 {
@@ -67,6 +74,9 @@ pub struct ScheduleDto {
     pub enabled: bool,
     pub channel: Option<String>,
     pub lookback_secs: i64,
+    /// Live source bound to this schedule (ADR-128), if any.
+    pub platform: Option<String>,
+    pub source_id: Option<String>,
     pub next_run: i64,
     pub consecutive_failures: u32,
 }
@@ -84,10 +94,55 @@ impl From<StoredSchedule> for ScheduleDto {
             enabled: s.schedule.enabled,
             channel: s.schedule.channel.as_ref().map(|c| c.as_str().to_string()),
             lookback_secs: s.schedule.lookback_secs,
+            platform: None,
+            source_id: None,
             next_run: s.next_run,
             consecutive_failures: s.consecutive_failures,
         }
     }
+}
+
+/// Build a DTO and fill in the schedule's live source (ADR-128) from storage.
+fn dto_with_source(repo: &repository::SqliteRepository, s: StoredSchedule) -> ScheduleDto {
+    use repository::ScheduleSourceRepository;
+    let id = s.id.clone();
+    let mut dto = ScheduleDto::from(s);
+    if let Ok(Some(src)) = repo.get_schedule_source(&id) {
+        dto.platform = Some(src.platform);
+        dto.source_id = src.source_id;
+    }
+    dto
+}
+
+/// Validate + persist (or clear) a schedule's optional live source from a request.
+fn apply_source(
+    repo: &repository::SqliteRepository,
+    schedule_id: &str,
+    platform: Option<&str>,
+    source_id: Option<String>,
+) -> Result<(), ApiError> {
+    use repository::{ScheduleSource, ScheduleSourceRepository};
+    match platform.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            match domain::Platform::parse(p) {
+                Ok(domain::Platform::Discord | domain::Platform::Slack) => {}
+                _ => return Err(ApiError::bad_request("platform must be discord or slack")),
+            }
+            repo.set_schedule_source(
+                schedule_id,
+                &ScheduleSource {
+                    platform: p.to_string(),
+                    source_id: source_id.filter(|s| !s.trim().is_empty()),
+                },
+            )
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+        None => {
+            repo.delete_schedule_source(schedule_id)
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 fn workspace(ws: String) -> Result<domain::WorkspaceId, ApiError> {
@@ -129,11 +184,18 @@ pub async fn create_schedule(
         next_run,
         consecutive_failures: 0,
     };
-    {
+    let dto = {
         let repo = state.repo.lock().expect("repo mutex");
         repo.create_schedule(&stored)?;
-    }
-    Ok(Json(ScheduleDto::from(stored)))
+        apply_source(
+            &repo,
+            &stored.id,
+            body.platform.as_deref(),
+            body.source_id.clone(),
+        )?;
+        dto_with_source(&repo, stored)
+    };
+    Ok(Json(dto))
 }
 
 /// `PUT /workspaces/:ws/schedules/:id` — replace a schedule's recurrence
@@ -173,12 +235,16 @@ pub async fn update_schedule(
     if !repo.update_schedule(&workspace, &id, &schedule, next_run)? {
         return Err(ApiError::NotFound);
     }
-    Ok(Json(ScheduleDto::from(StoredSchedule {
-        id,
-        schedule,
-        next_run,
-        consecutive_failures: current.consecutive_failures,
-    })))
+    apply_source(&repo, &id, body.platform.as_deref(), body.source_id.clone())?;
+    Ok(Json(dto_with_source(
+        &repo,
+        StoredSchedule {
+            id,
+            schedule,
+            next_run,
+            consecutive_failures: current.consecutive_failures,
+        },
+    )))
 }
 
 /// `GET /workspaces/:ws/schedules`
@@ -191,7 +257,12 @@ pub async fn list_schedules(
     let workspace = workspace(ws)?;
     let repo = state.repo.lock().expect("repo mutex");
     let schedules = repo.list_for_workspace(&workspace)?;
-    Ok(Json(schedules.into_iter().map(ScheduleDto::from).collect()))
+    Ok(Json(
+        schedules
+            .into_iter()
+            .map(|s| dto_with_source(&repo, s))
+            .collect(),
+    ))
 }
 
 /// `GET /workspaces/:ws/schedules/:id`
@@ -206,7 +277,7 @@ pub async fn get_schedule(
     let s = repo
         .get_schedule(&workspace, &id)?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(ScheduleDto::from(s)))
+    Ok(Json(dto_with_source(&repo, s)))
 }
 
 async fn set_enabled(
@@ -225,7 +296,7 @@ async fn set_enabled(
     let s = repo
         .get_schedule(&workspace, &id)?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(ScheduleDto::from(s)))
+    Ok(Json(dto_with_source(&repo, s)))
 }
 
 /// `POST /workspaces/:ws/schedules/:id/pause`
@@ -387,6 +458,8 @@ pub async fn delete_schedule(
     let workspace = workspace(ws)?;
     let repo = state.repo.lock().expect("repo mutex");
     if repo.delete_schedule(&workspace, &id)? {
+        use repository::ScheduleSourceRepository;
+        let _ = repo.delete_schedule_source(&id); // best-effort orphan cleanup
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)

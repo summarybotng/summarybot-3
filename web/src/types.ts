@@ -56,6 +56,8 @@ export interface Schedule {
   enabled: boolean
   channel: string | null
   lookback_secs: number
+  platform: string | null
+  source_id: string | null
   next_run: number
   consecutive_failures: number
 }

@@ -173,7 +173,7 @@ pub async fn sync(
     Json(body): Json<SyncRequest>,
 ) -> Result<Json<SyncResponse>, ApiError> {
     use host::FetchScope;
-    use repository::{PlatformCredentialRepository, WhatsAppRepository};
+    use repository::PlatformCredentialRepository;
 
     user.require_workspace(&ws)?;
     let platform = live_platform(&platform)?;
@@ -209,7 +209,6 @@ pub async fn sync(
     let fetcher = host::make_platform_fetcher(platform, token, body.scope_id.clone())
         .map_err(ApiError::bad_request)?;
 
-    // Resolve scope, fetch off the lock (network I/O).
     let scope = if body.channels.is_empty() {
         FetchScope::Workspace
     } else {
@@ -221,36 +220,22 @@ pub async fn sync(
         }
         FetchScope::Channels(ids)
     };
-    let channels = fetcher
-        .resolve_channels(&scope)
-        .map_err(|e| ApiError::Internal(format!("resolve channels: {}", e.message)))?;
-    let result = fetcher.fetch_messages(&channels, start, now);
 
-    // Persist (idempotent); count newly stored.
-    let mut stored = 0usize;
-    {
+    // Fetch + persist via the shared helper (also used by the scheduler).
+    let report = {
         let repo = state.repo.lock().expect("repo mutex");
-        for m in &result.messages {
-            if repo
-                .save_message(&workspace, m)
-                .map_err(|e| ApiError::Internal(e.to_string()))?
-            {
-                stored += 1;
-            }
-        }
-    }
+        host::sync_into_store(&*fetcher, &*repo, &workspace, &scope, start, now)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
 
     Ok(Json(SyncResponse {
-        channel_ids: channels.iter().map(|c| c.as_str().to_string()).collect(),
-        fetched: result.messages.len(),
-        stored,
-        errors: result
+        channel_ids: report.channel_ids,
+        fetched: report.fetched,
+        stored: report.stored,
+        errors: report
             .errors
             .into_iter()
-            .map(|e| SyncErrorDto {
-                channel: e.channel.as_str().to_string(),
-                message: e.message,
-            })
+            .map(|(channel, message)| SyncErrorDto { channel, message })
             .collect(),
     }))
 }

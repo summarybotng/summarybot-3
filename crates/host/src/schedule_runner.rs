@@ -13,8 +13,8 @@ use crate::scheduler::ScheduleRunner;
 use crate::summarize::{SummarizationService, SummarizeRequest};
 use domain::summarize::{ModelLadder, SummaryLength};
 use repository::{
-    DestinationRepository, StoredSchedule, StructuredSummaryRepository, SummaryRecord,
-    WhatsAppRepository, WorkspaceSettingsRepository,
+    DestinationRepository, PlatformCredentialRepository, ScheduleSourceRepository, StoredSchedule,
+    StructuredSummaryRepository, SummaryRecord, WhatsAppRepository, WorkspaceSettingsRepository,
 };
 
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
@@ -71,12 +71,61 @@ impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
     }
 }
 
+impl<R, C: LlmClient> SummarizingScheduleRunner<'_, R, C>
+where
+    R: WhatsAppRepository + PlatformCredentialRepository + ScheduleSourceRepository,
+{
+    /// Best-effort live fetch into the store before a scheduled summary (ADR-128).
+    /// Every failure is swallowed (logged) so the summary still runs over whatever
+    /// is already stored — a missing token, an uncompiled platform feature, or a
+    /// transient network error must not fail the schedule.
+    fn live_sync(
+        &self,
+        stored: &StoredSchedule,
+        channel: &domain::ChannelId,
+        start: i64,
+        now: i64,
+    ) {
+        let ws = &stored.schedule.workspace_id;
+        let Some(master) = self.master else { return };
+        let Ok(Some(src)) = self.repo.get_schedule_source(&stored.id) else {
+            return;
+        };
+        let Ok(platform) = domain::Platform::parse(&src.platform) else {
+            return;
+        };
+        let Ok(Some(enc)) = self.repo.get_platform_token(ws, &src.platform) else {
+            return;
+        };
+        let Ok(token) = crate::decrypt_secret(&master, &enc) else {
+            eprintln!(
+                "scheduled live sync: cannot decrypt token for {}",
+                stored.id
+            );
+            return;
+        };
+        let fetcher = match crate::make_platform_fetcher(platform, token, src.source_id) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("scheduled live sync skipped for {}: {e}", stored.id);
+                return;
+            }
+        };
+        let scope = crate::FetchScope::Channels(vec![channel.clone()]);
+        if let Err(e) = crate::sync_into_store(&*fetcher, self.repo, ws, &scope, start, now) {
+            eprintln!("scheduled live sync failed for {}: {e}", stored.id);
+        }
+    }
+}
+
 impl<R, C> ScheduleRunner for SummarizingScheduleRunner<'_, R, C>
 where
     R: WhatsAppRepository
         + StructuredSummaryRepository
         + DestinationRepository
-        + WorkspaceSettingsRepository,
+        + WorkspaceSettingsRepository
+        + PlatformCredentialRepository
+        + ScheduleSourceRepository,
     C: LlmClient,
 {
     fn run(&self, stored: &StoredSchedule, now: i64) -> Result<(), String> {
@@ -86,6 +135,13 @@ where
             return Ok(());
         };
         let start = now - stored.schedule.lookback_secs;
+
+        // If this schedule has a live source (ADR-128), pull fresh messages into
+        // the store before reading the window. Best-effort: missing creds, an
+        // uncompiled platform feature, or a network failure logs and falls back to
+        // whatever was already stored — a scheduled summary never fails on sync.
+        self.live_sync(stored, &channel, start, now);
+
         let messages = self
             .repo
             .list_messages(ws, &channel, start, now)
@@ -232,6 +288,45 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].summary.key_points, vec!["shipped".to_string()]);
         assert_eq!(stored[0].channel_id.as_ref().unwrap().as_str(), "c1");
+    }
+
+    #[test]
+    fn live_source_without_platform_feature_falls_back_to_stored() {
+        // A schedule bound to a Discord source, but the default test build has no
+        // `discord` feature → the live sync is skipped gracefully and the run
+        // still summarizes the already-stored messages (ADR-128 best-effort).
+        use repository::{ScheduleSource, ScheduleSourceRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.save_message(&ws, &msg("m0", 3_500, "we shipped the release today"))
+            .unwrap();
+        repo.create_schedule(&schedule_with_channel(&ws, 3_600))
+            .unwrap();
+        repo.set_schedule_source(
+            "sch_1",
+            &ScheduleSource {
+                platform: "discord".into(),
+                source_id: Some("guild-1".into()),
+            },
+        )
+        .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        // A master key is set so live_sync gets past its guard and hits the
+        // (uncompiled) platform factory, which errors and is swallowed.
+        let runner =
+            SummarizingScheduleRunner::new(&repo, &engine, &l).with_delivery(&[], Some([7u8; 32]));
+
+        let report = SchedulerService::new(&repo).tick(&runner, 3_600).unwrap();
+        assert_eq!(report.fired, 1);
+        let stored = repo.list_records(&ws, false, 10).unwrap();
+        assert_eq!(
+            stored.len(),
+            1,
+            "summarized the stored messages despite no live feature"
+        );
     }
 
     #[test]

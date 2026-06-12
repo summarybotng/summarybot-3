@@ -85,3 +85,21 @@ workspace-scoped (no guild/`scope_id`), history needs the bot to be a channel
 member (`not_in_channel` surfaced per-channel), and Slack reports API errors in
 the JSON body (`ok:false`) rather than the HTTP status. Verified the same way —
 a bogus token reaches Slack and returns `invalid_auth`.
+
+## Update — scheduled live sync (same session)
+
+Manual sync was the first step; a schedule can now **pull fresh messages before
+it summarizes**, so live sources update without a manual click. The fetch+persist
+loop is extracted into `host::sync_into_store(fetcher, repo, ws, scope, …)` —
+unit-tested with a fake fetcher and reused by both the on-demand connection sync
+and the scheduler. A schedule's optional source lives in a separate
+`schedule_sources` table (`schedule_id → platform, source_id`), so the `Schedule`
+domain struct and its build/storage path were untouched. The schedule runner, if
+a source is bound, decrypts the platform token, builds the fetcher via the
+factory, and syncs the scheduled channel's window before reading messages —
+**best-effort**: a missing token, an uncompiled platform feature, or a network
+failure logs and falls back to whatever is already stored, so a scheduled summary
+never fails on sync. Exposed through the schedule API (`platform`/`source_id`)
+and a "fetch from Discord/Slack" control on the Schedules form. A background
+*poller* (sync on a cadence independent of summary schedules) remains future
+work; this ties live refresh to the existing schedule tick.
