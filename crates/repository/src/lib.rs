@@ -14,6 +14,7 @@ mod job;
 mod knowledge;
 mod llm_config;
 mod membership;
+mod platform_credential;
 mod schedule;
 mod schedule_run;
 mod session;
@@ -29,6 +30,7 @@ pub use job::JobRepository;
 pub use knowledge::{KnowledgeRepository, StoredKnowledgeUnit};
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
+pub use platform_credential::PlatformCredentialRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use session::SessionRepository;
@@ -366,6 +368,14 @@ impl SqliteRepository {
                 unit_count   INTEGER NOT NULL DEFAULT 0,
                 updated_at   INTEGER NOT NULL,
                 PRIMARY KEY (workspace_id, slug)
+            );
+
+            CREATE TABLE IF NOT EXISTS platform_credentials (
+                workspace_id TEXT    NOT NULL,
+                platform     TEXT    NOT NULL,
+                token_enc    TEXT    NOT NULL,
+                created_at   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (workspace_id, platform)
             );",
         )?;
         run_migrations(&conn)?;

@@ -52,6 +52,9 @@ oauth = ["dep:ureq"]
 # Google Drive delivery sink plugin (ADR-126): publishes summaries as Google
 # Docs. Needs the OAuth core for token refresh.
 gdrive = ["dep:ureq", "oauth"]
+# Discord live message ingestion (ADR-128) — fetches a guild's channels over the
+# Discord REST API (blocking) into the message store. Network-gated like http-llm.
+discord = ["dep:ureq"]
 
 [[bin]]
 name = "host"

@@ -13,6 +13,7 @@ import type {
   TokenResponse,
   WhatsappImport,
   WikiPage,
+  DiscordSync,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -271,6 +272,29 @@ export class Client {
   /** (Re)generate the knowledge-base page from this workspace's units. */
   synthesizeWiki(): Promise<WikiPage> {
     return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
+  }
+
+  // --- Discord live ingestion (ADR-128; --features discord) ---
+
+  /** Whether a Discord bot token is configured for this workspace. */
+  discordStatus(): Promise<{ token_set: boolean }> {
+    return this.json(`/workspaces/${this.ws()}/connections/discord`)
+  }
+
+  setDiscordToken(token: string): Promise<{ token_set: boolean }> {
+    return this.json(`/workspaces/${this.ws()}/connections/discord/token`, this.body('PUT', { token }))
+  }
+
+  clearDiscordToken(): Promise<void> {
+    return this.json(`/workspaces/${this.ws()}/connections/discord/token`, { method: 'DELETE' })
+  }
+
+  /** Fetch a guild's recent messages into the store. */
+  syncDiscord(guildId: string, lookbackSecs: number, channels: string[] = []): Promise<DiscordSync> {
+    return this.json<DiscordSync>(
+      `/workspaces/${this.ws()}/connections/discord/sync`,
+      this.body('POST', { guild_id: guildId, lookback_secs: lookbackSecs, channels }),
+    )
   }
 
   // --- per-workspace summarization settings (SUM-007) ---

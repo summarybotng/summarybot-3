@@ -8,8 +8,14 @@
 //! token (Phase 1 auth). Real OAuth redirects, the schedule API (needs the
 //! Phase 6 scheduler) and SSE/WebSocket over Redis are documented seams.
 
+// The OpenAPI document is one large `serde_json::json!` literal; its nesting
+// exceeds the default 128-deep macro recursion limit as endpoints are added.
+#![recursion_limit = "256"]
+
 mod auth;
 mod destinations;
+#[cfg(feature = "discord")]
+mod discord;
 mod error;
 mod events;
 mod knowledge;
@@ -495,6 +501,21 @@ pub fn build_router(state: AppState) -> Router {
             .route("/auth/oauth/:provider/callback", get(oauth::callback));
     }
 
+    // Discord live ingestion (ADR-128), when compiled in.
+    #[cfg(feature = "discord")]
+    {
+        router = router
+            .route("/workspaces/:ws/connections/discord", get(discord::status))
+            .route(
+                "/workspaces/:ws/connections/discord/token",
+                axum::routing::put(discord::set_token).delete(discord::delete_token),
+            )
+            .route(
+                "/workspaces/:ws/connections/discord/sync",
+                post(discord::sync),
+            );
+    }
+
     router
         .layer(axum::middleware::from_fn(auth::correlation_id))
         .with_state(state)
@@ -528,6 +549,12 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/wiki/search": { "get": { "summary": "Semantic search over knowledge units — ?q,k (KNO-005, ADR-127)" } },
             "/workspaces/{ws}/wiki/pages": { "get": { "summary": "List synthesized wiki pages (WIK-003)" } },
             "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
+            "/workspaces/{ws}/connections/discord": { "get": { "summary": "Discord connection status — is a bot token set (--features discord, ADR-128)" } },
+            "/workspaces/{ws}/connections/discord/token": {
+                "put": { "summary": "Set/replace the Discord bot token (encrypted at rest)" },
+                "delete": { "summary": "Clear the Discord bot token" }
+            },
+            "/workspaces/{ws}/connections/discord/sync": { "post": { "summary": "Fetch a guild's recent messages into the store — {guild_id, channels?, lookback_secs} (WSP-006)" } },
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
             "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },

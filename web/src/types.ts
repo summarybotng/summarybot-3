@@ -133,6 +133,13 @@ export interface WikiPage {
   updated_at: number
 }
 
+export interface DiscordSync {
+  channel_ids: string[]
+  fetched: number
+  stored: number
+  errors: { channel: string; message: string }[]
+}
+
 export interface PluginField {
   name: string
   label: string

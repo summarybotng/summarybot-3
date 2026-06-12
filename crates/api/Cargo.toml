@@ -20,6 +20,8 @@ email = ["host/email"]
 oauth = ["host/oauth", "dep:base64"]
 # Google Drive delivery sink plugin (ADR-126). Optional + network-gated.
 gdrive = ["host/gdrive"]
+# Discord live message ingestion (ADR-128). Optional + network-gated.
+discord = ["host/discord"]
 
 [dependencies]
 domain.workspace = true
