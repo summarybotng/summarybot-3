@@ -12,6 +12,7 @@ mod auth;
 mod destinations;
 mod error;
 mod events;
+mod knowledge;
 #[cfg(feature = "oauth")]
 mod oauth;
 mod scheduler_driver;
@@ -74,6 +75,9 @@ pub struct AppState {
     /// models); set it low for a small-context local model so large chats are
     /// covered in full instead of truncated.
     pub context_tokens: i64,
+    /// Embedder for the knowledge subsystem (ADR-127): a local model over HTTP,
+    /// or the deterministic demo embedder by default.
+    pub embedder: Arc<dyn host::Embedder>,
 }
 
 /// Default summarization context window (tokens) — sized for hosted models;
@@ -114,6 +118,7 @@ impl AppState {
             config_key: None,
             price_micros_per_ktoken: 0,
             context_tokens: DEFAULT_CONTEXT_TOKENS,
+            embedder: Arc::new(host::DemoEmbedder::default()),
         }
     }
 
@@ -148,6 +153,12 @@ impl AppState {
         if context_tokens > 0 {
             self.context_tokens = context_tokens;
         }
+        self
+    }
+
+    /// Set the knowledge-subsystem embedder (ADR-127).
+    pub fn with_embedder(mut self, embedder: Arc<dyn host::Embedder>) -> Self {
+        self.embedder = embedder;
         self
     }
 
@@ -360,6 +371,7 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/settings",
             get(settings::get_settings).put(settings::set_settings),
         )
+        .route("/workspaces/:ws/wiki/search", get(knowledge::search))
         .route(
             "/workspaces/:ws/destinations/plugins",
             get(destinations::list_plugins),

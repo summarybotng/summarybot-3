@@ -11,6 +11,7 @@ mod budget;
 mod destination;
 mod identity;
 mod job;
+mod knowledge;
 mod llm_config;
 mod membership;
 mod schedule;
@@ -24,6 +25,7 @@ pub use budget::{BudgetRepository, BudgetRow};
 pub use destination::{DestinationRepository, StoredDestination};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use job::JobRepository;
+pub use knowledge::{KnowledgeRepository, StoredKnowledgeUnit};
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
 pub use schedule::{ScheduleRepository, StoredSchedule};
@@ -334,7 +336,24 @@ impl SqliteRepository {
             CREATE TABLE IF NOT EXISTS workspace_settings (
                 workspace_id         TEXT PRIMARY KEY,
                 summary_instructions TEXT
-            );",
+            );
+            -- Knowledge units extracted from summaries (KNO-001; ADR-127). The
+            -- embedding is f32 little-endian bytes; `model` pins which embedder
+            -- produced it (Q#8 — a model change invalidates vectors). `source_ids`
+            -- is newline-joined message ids (provenance, COH-005).
+            CREATE TABLE IF NOT EXISTS knowledge_units (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT    NOT NULL,
+                summary_id   TEXT    NOT NULL,
+                kind         TEXT    NOT NULL,
+                text         TEXT    NOT NULL,
+                source_ids   TEXT    NOT NULL DEFAULT '',
+                embedding    BLOB,
+                model        TEXT,
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_knowledge_workspace
+                ON knowledge_units(workspace_id);",
         )?;
         run_migrations(&conn)?;
         Ok(Self { conn })

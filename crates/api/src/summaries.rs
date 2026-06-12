@@ -227,6 +227,15 @@ pub async fn create_summary(
         if let Some((tenant, window)) = &charge {
             crate::budget_charge(&repo, tenant, *window, record.cost_micros)?;
         }
+        // Extract + embed knowledge units (ADR-127); best-effort.
+        crate::knowledge::ingest_summary(
+            &state,
+            &repo,
+            &workspace,
+            &record.summary,
+            &record.id,
+            now,
+        );
     }
     state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
     Ok(Json(SummaryDto::from(record)))

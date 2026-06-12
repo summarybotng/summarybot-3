@@ -287,9 +287,19 @@ pub async fn trigger_schedule(
     match runner.run(&stored, now) {
         Ok(()) => {
             // The runner stores under this deterministic id when it produces one.
-            let produced = repo
-                .get_record(&workspace, &format!("sum_{id}_{now}"))?
-                .map(SummaryDto::from);
+            let record = repo.get_record(&workspace, &format!("sum_{id}_{now}"))?;
+            // Extract + embed knowledge units from what was produced (ADR-127).
+            if let Some(rec) = &record {
+                crate::knowledge::ingest_summary(
+                    &state,
+                    &repo,
+                    &workspace,
+                    &rec.summary,
+                    &rec.id,
+                    now,
+                );
+            }
+            let produced = record.map(SummaryDto::from);
             let detail = produced.as_ref().map(|s| s.id.clone());
             repo.record_run(
                 &workspace,

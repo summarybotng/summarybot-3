@@ -114,6 +114,15 @@ export interface Destination {
   hint: string | null
 }
 
+export interface KnowledgeHit {
+  id: string
+  summary_id: string
+  kind: string
+  text: string
+  source_ids: string[]
+  score: number
+}
+
 export interface PluginField {
   name: string
   label: string

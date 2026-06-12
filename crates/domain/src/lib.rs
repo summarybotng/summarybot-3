@@ -11,6 +11,7 @@ mod delivery;
 mod failure;
 mod identity;
 mod job;
+mod knowledge;
 mod membership;
 mod message;
 mod oauth;
@@ -34,6 +35,10 @@ pub use identity::{
     LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
 };
 pub use job::{InvalidTransition, Job, JobId, JobStatus, JobType};
+pub use knowledge::{
+    cosine_similarity, extract_units, rank_by_cosine, KnowledgeUnit, UnitKind,
+    MAX_UNITS_PER_SUMMARY,
+};
 pub use membership::{
     evaluate_accept, AcceptOutcome, AcceptReject, Invite, InviteStatus, Membership, Permission,
     Role,

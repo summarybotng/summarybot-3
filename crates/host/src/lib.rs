@@ -10,6 +10,7 @@ use repository::{StoredSummary, SummaryRepository};
 pub mod auth;
 pub mod delivery;
 pub mod invite;
+pub mod knowledge;
 pub mod llm;
 #[cfg(feature = "oauth")]
 pub mod oauth;
@@ -27,6 +28,9 @@ pub use delivery::{
     SinkDescriptor,
 };
 pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
+#[cfg(feature = "http-llm")]
+pub use knowledge::HttpEmbedder;
+pub use knowledge::{DemoEmbedder, Embedder, KnowledgeService, SearchHit};
 pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
 pub use schedule_runner::SummarizingScheduleRunner;
 pub use scheduler::{ScheduleRunner, SchedulerService, TickReport};

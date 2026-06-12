@@ -70,6 +70,9 @@ async fn main() -> Result<()> {
         state = state.with_config_key(key);
         eprintln!("tenant API-key encryption: enabled");
     }
+    // Knowledge embedder (ADR-127): a local model over HTTP when configured,
+    // else the deterministic demo embedder.
+    state = state.with_embedder(select_embedder());
 
     // Background scheduler: fire due schedules on an interval (SCH-005/006).
     spawn_scheduler(state.clone(), scheduler_secs);
@@ -140,6 +143,39 @@ fn select_llm() -> Arc<dyn LlmClient + Send + Sync> {
 fn select_llm() -> Arc<dyn LlmClient + Send + Sync> {
     eprintln!("LLM backend: demo (build with --features http-llm for a real LLM)");
     Arc::new(host::llm::DemoLlmClient)
+}
+
+/// Pick the knowledge embedder (ADR-127). With `http-llm` + `LLM_BASE_URL`, an
+/// OpenAI-compatible `/embeddings` endpoint (the local model, `EMBED_MODEL`,
+/// default `nomic-embed-text`, sharing `LLM_API_KEY`); otherwise the demo
+/// embedder. A model change invalidates stored vectors — reindex on change (Q#8).
+#[cfg(feature = "http-llm")]
+fn select_embedder() -> Arc<dyn host::Embedder> {
+    if let Some(base) = env::var("LLM_BASE_URL")
+        .ok()
+        .filter(|b| !b.trim().is_empty())
+    {
+        let model = env::var("EMBED_MODEL")
+            .ok()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| "nomic-embed-text".to_string());
+        let key = env::var("LLM_API_KEY")
+            .ok()
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .map(Secret::new);
+        eprintln!("embedder: HTTP {} ({model})", base.trim());
+        return Arc::new(host::HttpEmbedder::new(base.trim().to_string(), key, model));
+    }
+    eprintln!("embedder: demo (set LLM_BASE_URL for a real embedding model)");
+    Arc::new(host::DemoEmbedder::default())
+}
+
+/// Without `http-llm`, the demo embedder is the only option.
+#[cfg(not(feature = "http-llm"))]
+fn select_embedder() -> Arc<dyn host::Embedder> {
+    eprintln!("embedder: demo (build with --features http-llm for a real embedder)");
+    Arc::new(host::DemoEmbedder::default())
 }
 
 /// Open the SQLite database, honoring the `sqlite:///path` URL form.

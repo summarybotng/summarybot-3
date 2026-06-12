@@ -92,13 +92,21 @@ impl ScheduleRunner for TenantAwareRunner<'_> {
             .with_delivery(self.deliverers, self.state.master_key().copied());
         inner.run(stored, now)?;
 
-        // Charge the tenant's budget by what the produced summary cost (if one was
-        // produced — the runner stores it under this deterministic id).
-        if let Some((tenant, window)) = charge {
-            if let Ok(Some(rec)) = self
-                .repo
-                .get_record(&ws, &format!("sum_{}_{}", stored.id, now))
-            {
+        // Read back what was produced (stored under this deterministic id) to
+        // ingest knowledge units (ADR-127) and charge the budget.
+        if let Ok(Some(rec)) = self
+            .repo
+            .get_record(&ws, &format!("sum_{}_{}", stored.id, now))
+        {
+            crate::knowledge::ingest_summary(
+                self.state,
+                self.repo,
+                &ws,
+                &rec.summary,
+                &rec.id,
+                now,
+            );
+            if let Some((tenant, window)) = charge {
                 let _ = crate::budget_charge(self.repo, &tenant, window, rec.cost_micros);
             }
         }

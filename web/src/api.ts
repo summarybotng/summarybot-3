@@ -2,6 +2,7 @@ import type {
   Budget,
   DeliveryTestResult,
   Destination,
+  KnowledgeHit,
   LlmConfig,
   Plugin,
   LlmConfigUpdate,
@@ -250,6 +251,13 @@ export class Client {
       method: 'POST',
       body: file,
     })
+  }
+
+  // --- knowledge: semantic search (ADR-127) ---
+
+  searchKnowledge(q: string, k = 10): Promise<KnowledgeHit[]> {
+    const p = new URLSearchParams({ q, k: String(k) })
+    return this.json<KnowledgeHit[]>(`/workspaces/${this.ws()}/wiki/search?${p}`)
   }
 
   // --- per-workspace summarization settings (SUM-007) ---

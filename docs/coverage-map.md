@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-08 — ADR-126 sink plugins (webhook/Confluence/email) + OAuth login
+- **As of:** 2026-06-12 — ADR-127 knowledge: semantic search (units + local embeddings)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -20,7 +20,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
 | Discord / Slack ingestion | 🔩 **seam only** | trait exists, no live fetcher or bot |
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants not yet membership-derived |
-| Knowledge (wiki / vector search) | ⛔ **not started** | whole legacy subsystem absent (Phase 7) |
+| Knowledge (wiki / vector search) | 🟡 **search done** | semantic search live (ADR-127); wiki + coherence pending |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
 | Ops (Docker, migrations, metrics) | 🟡 **thin** | single binary; ad-hoc schema; minimal telemetry |
 
@@ -129,10 +129,12 @@ metrics).
 
 | Feature | Legacy | Rewrite | Notes |
 |---|---|---|---|
-| Wiki / knowledge base (pages, versioning, cross-link) | ✅ (extensive) | ⛔ | Phase 7, not begun |
-| Vector store / semantic search (RuVector + embeddings) | ✅ | ⛔ | Phase 7 |
-| Knowledge synthesis from summaries | ✅ | ⛔ | Phase 7 |
-| Coherence / hallucination gate | ✅ | ⛔ | Phase 7 |
+| Knowledge units extracted from summaries (KNO-001) | ✅ | ✅ | headline + key points + action items, with provenance (ADR-127) |
+| Vector store / semantic search (KNO-002/003/005) | ✅ | ✅ | local embeddings (Mac-mini `nomic-embed-text`) + SQLite brute-force cosine behind a swap-in seam; verified live; HNSW/RuVector deferred |
+| Embeddings from a local model (KNO-007) | ✅ | ✅ | OpenAI-compatible `/v1/embeddings`; demo embedder offline; model pinned per unit |
+| Coherence / hallucination gate (COH-001) | ✅ | ⛔ | next increment |
+| Wiki synthesis (pages, regenerate) (WIK-*) | ✅ (extensive) | ⛔ | next increment |
+| AI wiki curator (CUR-*) | ✅ | ⛔ | deferred (ADR-127) |
 
 ## Storage / ops
 
