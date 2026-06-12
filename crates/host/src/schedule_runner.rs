@@ -8,15 +8,16 @@
 //! the periodic async driver that calls the scheduler's `tick` is the server's.
 
 use crate::delivery::{load_workspace_delivery, Deliverer, DeliveryService};
+use crate::knowledge::{Embedder, KnowledgeService};
 use crate::llm::{LlmClient, LlmProvider, RequestPriority, ResilientLlm};
 use crate::scheduler::ScheduleRunner;
 use crate::summarize::{SummarizationService, SummarizeRequest, SummaryOutcome};
 use domain::summarize::{ExtractedSummary, ModelLadder, SummaryLength};
 use domain::{decide_rolling, end_weekday, format_day, RollingAction, RollingPeriod, RollingState};
 use repository::{
-    DestinationRepository, PlatformCredentialRepository, RollingConfig, RollingRepository,
-    RollingSummaryRow, ScheduleSourceRepository, StoredSchedule, StructuredSummaryRepository,
-    SummaryRecord, WhatsAppRepository, WorkspaceSettingsRepository,
+    DestinationRepository, KnowledgeRepository, PlatformCredentialRepository, RollingConfig,
+    RollingRepository, RollingSummaryRow, ScheduleSourceRepository, StoredSchedule,
+    StructuredSummaryRepository, SummaryRecord, WhatsAppRepository, WorkspaceSettingsRepository,
 };
 
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
@@ -32,6 +33,9 @@ pub struct SummarizingScheduleRunner<'a, R, C: LlmClient> {
     deliverers: &'a [Box<dyn Deliverer + 'a>],
     /// Master key to decrypt stored destination addresses (`None` = none stored).
     master: Option<[u8; 32]>,
+    /// Embedder for feeding rolling-delta facts into the knowledge base (ADR-129
+    /// Layer 3); `None` disables knowledge ingestion for scheduled runs.
+    embedder: Option<&'a dyn Embedder>,
 }
 
 impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
@@ -45,7 +49,16 @@ impl<'a, R, C: LlmClient> SummarizingScheduleRunner<'a, R, C> {
             cap_micros: i64::MAX,
             deliverers: &[],
             master: None,
+            embedder: None,
         }
+    }
+
+    /// Feed rolling-delta knowledge units into the vector store as each period
+    /// accumulates (ADR-129 Layer 3). Best-effort; dedup (Layers 1–2) handles
+    /// overlap. `None` (the default) leaves scheduled runs out of the knowledge base.
+    pub fn with_knowledge(mut self, embedder: &'a dyn Embedder) -> Self {
+        self.embedder = Some(embedder);
+        self
     }
 
     pub fn with_options(
@@ -128,7 +141,8 @@ where
         + WorkspaceSettingsRepository
         + PlatformCredentialRepository
         + ScheduleSourceRepository
-        + RollingRepository,
+        + RollingRepository
+        + KnowledgeRepository,
     C: LlmClient,
 {
     fn run(&self, stored: &StoredSchedule, now: i64) -> Result<(), String> {
@@ -235,9 +249,32 @@ where
         + WorkspaceSettingsRepository
         + PlatformCredentialRepository
         + ScheduleSourceRepository
-        + RollingRepository,
+        + RollingRepository
+        + KnowledgeRepository,
     C: LlmClient,
 {
+    /// Feed one rolling delta's facts into the knowledge base (ADR-129 Layer 3) —
+    /// incrementally, so dedup (Layers 1–2) handles overlap and finalize needn't
+    /// re-ingest the whole digest. Best-effort: never fails the run.
+    fn ingest_delta(
+        &self,
+        workspace: &domain::WorkspaceId,
+        schedule_id: &str,
+        summary: &ExtractedSummary,
+        until: i64,
+        now: i64,
+    ) {
+        let Some(embedder) = self.embedder else {
+            return;
+        };
+        let sid = format!("roll_{schedule_id}_{until}");
+        if let Err(e) =
+            KnowledgeService::new(self.repo, embedder).ingest(workspace, summary, &sid, now)
+        {
+            eprintln!("rolling knowledge ingest failed for {schedule_id}: {e}");
+        }
+    }
+
     /// Deliver a produced record: always-on dashboard store + any configured
     /// destinations (DSH-010/011), gated by the workspace's capabilities. Shared
     /// by the one-shot and rolling-finalize paths.
@@ -329,12 +366,15 @@ where
             RollingAction::StartNew { window, until } => {
                 let outcome = self.summarize_window(stored, channel, window.start, until)?;
                 let (content_md, cost_micros, model, count) = match outcome {
-                    Some(o) => (
-                        append_section("", &format_day(until, tz), &o.summary),
-                        o.cost_micros,
-                        o.model,
-                        1,
-                    ),
+                    Some(o) => {
+                        self.ingest_delta(ws, &stored.id, &o.summary, until, now);
+                        (
+                            append_section("", &format_day(until, tz), &o.summary),
+                            o.cost_micros,
+                            o.model,
+                            1,
+                        )
+                    }
                     None => (String::new(), 0, String::new(), 0),
                 };
                 self.repo
@@ -357,6 +397,7 @@ where
             RollingAction::Accumulate { since, until } => {
                 let Some(mut row) = active else { return Ok(()) };
                 if let Some(o) = self.summarize_window(stored, channel, since, until)? {
+                    self.ingest_delta(ws, &stored.id, &o.summary, until, now);
                     row.content_md =
                         append_section(&row.content_md, &format_day(until, tz), &o.summary);
                     row.cost_micros += o.cost_micros;
@@ -375,6 +416,7 @@ where
                 if let Some(o) =
                     self.summarize_window(stored, channel, row.accumulated_through, row.period_end)?
                 {
+                    self.ingest_delta(ws, &stored.id, &o.summary, row.period_end, now);
                     row.content_md = append_section(
                         &row.content_md,
                         &format_day(row.period_end.saturating_sub(1), tz),
@@ -591,6 +633,70 @@ mod tests {
         assert!(records[0].summary.text.contains("digest"));
         assert!(records[0].tags.contains(&"rolling-weekly".to_string()));
         assert_eq!(records[0].channel_id.as_ref().unwrap().as_str(), "c1");
+    }
+
+    #[test]
+    fn rolling_delta_feeds_the_knowledge_base() {
+        use crate::knowledge::DemoEmbedder;
+        use repository::{KnowledgeRepository, RollingConfig, RollingRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.create_schedule(&schedule_with_channel(&ws, 0))
+            .unwrap();
+        repo.set_rolling_config(
+            "sch_1",
+            &RollingConfig {
+                period: "weekly".into(),
+                strategy: "append".into(),
+                end_day: 6,
+            },
+        )
+        .unwrap();
+        let tz = chrono_tz::UTC;
+        let window = RollingPeriod::Weekly
+            .window(1_767_700_000, tz, end_weekday(6))
+            .unwrap();
+        repo.save_message(
+            &ws,
+            &msg(
+                "m0",
+                window.start + 500,
+                "we shipped the release and ran the migration",
+            ),
+        )
+        .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let emb = DemoEmbedder::default();
+        // Knowledge ingestion is opt-in: off → no units; on → the rolling delta
+        // feeds the knowledge base (ADR-129 Layer 3).
+        SummarizingScheduleRunner::new(&repo, &engine, &l)
+            .run(
+                &repo.get_schedule(&ws, "sch_1").unwrap().unwrap(),
+                window.start + 1_000,
+            )
+            .unwrap();
+        assert_eq!(
+            repo.count_units(&ws).unwrap(),
+            0,
+            "no ingest without with_knowledge"
+        );
+
+        // Clear the accumulator so the next run re-opens (StartNew) and ingests.
+        repo.delete_active_rolling("sch_1").unwrap();
+        SummarizingScheduleRunner::new(&repo, &engine, &l)
+            .with_knowledge(&emb)
+            .run(
+                &repo.get_schedule(&ws, "sch_1").unwrap().unwrap(),
+                window.start + 1_000,
+            )
+            .unwrap();
+        assert!(
+            repo.count_units(&ws).unwrap() > 0,
+            "rolling delta fed the knowledge base"
+        );
     }
 
     #[test]

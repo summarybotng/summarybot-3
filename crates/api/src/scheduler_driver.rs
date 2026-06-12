@@ -89,7 +89,8 @@ impl ScheduleRunner for TenantAwareRunner<'_> {
         let engine = ResilientLlm::new(client, self.state.limiter.clone());
         let ladder = self.state.ladder_for(&resolution.model);
         let inner = SummarizingScheduleRunner::new(self.repo, &engine, &ladder)
-            .with_delivery(self.deliverers, self.state.master_key().copied());
+            .with_delivery(self.deliverers, self.state.master_key().copied())
+            .with_knowledge(&*self.state.embedder);
         inner.run(stored, now)?;
 
         // Read back what was produced (stored under this deterministic id) to

@@ -141,7 +141,7 @@ per-destination rolling delivery).
 | Coherence / hallucination gate (COH-001) | ✅ | ✅ | lexical grounding check; grounded score persisted + shown on summaries (LLM-judge is a stronger follow-up) |
 | Wiki synthesis (pages, regenerate) (WIK-001/002/003) | ✅ (extensive) | ✅ | LLM organizes a workspace's units into one topic-grouped `knowledge-base` page; regenerable on demand; per-tenant LLM + budget (ADR-125); verified live + browser-checked. Multi-page emergent structure is a refinement |
 | AI wiki curator (CUR-*) | ✅ | ⛔ | deferred (ADR-127) |
-| Rolling-ingest dedup (SUM-010) | ✅ | 🟡 | **Layers 1–2 shipped (ADR-129)**: units are content-addressed (`ku_sha256(workspace:kind:normalized_text)`, exact repeats collapse on upsert) and a **semantic near-dup gate** drops paraphrases within a cosine threshold of an existing same-kind unit (configurable, default 0.93). Both unit-tested. Remaining: delta-only ingest + replace-set/provenance-merge (Layers 3–4) |
+| Rolling-ingest dedup (SUM-010) | ✅ | 🟡 | **Layers 1–3 shipped (ADR-129)**: content-addressed unit ids (exact repeats collapse on upsert), a **semantic near-dup gate** (cosine ≥ threshold, default 0.93), and **delta-only ingest** — the rolling runner feeds each period's delta into the knowledge base as it accumulates (`with_knowledge`), so finalize needn't re-ingest and dedup handles overlap. All unit-tested. Remaining: replace-set/provenance-merge (Layer 4) |
 
 ## Storage / ops
 
