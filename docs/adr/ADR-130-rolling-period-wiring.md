@@ -57,3 +57,9 @@ decisions made wiring it into storage, the runner, the API, and the UI.
 - Refinements tracked: Hybrid merge (currently Append), rolling-ingest dedup
   (ADR-129), per-destination rolling delivery control (ADR-108), and a markdown
   renderer for the digest in the Summaries view (today it shows as text).
+- The manual trigger takes an optional `?as_of=<unix_secs>` (backfill/testing) so
+  a rolling period can be driven past its end to finalize on demand — used to
+  demonstrate the full StartNew→Accumulate→Finalize cycle live without waiting for
+  a real period boundary. (Minor: the trigger's `produced` flag still keys off
+  `sum_{id}_{now}`, so it reads `false` on a rolling finalize even though the
+  digest — id `sum_{id}_{period_end}` — is stored, delivered, and visible.)

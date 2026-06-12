@@ -415,10 +415,14 @@ pub async fn trigger_schedule(
     State(state): State<AppState>,
     user: AuthUser,
     Path((ws, id)): Path<(String, String)>,
+    Query(q): Query<TriggerQuery>,
 ) -> Result<Json<TriggerResponse>, ApiError> {
     user.require_workspace(&ws)?;
     let workspace = workspace(ws)?;
-    let now = now_secs();
+    // `?as_of=<unix_secs>` runs the schedule *as of* that instant instead of now —
+    // a backfill/testing affordance (e.g. drive a rolling period past its end to
+    // finalize it). Defaults to the real clock.
+    let now = q.as_of.unwrap_or_else(now_secs);
 
     let repo = state.repo.lock().expect("repo mutex");
     // Honor any per-tenant LLM override + budget (ADR-125), like create_summary.
@@ -476,6 +480,12 @@ pub async fn trigger_schedule(
             Err(ApiError::Internal(reason))
         }
     }
+}
+
+/// `?as_of=<unix_secs>` for the manual trigger (backfill/testing).
+#[derive(Deserialize)]
+pub struct TriggerQuery {
+    pub as_of: Option<i64>,
 }
 
 /// JSON shape of a recorded run (SCM-005).
