@@ -15,6 +15,7 @@ import type {
   WikiPage,
   ConnectionStatus,
   SourceSync,
+  Spend,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -276,6 +277,11 @@ export class Client {
   /** (Re)generate the knowledge-base page from this workspace's units. */
   synthesizeWiki(): Promise<WikiPage> {
     return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
+  }
+
+  /** Summarization cost analytics over the last `days` (ADR-125). */
+  spend(days = 30): Promise<Spend> {
+    return this.json<Spend>(`/workspaces/${this.ws()}/spend?days=${days}`)
   }
 
   // --- live source ingestion: Discord / Slack (ADR-128) ---

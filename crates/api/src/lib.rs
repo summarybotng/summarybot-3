@@ -376,6 +376,7 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/settings",
             get(settings::get_settings).put(settings::set_settings),
         )
+        .route("/workspaces/:ws/spend", get(summaries::spend))
         .route("/workspaces/:ws/wiki/search", get(knowledge::search))
         .route("/workspaces/:ws/wiki/pages", get(knowledge::list_pages))
         .route(
@@ -551,6 +552,7 @@ async fn openapi() -> Json<serde_json::Value> {
                 "delete": { "summary": "Clear the platform bot token" }
             },
             "/workspaces/{ws}/connections/{platform}/sync": { "post": { "summary": "Fetch a source's recent messages into the store — {scope_id?, channels?, lookback_secs} (WSP-006)" } },
+            "/workspaces/{ws}/spend": { "get": { "summary": "Summarization cost analytics — ?days (ADR-125)" } },
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
             "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },

@@ -140,6 +140,14 @@ export interface ConnectionStatus {
   supported: boolean
 }
 
+export interface Spend {
+  total_micros: number
+  summary_count: number
+  recent_micros: number
+  recent_days: number
+  by_model: { model: string; count: number; cost_micros: number }[]
+}
+
 export interface SourceSync {
   channel_ids: string[]
   fetched: number

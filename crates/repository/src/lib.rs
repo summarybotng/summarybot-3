@@ -36,7 +36,9 @@ pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use schedule_source::{ScheduleSource, ScheduleSourceRepository};
 pub use session::SessionRepository;
-pub use summary_store::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
+pub use summary_store::{
+    ModelSpend, SpendBreakdown, StructuredSummaryRepository, SummaryQuery, SummaryRecord,
+};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
 pub use wiki::{WikiPage, WikiRepository};
 pub use workspace::{AttachError, WorkspaceRepository};

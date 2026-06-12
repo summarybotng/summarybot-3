@@ -253,6 +253,64 @@ fn unique_suffix() -> u128 {
         .unwrap_or(0)
 }
 
+/// Per-model spend row in the cost dashboard.
+#[derive(Serialize)]
+pub struct ModelSpendDto {
+    pub model: String,
+    pub count: i64,
+    pub cost_micros: i64,
+}
+
+/// Cost analytics for a workspace (ADR-125): spend rolled up from stored
+/// summaries. Money is micro-dollars (1 USD = 1_000_000 µ$).
+#[derive(Serialize)]
+pub struct SpendDto {
+    pub total_micros: i64,
+    pub summary_count: i64,
+    pub recent_micros: i64,
+    /// Window (days) `recent_micros` covers.
+    pub recent_days: i64,
+    pub by_model: Vec<ModelSpendDto>,
+}
+
+/// `GET /workspaces/:ws/spend?days=30` — summarization cost analytics.
+pub async fn spend(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Query(q): Query<SpendQuery>,
+) -> Result<Json<SpendDto>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let days = q.days.unwrap_or(30).clamp(1, 365);
+    let since = crate::auth::now_secs() - days * 86_400;
+    let repo = state.repo.lock().expect("repo mutex");
+    let breakdown = repo
+        .workspace_spend(&workspace, since)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(SpendDto {
+        total_micros: breakdown.total_micros,
+        summary_count: breakdown.summary_count,
+        recent_micros: breakdown.recent_micros,
+        recent_days: days,
+        by_model: breakdown
+            .by_model
+            .into_iter()
+            .map(|m| ModelSpendDto {
+                model: m.model,
+                count: m.count,
+                cost_micros: m.cost_micros,
+            })
+            .collect(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct SpendQuery {
+    pub days: Option<i64>,
+}
+
 /// `GET /workspaces/:ws/summaries`
 pub async fn list_summaries(
     State(state): State<AppState>,

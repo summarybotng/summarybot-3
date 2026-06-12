@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-12 — ADR-128 Discord + Slack live ingestion + **scheduled live sync** (a schedule fetches fresh messages before each run)
+- **As of:** 2026-06-12 — ADR-128 Discord + Slack live ingestion + scheduled live sync; **cost/spend dashboard** (per-model spend from stored summaries)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -69,7 +69,7 @@ metrics).
 | Per-tenant budget (rolling window) | partial | ✅ | `domain/budget.rs` (ADR-125 Phase 3) |
 | BYO LLM key, encrypted at rest | n/a | ✅ | AES-256-GCM, `LLM_CONFIG_KEY` (ADR-125 Phase 2b) |
 | Operator-lent key + budget | n/a | ✅ | owner-set grants |
-| Cost analytics / spend dashboards | partial | ⛔ | spend recorded, not visualized |
+| Cost analytics / spend dashboards | partial | ✅ | `GET /workspaces/:ws/spend` aggregates per-model spend from stored summaries (total / recent window / by-model); `Spend.tsx` dashboard. Per-tenant rollups are a refinement |
 
 ## Scheduling / digests
 
@@ -108,6 +108,7 @@ metrics).
 | Discord / Slack ingestion | ✅ | ✅ | one generic `Source.tsx` behind Discord + Slack tabs (bot token + sync + per-channel summarize; `--features discord`/`slack`) |
 | Delivery destinations | ✅ | ✅ | `Delivery.tsx` (webhook add/test/remove) |
 | Settings (LLM config + budget) | ✅ | ✅ | `Settings.tsx` |
+| Cost / spend dashboard | partial | ✅ | `Spend.tsx` — total + recent-window + per-model breakdown |
 | Live updates | ✅ | ✅ | SSE (`summary.created/deleted`) |
 | Per-tenant branding | ✅ | 🟡 | accent + name; no logo/full theme |
 | Extra legacy pages (Wiki, Slack, Tenants admin, Audit log, Jobs, Archive) | ✅ | ⛔ | not built |
@@ -158,6 +159,6 @@ metrics).
 3. **Real OAuth** — replace the dev login seam with Discord/Google/Slack redirect flows.
 4. **Knowledge subsystem (Phase 7)** — wiki + vector search + synthesis + coherence gate. Big, self-contained; legacy's most distinctive feature set.
 5. **Production hardening** — migration runner, Docker/deploy configs, metrics/monitoring, audit-log surfacing.
-6. **Nice-to-haves** — per-perspective & custom prompts, push templates, summary caching, cost analytics, extra dashboard pages, Google Drive, voice transcription.
+6. **Nice-to-haves** — per-perspective & custom prompts, push templates, summary caching, extra dashboard pages, Google Drive, voice transcription.
 
 Items intentionally **not** carried over unless a need appears: summary caching, some legacy dashboard pages, guild-era constructs (the rewrite is workspace-native by design).

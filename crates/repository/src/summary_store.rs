@@ -63,6 +63,26 @@ impl Default for SummaryQuery {
     }
 }
 
+/// Per-model spend rollup over a workspace's stored summaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSpend {
+    pub model: String,
+    pub count: i64,
+    pub cost_micros: i64,
+}
+
+/// A workspace's summarization spend, aggregated from its stored summaries —
+/// what the cost dashboard shows (no new storage; summaries already carry
+/// `cost_micros` + `model`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpendBreakdown {
+    pub total_micros: i64,
+    pub summary_count: i64,
+    /// Spend since `now - recent_window` (caller passes the cutoff); `0` if none.
+    pub recent_micros: i64,
+    pub by_model: Vec<ModelSpend>,
+}
+
 /// Storage boundary for structured summaries (the dashboard sink + §5.1 mgmt).
 pub trait StructuredSummaryRepository {
     fn save_record(&self, workspace: &WorkspaceId, record: &SummaryRecord) -> Result<()>;
@@ -91,6 +111,9 @@ pub trait StructuredSummaryRepository {
     /// Hard-delete a summary and its child rows (DSH-013), tenant-scoped. Returns
     /// whether a row was removed.
     fn delete_record(&self, workspace: &WorkspaceId, id: &str) -> Result<bool>;
+    /// Aggregate the workspace's summarization spend (cost analytics). `since` is
+    /// the cutoff (unix secs) for the `recent_micros` window.
+    fn workspace_spend(&self, workspace: &WorkspaceId, since: i64) -> Result<SpendBreakdown>;
 }
 
 /// Join a string list into one column (entries can't contain newlines).
@@ -387,6 +410,41 @@ impl StructuredSummaryRepository for SqliteRepository {
         tx.commit()?;
         Ok(n > 0)
     }
+
+    fn workspace_spend(&self, workspace: &WorkspaceId, since: i64) -> Result<SpendBreakdown> {
+        let (total_micros, summary_count): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_micros), 0), COUNT(*)
+             FROM summary_records WHERE workspace_id = ?1",
+            params![workspace.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let recent_micros: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(cost_micros), 0)
+             FROM summary_records WHERE workspace_id = ?1 AND created_at >= ?2",
+            params![workspace.as_str(), since],
+            |row| row.get(0),
+        )?;
+        let mut stmt = self.conn.prepare(
+            "SELECT model, COUNT(*), COALESCE(SUM(cost_micros), 0)
+             FROM summary_records WHERE workspace_id = ?1
+             GROUP BY model ORDER BY SUM(cost_micros) DESC",
+        )?;
+        let by_model = stmt
+            .query_map(params![workspace.as_str()], |row| {
+                Ok(ModelSpend {
+                    model: row.get(0)?,
+                    count: row.get(1)?,
+                    cost_micros: row.get(2)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(SpendBreakdown {
+            total_micros,
+            summary_count,
+            recent_micros,
+            by_model,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -433,6 +491,47 @@ mod tests {
                 }],
             },
         }
+    }
+
+    #[test]
+    fn workspace_spend_aggregates_by_model_and_window() {
+        let repo = repo();
+        let mut a = record();
+        a.id = "s_a".into();
+        a.model = "sonnet".into();
+        a.cost_micros = 1_000;
+        a.created_at = 1_000;
+        let mut b = record();
+        b.id = "s_b".into();
+        b.model = "sonnet".into();
+        b.cost_micros = 2_000;
+        b.created_at = 5_000;
+        let mut c = record();
+        c.id = "s_c".into();
+        c.model = "opus".into();
+        c.cost_micros = 9_000;
+        c.created_at = 5_000;
+        for r in [&a, &b, &c] {
+            repo.save_record(&ws(), r).unwrap();
+        }
+
+        let spend = repo.workspace_spend(&ws(), 3_000).unwrap();
+        assert_eq!(spend.total_micros, 12_000);
+        assert_eq!(spend.summary_count, 3);
+        // Only b + c are at/after the cutoff 3_000.
+        assert_eq!(spend.recent_micros, 11_000);
+        // Ordered by spend desc: opus (9_000) before sonnet (3_000).
+        assert_eq!(spend.by_model[0].model, "opus");
+        assert_eq!(spend.by_model[0].cost_micros, 9_000);
+        assert_eq!(spend.by_model[1].model, "sonnet");
+        assert_eq!(spend.by_model[1].count, 2);
+        assert_eq!(spend.by_model[1].cost_micros, 3_000);
+
+        // Scoped: a different workspace sees nothing.
+        let other = repo
+            .workspace_spend(&WorkspaceId::parse("ws-2").unwrap(), 0)
+            .unwrap();
+        assert_eq!(other, SpendBreakdown::default());
     }
 
     #[test]

@@ -9,6 +9,7 @@ import { Whatsapp } from './views/Whatsapp'
 import { Delivery } from './views/Delivery'
 import { Knowledge } from './views/Knowledge'
 import { Source } from './views/Source'
+import { Spend } from './views/Spend'
 
 type Tab =
   | 'summaries'
@@ -18,6 +19,7 @@ type Tab =
   | 'slack'
   | 'delivery'
   | 'knowledge'
+  | 'spend'
   | 'settings'
 
 export default function App() {
@@ -70,6 +72,7 @@ export default function App() {
               'slack',
               'delivery',
               'knowledge',
+              'spend',
               'settings',
             ] as Tab[]
           ).map((t) => (
@@ -96,6 +99,7 @@ export default function App() {
         {tab === 'slack' && <Source platform="slack" />}
         {tab === 'delivery' && <Delivery />}
         {tab === 'knowledge' && <Knowledge />}
+        {tab === 'spend' && <Spend />}
         {tab === 'settings' && <Settings />}
       </main>
     </div>
