@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { useSSE } from '../useSSE'
+import { Markdown } from '../components/Markdown'
 import type { Summary } from '../types'
 
 function when(ts: number): string {
@@ -149,6 +150,18 @@ export function Summaries() {
                     )}
                     {s.pinned && ' · 📌'}
                   </p>
+                  {s.tags.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {s.tags.map((t) => (
+                        <span
+                          key={t}
+                          className="rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </button>
                 <div className="flex shrink-0 gap-1">
                   <button
@@ -177,6 +190,13 @@ export function Summaries() {
 
               {expanded === s.id && (
                 <div className="mt-3 space-y-3 border-t border-slate-100 pt-3 text-sm">
+                  {/* Full body, rendered as markdown (one line for a normal summary;
+                      a multi-section document for a rolling/weekly digest). */}
+                  {s.text.trim() && (
+                    <div className="text-slate-700">
+                      <Markdown content={s.text} />
+                    </div>
+                  )}
                   {s.key_points.length > 0 && (
                     <div>
                       <p className="font-medium text-slate-600">Key points</p>
