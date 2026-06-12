@@ -101,15 +101,31 @@ pub struct SearchHit {
     pub score: f32,
 }
 
+/// Cosine ≥ this (same kind) means a new unit is a near-duplicate of one already
+/// stored — dropped rather than added (ADR-129 Layer 2). Default tuned for the
+/// local `nomic-embed-text` model; configurable for tests/tuning.
+pub const DEFAULT_NEAR_DUP_THRESHOLD: f32 = 0.93;
+
 /// Orchestrates knowledge ingestion + search over a repository + embedder.
 pub struct KnowledgeService<'a, R> {
     repo: &'a R,
     embedder: &'a dyn Embedder,
+    near_dup_threshold: f32,
 }
 
 impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
     pub fn new(repo: &'a R, embedder: &'a dyn Embedder) -> Self {
-        Self { repo, embedder }
+        Self {
+            repo,
+            embedder,
+            near_dup_threshold: DEFAULT_NEAR_DUP_THRESHOLD,
+        }
+    }
+
+    /// Override the semantic near-duplicate threshold (ADR-129 Layer 2).
+    pub fn with_near_dup_threshold(mut self, threshold: f32) -> Self {
+        self.near_dup_threshold = threshold;
+        self
     }
 
     /// Extract + embed + store the units of a produced summary (KNO-001..003).
@@ -130,10 +146,10 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
         let texts: Vec<String> = units.iter().map(|u| u.text.clone()).collect();
         let embeddings = self.embedder.embed(&texts).ok();
         let model = self.embedder.model();
-        // Content-addressed ids (ADR-129): dedup exact repeats within this batch
-        // and across summaries/runs (the repo upserts on id).
+        // Content-addressed ids (ADR-129 Layer 1): dedup exact repeats within this
+        // batch and across summaries/runs (the repo upserts on id).
         let mut seen = std::collections::HashSet::new();
-        let stored: Vec<StoredKnowledgeUnit> = units
+        let candidates: Vec<StoredKnowledgeUnit> = units
             .iter()
             .enumerate()
             .map(|(i, u)| StoredKnowledgeUnit {
@@ -152,8 +168,36 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
             })
             .filter(|u| seen.insert(u.id.clone()))
             .collect();
-        self.repo.save_units(workspace, &stored)?;
-        Ok(stored.len())
+
+        // Semantic near-duplicate gate (ADR-129 Layer 2): a genuinely-new unit
+        // whose embedding is within the threshold of an already-stored same-kind
+        // unit is a paraphrase of an existing fact — drop it instead of adding a
+        // near-identical vector. Exact-id matches (Layer 1) pass through to upsert.
+        let existing = self.repo.list_units(workspace)?;
+        let existing_ids: std::collections::HashSet<&str> =
+            existing.iter().map(|u| u.id.as_str()).collect();
+        let mut kept: Vec<StoredKnowledgeUnit> = Vec::with_capacity(candidates.len());
+        for cand in candidates {
+            if !existing_ids.contains(cand.id.as_str()) {
+                if let Some(ce) = &cand.embedding {
+                    let near_dup = existing
+                        .iter()
+                        .chain(kept.iter())
+                        .filter(|u| u.kind == cand.kind)
+                        .filter_map(|u| u.embedding.as_ref())
+                        .any(|e| {
+                            e.len() == ce.len()
+                                && domain::cosine_similarity(ce, e) >= self.near_dup_threshold
+                        });
+                    if near_dup {
+                        continue;
+                    }
+                }
+            }
+            kept.push(cand);
+        }
+        self.repo.save_units(workspace, &kept)?;
+        Ok(kept.len())
     }
 
     /// Semantic search: embed `query`, rank the workspace's embedded units by
@@ -352,6 +396,66 @@ mod tests {
             &["Run the migration first", "Brand new decision was made"],
         );
         svc.ingest(&ws(), &s2, "sum_3", 300).unwrap();
+        assert_eq!(repo.count_units(&ws()).unwrap(), 5);
+    }
+
+    #[test]
+    fn semantic_gate_drops_paraphrased_near_duplicates() {
+        use repository::KnowledgeRepository;
+        // Deterministic embedder: maps a keyword in the text to a fixed unit
+        // vector, so near-dup decisions are exact and don't depend on the demo
+        // embedder's token math.
+        struct FixedEmbedder;
+        impl Embedder for FixedEmbedder {
+            fn model(&self) -> &str {
+                "fixed-4"
+            }
+            fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+                Ok(texts
+                    .iter()
+                    .map(|t| {
+                        let s = t.to_lowercase();
+                        if s.contains("alpha") {
+                            vec![1.0, 0.0, 0.0, 0.0]
+                        } else if s.contains("beta") {
+                            vec![0.0, 1.0, 0.0, 0.0]
+                        } else if s.contains("migration") {
+                            vec![0.0, 0.0, 1.0, 0.0]
+                        } else if s.contains("deploy") {
+                            vec![0.0, 0.0, 0.0, 1.0]
+                        } else if s.contains("gamma") {
+                            vec![0.7, 0.7, 0.0, 0.0]
+                        } else {
+                            vec![0.25, 0.25, 0.25, 0.25]
+                        }
+                    })
+                    .collect())
+            }
+        }
+
+        let repo = SqliteRepository::in_memory().unwrap();
+        let emb = FixedEmbedder;
+        let svc = KnowledgeService::new(&repo, &emb).with_near_dup_threshold(0.93);
+
+        // headline ALPHA + key points MIGRATION + DEPLOY → 3 distinct units.
+        let s1 = summary(
+            "headline alpha",
+            &["the migration runs thursday", "deploy the service friday"],
+        );
+        assert_eq!(svc.ingest(&ws(), &s1, "sum_1", 100).unwrap(), 3);
+        assert_eq!(repo.count_units(&ws()).unwrap(), 3);
+
+        // s2: a distinct headline (BETA) + a MIGRATION *paraphrase* (different
+        // text → new id, but same embedding → near-dup, dropped) + a new GAMMA fact.
+        let s2 = summary(
+            "headline beta",
+            &[
+                "migration is scheduled for thursday night",
+                "gamma decision was recorded",
+            ],
+        );
+        svc.ingest(&ws(), &s2, "sum_2", 200).unwrap();
+        // +headline beta, +gamma; the migration paraphrase is gated → 3 + 2 = 5.
         assert_eq!(repo.count_units(&ws()).unwrap(), 5);
     }
 
