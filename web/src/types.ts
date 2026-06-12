@@ -148,6 +148,13 @@ export interface Spend {
   by_model: { model: string; count: number; cost_micros: number }[]
 }
 
+export interface AuditEntry {
+  ts: number
+  actor: string | null
+  action: string
+  detail: string
+}
+
 export interface SourceSync {
   channel_ids: string[]
   fetched: number

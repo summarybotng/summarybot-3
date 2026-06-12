@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-12 — ADR-128 Discord + Slack live ingestion + scheduled live sync; **cost/spend dashboard** (per-model spend from stored summaries)
+- **As of:** 2026-06-12 — Discord/Slack live ingestion + scheduled sync; cost/spend dashboard; **audit-log surfacing** (admin events → Audit tab, WSP-014)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -109,9 +109,10 @@ metrics).
 | Delivery destinations | ✅ | ✅ | `Delivery.tsx` (webhook add/test/remove) |
 | Settings (LLM config + budget) | ✅ | ✅ | `Settings.tsx` |
 | Cost / spend dashboard | partial | ✅ | `Spend.tsx` — total + recent-window + per-model breakdown |
+| Audit log | ✅ | ✅ | `Audit.tsx` — admin/security events, newest first (Admin+) |
 | Live updates | ✅ | ✅ | SSE (`summary.created/deleted`) |
 | Per-tenant branding | ✅ | 🟡 | accent + name; no logo/full theme |
-| Extra legacy pages (Wiki, Slack, Tenants admin, Audit log, Jobs, Archive) | ✅ | ⛔ | not built |
+| Extra legacy pages (Tenants admin, Jobs, Archive) | ✅ | ⛔ | not built (Wiki, Slack, Audit log now have tabs) |
 
 ## Auth / identity / multi-tenancy
 
@@ -145,7 +146,7 @@ metrics).
 |---|---|---|---|
 | SQLite persistence + repository pattern | ✅ | ✅ | `repository/` traits + `SqliteRepository` |
 | Migration framework | ✅ (58+ tracked) | ✅ | `schema_migrations` ledger + ordered runner; idempotent baseline, future changes append as `(id, sql)` |
-| Audit log | ✅ | 🟡 | `audit_log` table exists; limited surfacing |
+| Audit log | ✅ | ✅ | `audit_log` ledger surfaced: `GET /workspaces/:ws/audit` (Admin+, tenant-member-scoped) + `Audit.tsx` tab; member role/remove + invite issuance now write entries (WSP-014). Per-tenant column + more instrumented events are a refinement |
 | Docker / Fly / Render deploy configs | ✅ | ⛔ | single binary; no container/deploy config |
 | Monitoring / metrics | ✅ | 🟡 | `GET /metrics` Prometheus gauges (tenants/workspaces/summaries/schedules/spend) + stderr logs; request-rate counters are a follow-up |
 | WASM sandbox boundary | n/a | 🟡 | architecture proven; only WhatsApp parse runs in WASM |
@@ -158,7 +159,7 @@ metrics).
 2. **Delivery completion** — email (SMTP) deliverer; Confluence publishing; output formats beyond markdown.
 3. **Real OAuth** — replace the dev login seam with Discord/Google/Slack redirect flows.
 4. **Knowledge subsystem (Phase 7)** — wiki + vector search + synthesis + coherence gate. Big, self-contained; legacy's most distinctive feature set.
-5. **Production hardening** — migration runner, Docker/deploy configs, metrics/monitoring, audit-log surfacing.
+5. **Production hardening** — Docker/deploy configs (migration runner ✅, basic `/metrics` ✅, audit-log surfacing ✅).
 6. **Nice-to-haves** — per-perspective & custom prompts, push templates, summary caching, extra dashboard pages, Google Drive, voice transcription.
 
 Items intentionally **not** carried over unless a need appears: summary caching, some legacy dashboard pages, guild-era constructs (the rewrite is workspace-native by design).

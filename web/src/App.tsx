@@ -10,6 +10,7 @@ import { Delivery } from './views/Delivery'
 import { Knowledge } from './views/Knowledge'
 import { Source } from './views/Source'
 import { Spend } from './views/Spend'
+import { Audit } from './views/Audit'
 
 type Tab =
   | 'summaries'
@@ -20,6 +21,7 @@ type Tab =
   | 'delivery'
   | 'knowledge'
   | 'spend'
+  | 'audit'
   | 'settings'
 
 export default function App() {
@@ -73,6 +75,7 @@ export default function App() {
               'delivery',
               'knowledge',
               'spend',
+              'audit',
               'settings',
             ] as Tab[]
           ).map((t) => (
@@ -100,6 +103,7 @@ export default function App() {
         {tab === 'delivery' && <Delivery />}
         {tab === 'knowledge' && <Knowledge />}
         {tab === 'spend' && <Spend />}
+        {tab === 'audit' && <Audit />}
         {tab === 'settings' && <Settings />}
       </main>
     </div>

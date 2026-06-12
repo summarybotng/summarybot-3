@@ -14,7 +14,7 @@
 
 use crate::auth::{now_secs, AuthUser};
 use crate::{ApiError, AppState};
-use axum::extract::{Host, Path, State};
+use axum::extract::{Host, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use domain::{current_window, remaining_micros, Budget, Spend};
@@ -23,8 +23,8 @@ use domain::{
 };
 use host::{resolve_tenant_by_host, InviteService};
 use repository::{
-    BudgetRepository, BudgetRow, LlmConfigRepository, MembershipRepository, SqliteRepository,
-    TenantLlmConfig, WorkspaceRepository,
+    AuditEntry, BudgetRepository, BudgetRow, IdentityRepository, LlmConfigRepository,
+    MembershipRepository, SqliteRepository, TenantLlmConfig, WorkspaceRepository,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -97,6 +97,77 @@ pub(crate) fn parse_tenant(raw: String) -> Result<TenantId, ApiError> {
     TenantId::parse(raw).map_err(|e| ApiError::bad_request(e.to_string()))
 }
 
+/// Append an audit entry for a tenant admin action (WSP-014). Best-effort: a
+/// logging failure must never fail the action it records. Call under the held
+/// repo guard, with the acting user as `actor` (so it shows in their tenant's
+/// audit view, which is scoped by member ids).
+pub(crate) fn audit(repo: &SqliteRepository, actor: &UserId, action: &str, detail: String) {
+    let _ = repo.append_audit(&AuditEntry {
+        ts: now_secs(),
+        actor: Some(actor.clone()),
+        action: action.to_string(),
+        detail,
+    });
+}
+
+/// JSON shape of an audit-ledger entry.
+#[derive(Serialize)]
+pub struct AuditEntryDto {
+    pub ts: i64,
+    pub actor: Option<String>,
+    pub action: String,
+    pub detail: String,
+}
+
+impl From<AuditEntry> for AuditEntryDto {
+    fn from(e: AuditEntry) -> Self {
+        AuditEntryDto {
+            ts: e.ts,
+            actor: e.actor.map(|a| a.as_str().to_string()),
+            action: e.action,
+            detail: e.detail,
+        }
+    }
+}
+
+/// `?limit=50&offset=0` for the audit listing.
+#[derive(Deserialize)]
+pub struct AuditQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+/// `GET /workspaces/:ws/audit` — security/admin events, newest first (WSP-014).
+/// Workspace-scoped to fit the dashboard: resolves the workspace's tenant and
+/// requires `ManageSettings` (Admin+) on it. The audit ledger is process-global
+/// with no tenant column, so it's scoped to that tenant's **members** (events by
+/// your members); system/anonymous events aren't attributed to a tenant. A
+/// workspace with no tenant row (e.g. a dev workspace) yields an empty list.
+pub async fn list_audit(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Query(q): Query<AuditQuery>,
+) -> Result<Json<Vec<AuditEntryDto>>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let repo = state.repo.lock().expect("repo mutex");
+    let Some(ws_row) = repo.find_workspace(&workspace)? else {
+        return Ok(Json(vec![])); // unprovisioned workspace → no tenant, nothing to show
+    };
+    let tenant = ws_row.tenant_id;
+    authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
+    let actors: Vec<String> = repo
+        .list_members(&tenant)?
+        .into_iter()
+        .map(|m| m.user_id.as_str().to_string())
+        .collect();
+    let limit = q.limit.unwrap_or(50).min(200);
+    let entries = repo.list_audit_by_actors(&actors, limit, q.offset.unwrap_or(0))?;
+    Ok(Json(entries.into_iter().map(AuditEntryDto::from).collect()))
+}
+
 /// `GET /tenants/:tenant/members` — list members (any member may view).
 pub async fn list_members(
     State(state): State<AppState>,
@@ -129,8 +200,14 @@ pub async fn set_member_role(
         .ok_or_else(|| ApiError::bad_request(format!("unknown role: {}", body.role)))?;
     let repo = state.repo.lock().expect("repo mutex");
     authorize(&repo, &user.0.sub, &tenant, Permission::ManageMembers)?;
-    let membership = Membership::new(tenant, target, role);
+    let membership = Membership::new(tenant, target.clone(), role);
     repo.upsert_membership(&membership)?;
+    audit(
+        &repo,
+        &user.0.sub,
+        "member.role_set",
+        format!("{} -> {}", target.as_str(), role.as_str()),
+    );
     Ok(Json(MembershipDto::from(membership)))
 }
 
@@ -145,6 +222,12 @@ pub async fn remove_member(
     let repo = state.repo.lock().expect("repo mutex");
     authorize(&repo, &user.0.sub, &tenant, Permission::ManageMembers)?;
     if repo.remove_membership(&tenant, &target)? {
+        audit(
+            &repo,
+            &user.0.sub,
+            "member.removed",
+            target.as_str().to_string(),
+        );
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
@@ -190,6 +273,12 @@ pub async fn create_invite(
     let issued = svc
         .issue(tenant, body.email, role, now_secs())
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    audit(
+        &repo,
+        &user.0.sub,
+        "invite.issued",
+        format!("{} ({})", issued.invite.email, issued.invite.role.as_str()),
+    );
     Ok(Json(IssuedInviteDto {
         token: issued.raw_token,
         token_hash: issued.invite.token_hash,

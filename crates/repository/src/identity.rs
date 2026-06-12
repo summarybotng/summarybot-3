@@ -72,6 +72,15 @@ pub trait IdentityRepository {
     fn append_audit(&self, entry: &AuditEntry) -> Result<i64>;
     /// Audit entries in insertion order (oldest first).
     fn list_audit(&self) -> Result<Vec<AuditEntry>>;
+    /// A page of audit entries whose `actor` is one of `actors`, **newest first**
+    /// (the audit ledger is process-global with no tenant column, so callers scope
+    /// it by passing the tenant's member ids — WSP-014). Empty `actors` → empty.
+    fn list_audit_by_actors(
+        &self,
+        actors: &[String],
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<AuditEntry>>;
 }
 
 impl IdentityRepository for SqliteRepository {
@@ -131,6 +140,57 @@ impl IdentityRepository for SqliteRepository {
             .conn
             .prepare("SELECT ts, actor, action, detail FROM audit_log ORDER BY id")?;
         let rows = stmt.query_map([], |row| {
+            let actor: Option<String> = row.get(1)?;
+            Ok((
+                row.get::<_, i64>(0)?,
+                actor,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (ts, actor, action, detail) = row?;
+            let actor = match actor {
+                Some(a) => Some(UserId::parse(a).map_err(anyhow::Error::new)?),
+                None => None,
+            };
+            out.push(AuditEntry {
+                ts,
+                actor,
+                action,
+                detail,
+            });
+        }
+        Ok(out)
+    }
+
+    fn list_audit_by_actors(
+        &self,
+        actors: &[String],
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<AuditEntry>> {
+        if actors.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Build `?,?,…` for the IN clause; the trailing limit/offset are the last
+        // two bound params.
+        let placeholders = vec!["?"; actors.len()].join(",");
+        let sql = format!(
+            "SELECT ts, actor, action, detail FROM audit_log
+             WHERE actor IN ({placeholders})
+             ORDER BY id DESC LIMIT ? OFFSET ?"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(actors.len() + 2);
+        for a in actors {
+            binds.push(Box::new(a.clone()));
+        }
+        binds.push(Box::new(limit as i64));
+        binds.push(Box::new(offset as i64));
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |row| {
             let actor: Option<String> = row.get(1)?;
             Ok((
                 row.get::<_, i64>(0)?,
@@ -264,5 +324,51 @@ mod tests {
         assert_eq!(log[0].action, "identity.link");
         assert_eq!(log[0].actor, None);
         assert_eq!(log[1].actor, Some(UserId::parse("admin").unwrap()));
+    }
+
+    #[test]
+    fn list_audit_by_actors_filters_newest_first_and_paginates() {
+        let repo = repo();
+        let entry = |ts: i64, actor: &str, action: &str| AuditEntry {
+            ts,
+            actor: Some(UserId::parse(actor).unwrap()),
+            action: action.into(),
+            detail: "d".into(),
+        };
+        repo.append_audit(&entry(1, "alice", "identity.provision"))
+            .unwrap();
+        repo.append_audit(&entry(2, "bob", "identity.link"))
+            .unwrap();
+        repo.append_audit(&entry(3, "alice", "identity.link"))
+            .unwrap();
+        // A system entry (no actor) must never appear in an actor-scoped view.
+        repo.append_audit(&AuditEntry {
+            ts: 4,
+            actor: None,
+            action: "system.cleanup".into(),
+            detail: "d".into(),
+        })
+        .unwrap();
+
+        // Only alice's entries, newest first.
+        let alice = repo
+            .list_audit_by_actors(&["alice".to_string()], 50, 0)
+            .unwrap();
+        assert_eq!(alice.len(), 2);
+        assert_eq!(alice[0].action, "identity.link"); // ts=3, newest
+        assert_eq!(alice[1].action, "identity.provision"); // ts=1
+
+        // Multiple actors + pagination.
+        let both = repo
+            .list_audit_by_actors(&["alice".into(), "bob".into()], 2, 0)
+            .unwrap();
+        assert_eq!(both.len(), 2); // capped by limit
+        let page2 = repo
+            .list_audit_by_actors(&["alice".into(), "bob".into()], 2, 2)
+            .unwrap();
+        assert_eq!(page2.len(), 1); // 3 actor-entries total → one left
+
+        // Empty actor set → empty (no tenant members → nothing to show).
+        assert!(repo.list_audit_by_actors(&[], 50, 0).unwrap().is_empty());
     }
 }

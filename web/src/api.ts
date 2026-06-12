@@ -16,6 +16,7 @@ import type {
   ConnectionStatus,
   SourceSync,
   Spend,
+  AuditEntry,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -282,6 +283,11 @@ export class Client {
   /** Summarization cost analytics over the last `days` (ADR-125). */
   spend(days = 30): Promise<Spend> {
     return this.json<Spend>(`/workspaces/${this.ws()}/spend?days=${days}`)
+  }
+
+  /** Security/admin audit events for this workspace's tenant (WSP-014). */
+  listAudit(limit = 100): Promise<AuditEntry[]> {
+    return this.json<AuditEntry[]>(`/workspaces/${this.ws()}/audit?limit=${limit}`)
   }
 
   // --- live source ingestion: Discord / Slack (ADR-128) ---
