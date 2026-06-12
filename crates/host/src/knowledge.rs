@@ -8,7 +8,31 @@
 
 use domain::summarize::ExtractedSummary;
 use repository::{KnowledgeRepository, StoredKnowledgeUnit};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+
+/// Content-addressed knowledge-unit id (ADR-129 Layer 1): `ku_<sha256(workspace
+/// : kind : normalized_text)>`. Independent of which summary/run produced the
+/// fact, so the same fact re-extracted by rolling re-summarization or a re-run
+/// maps to the **same id** and collapses on upsert instead of duplicating in the
+/// vector store. The hash key format is load-bearing — changing it invalidates
+/// existing ids. (Per-source scoping is a documented refinement; v1 dedups within
+/// the workspace.)
+pub fn knowledge_unit_id(workspace: &str, kind: &str, text: &str) -> String {
+    // Stable normalization: lowercase, whitespace-collapsed, trimmed.
+    let normalized = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let mut hasher = Sha256::new();
+    hasher.update(workspace.as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(kind.as_bytes());
+    hasher.update([0x1f]);
+    hasher.update(normalized.as_bytes());
+    format!("ku_{:x}", hasher.finalize())
+}
 
 /// Produces embedding vectors for texts. Batched; the model id is pinned with
 /// each stored vector (Q#8). `Send + Sync` so it can live in shared app state.
@@ -106,11 +130,14 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
         let texts: Vec<String> = units.iter().map(|u| u.text.clone()).collect();
         let embeddings = self.embedder.embed(&texts).ok();
         let model = self.embedder.model();
+        // Content-addressed ids (ADR-129): dedup exact repeats within this batch
+        // and across summaries/runs (the repo upserts on id).
+        let mut seen = std::collections::HashSet::new();
         let stored: Vec<StoredKnowledgeUnit> = units
             .iter()
             .enumerate()
             .map(|(i, u)| StoredKnowledgeUnit {
-                id: format!("ku_{summary_id}_{i}"),
+                id: knowledge_unit_id(workspace.as_str(), u.kind.as_str(), &u.text),
                 summary_id: u.summary_id.clone(),
                 kind: u.kind.as_str().to_string(),
                 text: u.text.clone(),
@@ -123,6 +150,7 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
                 model: embeddings.as_ref().map(|_| model.to_string()),
                 created_at: now,
             })
+            .filter(|u| seen.insert(u.id.clone()))
             .collect();
         self.repo.save_units(workspace, &stored)?;
         Ok(stored.len())
@@ -297,6 +325,34 @@ mod tests {
         assert!(!hits.is_empty());
         assert!(hits[0].text.to_lowercase().contains("migration"));
         assert!(hits[0].score > 0.0);
+    }
+
+    #[test]
+    fn content_hash_ids_dedup_repeats_and_shared_facts() {
+        use repository::KnowledgeRepository;
+        let repo = SqliteRepository::in_memory().unwrap();
+        let embedder = DemoEmbedder::default();
+        let svc = KnowledgeService::new(&repo, &embedder);
+
+        let s = summary(
+            "Launch plan",
+            &["Ship the pricing page Friday", "Run the migration first"],
+        );
+        assert_eq!(svc.ingest(&ws(), &s, "sum_1", 100).unwrap(), 3); // headline + 2
+
+        // Re-ingesting the SAME content under a different summary id stores nothing
+        // new — content-addressed ids collapse the repeats (ADR-129 Layer 1).
+        svc.ingest(&ws(), &s, "sum_2", 200).unwrap();
+        assert_eq!(repo.count_units(&ws()).unwrap(), 3);
+
+        // A new summary sharing one key point adds only the genuinely-new units:
+        // its headline + the one new key point (the shared one collapses).
+        let s2 = summary(
+            "Different topic",
+            &["Run the migration first", "Brand new decision was made"],
+        );
+        svc.ingest(&ws(), &s2, "sum_3", 300).unwrap();
+        assert_eq!(repo.count_units(&ws()).unwrap(), 5);
     }
 
     #[test]
