@@ -21,6 +21,7 @@ pub mod secretbox;
 pub mod summarize;
 pub mod tenant_routing;
 pub mod whatsapp;
+pub mod wiki;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use delivery::{
     build_deliverers, load_workspace_delivery, sink_descriptors, ConfiguredDestination, Deliverer,
@@ -43,6 +44,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 pub use whatsapp::{
     extract_whatsapp_text, ingest_whatsapp_zip, IngestContext, IngestSummary, WhatsAppIngestor,
 };
+pub use wiki::{build_synthesis_prompt, WikiError, WikiOutcome, WikiService, KNOWLEDGE_BASE_SLUG};
 
 // Host-side bindings generated from the same WIT contract the guest exports.
 mod bindings {

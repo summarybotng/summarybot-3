@@ -63,6 +63,101 @@ pub async fn search(
     ))
 }
 
+/// JSON shape of a synthesized wiki page (WIK-001..003).
+#[derive(Serialize)]
+pub struct WikiPageDto {
+    pub slug: String,
+    pub title: String,
+    pub content_md: String,
+    /// How many knowledge units fed the most recent synthesis.
+    pub unit_count: i64,
+    pub updated_at: i64,
+}
+
+impl From<repository::WikiPage> for WikiPageDto {
+    fn from(p: repository::WikiPage) -> Self {
+        WikiPageDto {
+            slug: p.slug,
+            title: p.title,
+            content_md: p.content_md,
+            unit_count: p.unit_count,
+            updated_at: p.updated_at,
+        }
+    }
+}
+
+/// `GET /workspaces/:ws/wiki/pages` — list the workspace's synthesized pages
+/// (WIK-003). v1 maintains a single `knowledge-base` page; the list is empty
+/// until the first synthesis.
+pub async fn list_pages(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+) -> Result<Json<Vec<WikiPageDto>>, ApiError> {
+    use repository::WikiRepository;
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let repo = state.repo.lock().expect("repo mutex");
+    let pages = repo
+        .list_pages(&workspace)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    Ok(Json(pages.into_iter().map(WikiPageDto::from).collect()))
+}
+
+/// `POST /workspaces/:ws/wiki/synthesize` — (re)generate the `knowledge-base`
+/// page from the workspace's knowledge units (WIK-001), over the per-tenant LLM
+/// (ADR-125) and gated/charged against the tenant budget like an on-demand
+/// summary. Returns the synthesized page.
+pub async fn synthesize(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+) -> Result<Json<WikiPageDto>, ApiError> {
+    use host::llm::{LlmProvider, RequestPriority, ResilientLlm};
+    use host::{WikiError, WikiService};
+
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+
+    // Resolve per-tenant LLM + gate on budget under one guard (as create_summary).
+    let (resolution, charge) = {
+        let repo = state.repo.lock().expect("repo mutex");
+        let r = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
+        let charge = crate::budget_gate(&repo, &r, now)?;
+        (r, charge)
+    };
+    let ladder = state.ladder_for(&resolution.model);
+    let engine = ResilientLlm::new(
+        state.client_for_base(resolution.base_url, resolution.api_key),
+        state.limiter.clone(),
+    );
+
+    let page = {
+        let repo = state.repo.lock().expect("repo mutex");
+        let outcome = WikiService::new(&*repo, &engine, &ladder)
+            .synthesize(
+                &workspace,
+                LlmProvider::OpenRouter,
+                RequestPriority::Manual,
+                i64::MAX,
+                now,
+            )
+            .map_err(|e| match e {
+                WikiError::NoUnits => ApiError::bad_request(e.to_string()),
+                _ => ApiError::Internal(e.to_string()),
+            })?;
+        // Draw down the tenant's budget by what synthesis cost (ADR-125).
+        if let Some((tenant, window)) = &charge {
+            crate::budget_charge(&repo, tenant, *window, outcome.cost_micros)?;
+        }
+        outcome.page
+    };
+    Ok(Json(WikiPageDto::from(page)))
+}
+
 /// Ingest a produced summary's knowledge units (KNO-001..003). Best-effort: a
 /// failure (e.g. the embedder is down) is logged, never propagated — knowledge
 /// ingestion must not fail the summary that was already stored/delivered.

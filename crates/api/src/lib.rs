@@ -372,6 +372,11 @@ pub fn build_router(state: AppState) -> Router {
             get(settings::get_settings).put(settings::set_settings),
         )
         .route("/workspaces/:ws/wiki/search", get(knowledge::search))
+        .route("/workspaces/:ws/wiki/pages", get(knowledge::list_pages))
+        .route(
+            "/workspaces/:ws/wiki/synthesize",
+            post(knowledge::synthesize),
+        )
         .route(
             "/workspaces/:ws/destinations/plugins",
             get(destinations::list_plugins),
@@ -520,6 +525,9 @@ async fn openapi() -> Json<serde_json::Value> {
                 "get": { "summary": "Summary detail" },
                 "delete": { "summary": "Delete one summary (DSH-013)" }
             },
+            "/workspaces/{ws}/wiki/search": { "get": { "summary": "Semantic search over knowledge units — ?q,k (KNO-005, ADR-127)" } },
+            "/workspaces/{ws}/wiki/pages": { "get": { "summary": "List synthesized wiki pages (WIK-003)" } },
+            "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
             "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },

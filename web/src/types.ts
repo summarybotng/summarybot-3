@@ -125,6 +125,14 @@ export interface KnowledgeHit {
   score: number
 }
 
+export interface WikiPage {
+  slug: string
+  title: string
+  content_md: string
+  unit_count: number
+  updated_at: number
+}
+
 export interface PluginField {
   name: string
   label: string

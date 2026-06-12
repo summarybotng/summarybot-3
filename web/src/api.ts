@@ -12,6 +12,7 @@ import type {
   Tenant,
   TokenResponse,
   WhatsappImport,
+  WikiPage,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -258,6 +259,18 @@ export class Client {
   searchKnowledge(q: string, k = 10): Promise<KnowledgeHit[]> {
     const p = new URLSearchParams({ q, k: String(k) })
     return this.json<KnowledgeHit[]>(`/workspaces/${this.ws()}/wiki/search?${p}`)
+  }
+
+  // --- wiki synthesis (WIK-001..003) ---
+
+  /** List synthesized wiki pages (v1: a single "knowledge-base" page). */
+  listWikiPages(): Promise<WikiPage[]> {
+    return this.json<WikiPage[]>(`/workspaces/${this.ws()}/wiki/pages`)
+  }
+
+  /** (Re)generate the knowledge-base page from this workspace's units. */
+  synthesizeWiki(): Promise<WikiPage> {
+    return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
   }
 
   // --- per-workspace summarization settings (SUM-007) ---

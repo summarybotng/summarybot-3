@@ -19,6 +19,7 @@ mod schedule_run;
 mod session;
 mod summary_store;
 mod whatsapp;
+mod wiki;
 mod workspace;
 mod workspace_settings;
 pub use budget::{BudgetRepository, BudgetRow};
@@ -33,6 +34,7 @@ pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use session::SessionRepository;
 pub use summary_store::{StructuredSummaryRepository, SummaryQuery, SummaryRecord};
 pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
+pub use wiki::{WikiPage, WikiRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
 pub use workspace_settings::{WorkspaceSettings, WorkspaceSettingsRepository};
 
@@ -353,7 +355,18 @@ impl SqliteRepository {
                 created_at   INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_knowledge_workspace
-                ON knowledge_units(workspace_id);",
+                ON knowledge_units(workspace_id);
+            -- Synthesized wiki pages (WIK-001..003; ADR-127): emergent topic
+            -- pages built from a workspace's knowledge units. Keyed by slug.
+            CREATE TABLE IF NOT EXISTS wiki_pages (
+                workspace_id TEXT    NOT NULL,
+                slug         TEXT    NOT NULL,
+                title        TEXT    NOT NULL,
+                content_md   TEXT    NOT NULL,
+                unit_count   INTEGER NOT NULL DEFAULT 0,
+                updated_at   INTEGER NOT NULL,
+                PRIMARY KEY (workspace_id, slug)
+            );",
         )?;
         run_migrations(&conn)?;
         Ok(Self { conn })
