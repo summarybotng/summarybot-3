@@ -32,6 +32,49 @@ pub enum AccumulationStrategy {
     Hybrid,
 }
 
+impl AccumulationStrategy {
+    /// Stable lowercase tag for storage/API.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AccumulationStrategy::Append => "append",
+            AccumulationStrategy::Resummarize => "resummarize",
+            AccumulationStrategy::Hybrid => "hybrid",
+        }
+    }
+
+    /// Parse a stored/API tag (defaults handled by the caller).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "append" => Some(AccumulationStrategy::Append),
+            "resummarize" => Some(AccumulationStrategy::Resummarize),
+            "hybrid" => Some(AccumulationStrategy::Hybrid),
+            _ => None,
+        }
+    }
+}
+
+/// Map Mon=0..Sun=6 to a `Weekday` (the API/storage representation of `end_day`).
+pub fn weekday_from_num(n: u32) -> Option<Weekday> {
+    crate::schedule::weekday_from_num(n)
+}
+
+/// The weekly `end_day` weekday for a stored `n` (Mon=0..Sun=6), defaulting to
+/// Sunday for an out-of-range value. Returns the `Weekday` so non-`chrono`
+/// callers (the host) can pass it to [`RollingPeriod::window`] without naming the
+/// type.
+pub fn end_weekday(n: u32) -> Weekday {
+    weekday_from_num(n).unwrap_or(Weekday::Sun)
+}
+
+/// Format `ts` (unix seconds) as a `YYYY-MM-DD` day label in `tz` — for section
+/// headings in the accumulated rolling document. Empty string if out of range.
+pub fn format_day(ts: i64, tz: Tz) -> String {
+    tz.timestamp_opt(ts, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
 /// A half-open period window `[start, end)` in UTC seconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeriodWindow {
@@ -64,6 +107,25 @@ pub enum RollingAction {
 }
 
 impl RollingPeriod {
+    /// Stable lowercase tag for storage/API.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RollingPeriod::Weekly => "weekly",
+            RollingPeriod::Biweekly => "biweekly",
+            RollingPeriod::Monthly => "monthly",
+        }
+    }
+
+    /// Parse a stored/API tag.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "weekly" => Some(RollingPeriod::Weekly),
+            "biweekly" => Some(RollingPeriod::Biweekly),
+            "monthly" => Some(RollingPeriod::Monthly),
+            _ => None,
+        }
+    }
+
     /// The period window containing `instant`, resolved in `tz`. `end_day` is the
     /// weekday a weekly period ends on (ignored for biweekly/monthly).
     pub fn window(self, instant: i64, tz: Tz, end_day: Weekday) -> Option<PeriodWindow> {

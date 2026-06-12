@@ -58,6 +58,9 @@ export interface Schedule {
   lookback_secs: number
   platform: string | null
   source_id: string | null
+  rolling_period: string | null
+  rolling_strategy: string | null
+  rolling_end_day: number | null
   next_run: number
   consecutive_failures: number
 }

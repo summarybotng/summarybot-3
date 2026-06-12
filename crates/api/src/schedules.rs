@@ -50,6 +50,16 @@ pub struct CreateScheduleRequest {
     /// Source scope id for the live fetch (Discord guild id; Slack ignores it).
     #[serde(default)]
     pub source_id: Option<String>,
+    /// Make this a rolling-period digest (ADR-101): `weekly` | `biweekly` |
+    /// `monthly`. Omit for an independent summary each run.
+    #[serde(default)]
+    pub rolling_period: Option<String>,
+    /// Accumulation strategy: `append` (default) | `resummarize` | `hybrid`.
+    #[serde(default)]
+    pub rolling_strategy: Option<String>,
+    /// Weekday a weekly period ends on (Mon=0..Sun=6); defaults to Sunday.
+    #[serde(default)]
+    pub rolling_end_day: Option<u32>,
 }
 
 fn default_dom() -> u32 {
@@ -77,6 +87,10 @@ pub struct ScheduleDto {
     /// Live source bound to this schedule (ADR-128), if any.
     pub platform: Option<String>,
     pub source_id: Option<String>,
+    /// Rolling-period config (ADR-101), if this is a rolling digest.
+    pub rolling_period: Option<String>,
+    pub rolling_strategy: Option<String>,
+    pub rolling_end_day: Option<u32>,
     pub next_run: i64,
     pub consecutive_failures: u32,
 }
@@ -96,22 +110,74 @@ impl From<StoredSchedule> for ScheduleDto {
             lookback_secs: s.schedule.lookback_secs,
             platform: None,
             source_id: None,
+            rolling_period: None,
+            rolling_strategy: None,
+            rolling_end_day: None,
             next_run: s.next_run,
             consecutive_failures: s.consecutive_failures,
         }
     }
 }
 
-/// Build a DTO and fill in the schedule's live source (ADR-128) from storage.
+/// Build a DTO and fill in the schedule's live source (ADR-128) + rolling config
+/// (ADR-101) from storage.
 fn dto_with_source(repo: &repository::SqliteRepository, s: StoredSchedule) -> ScheduleDto {
-    use repository::ScheduleSourceRepository;
+    use repository::{RollingRepository, ScheduleSourceRepository};
     let id = s.id.clone();
     let mut dto = ScheduleDto::from(s);
     if let Ok(Some(src)) = repo.get_schedule_source(&id) {
         dto.platform = Some(src.platform);
         dto.source_id = src.source_id;
     }
+    if let Ok(Some(cfg)) = repo.get_rolling_config(&id) {
+        dto.rolling_period = Some(cfg.period);
+        dto.rolling_strategy = Some(cfg.strategy);
+        dto.rolling_end_day = Some(cfg.end_day);
+    }
     dto
+}
+
+/// Validate + persist (or clear) a schedule's optional rolling-period config.
+fn apply_rolling(
+    repo: &repository::SqliteRepository,
+    schedule_id: &str,
+    period: Option<&str>,
+    strategy: Option<&str>,
+    end_day: Option<u32>,
+) -> Result<(), ApiError> {
+    use repository::{RollingConfig, RollingRepository};
+    match period.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            if domain::RollingPeriod::parse(p).is_none() {
+                return Err(ApiError::bad_request(
+                    "rolling_period must be weekly, biweekly, or monthly",
+                ));
+            }
+            let strategy = strategy
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("append");
+            if domain::AccumulationStrategy::parse(strategy).is_none() {
+                return Err(ApiError::bad_request(
+                    "rolling_strategy must be append, resummarize, or hybrid",
+                ));
+            }
+            repo.set_rolling_config(
+                schedule_id,
+                &RollingConfig {
+                    period: p.to_string(),
+                    strategy: strategy.to_string(),
+                    end_day: end_day.unwrap_or(6).min(6),
+                },
+            )
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+        None => {
+            repo.delete_rolling_config(schedule_id)
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Validate + persist (or clear) a schedule's optional live source from a request.
@@ -193,6 +259,13 @@ pub async fn create_schedule(
             body.platform.as_deref(),
             body.source_id.clone(),
         )?;
+        apply_rolling(
+            &repo,
+            &stored.id,
+            body.rolling_period.as_deref(),
+            body.rolling_strategy.as_deref(),
+            body.rolling_end_day,
+        )?;
         dto_with_source(&repo, stored)
     };
     Ok(Json(dto))
@@ -236,6 +309,13 @@ pub async fn update_schedule(
         return Err(ApiError::NotFound);
     }
     apply_source(&repo, &id, body.platform.as_deref(), body.source_id.clone())?;
+    apply_rolling(
+        &repo,
+        &id,
+        body.rolling_period.as_deref(),
+        body.rolling_strategy.as_deref(),
+        body.rolling_end_day,
+    )?;
     Ok(Json(dto_with_source(
         &repo,
         StoredSchedule {
@@ -458,8 +538,10 @@ pub async fn delete_schedule(
     let workspace = workspace(ws)?;
     let repo = state.repo.lock().expect("repo mutex");
     if repo.delete_schedule(&workspace, &id)? {
-        use repository::ScheduleSourceRepository;
+        use repository::{RollingRepository, ScheduleSourceRepository};
         let _ = repo.delete_schedule_source(&id); // best-effort orphan cleanup
+        let _ = repo.delete_rolling_config(&id);
+        let _ = repo.delete_active_rolling(&id);
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)

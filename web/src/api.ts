@@ -83,6 +83,10 @@ export interface CreateScheduleBody {
   /** Optional live source to fetch before each run (ADR-128): discord | slack. */
   platform?: string | null
   source_id?: string | null
+  /** Optional rolling-period digest (ADR-101): weekly | biweekly | monthly. */
+  rolling_period?: string | null
+  rolling_strategy?: string | null
+  rolling_end_day?: number | null
 }
 
 /** An authenticated API client bound to a session, with refresh-on-401. */

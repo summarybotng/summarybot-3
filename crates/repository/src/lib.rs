@@ -15,6 +15,7 @@ mod knowledge;
 mod llm_config;
 mod membership;
 mod platform_credential;
+mod rolling_store;
 mod schedule;
 mod schedule_run;
 mod schedule_source;
@@ -32,6 +33,7 @@ pub use knowledge::{KnowledgeRepository, StoredKnowledgeUnit};
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
 pub use platform_credential::PlatformCredentialRepository;
+pub use rolling_store::{RollingConfig, RollingRepository, RollingSummaryRow};
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use schedule_source::{ScheduleSource, ScheduleSourceRepository};
@@ -418,6 +420,28 @@ impl SqliteRepository {
                 schedule_id TEXT NOT NULL PRIMARY KEY,
                 platform    TEXT NOT NULL,
                 source_id   TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS rolling_schedules (
+                schedule_id TEXT NOT NULL PRIMARY KEY,
+                period      TEXT NOT NULL,
+                strategy    TEXT NOT NULL,
+                end_day     INTEGER NOT NULL DEFAULT 6
+            );
+
+            CREATE TABLE IF NOT EXISTS rolling_summaries (
+                schedule_id         TEXT    NOT NULL PRIMARY KEY,
+                workspace_id        TEXT    NOT NULL,
+                channel             TEXT    NOT NULL,
+                period_start        INTEGER NOT NULL,
+                period_end          INTEGER NOT NULL,
+                accumulated_through INTEGER NOT NULL,
+                accumulation_count  INTEGER NOT NULL DEFAULT 0,
+                content_md          TEXT    NOT NULL,
+                cost_micros         INTEGER NOT NULL DEFAULT 0,
+                model               TEXT    NOT NULL DEFAULT '',
+                created_at          INTEGER NOT NULL,
+                updated_at          INTEGER NOT NULL
             );",
         )?;
         run_migrations(&conn)?;

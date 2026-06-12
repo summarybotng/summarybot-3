@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-12 — audit-log surfacing (WSP-014); corrected rolling-period status to 🔩 pure-policy-only (ADR-101 not wired)
+- **As of:** 2026-06-12 — rolling-period summaries wired end-to-end (ADR-101): storage + runner accumulate/finalize + schedule config; weekly/biweekly/monthly digests
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -14,7 +14,7 @@ rewrite covers, and what's left. **Keep this current** — see
 |---|---|---|
 | Core summarization | ✅ **at/above parity** | map-reduce, citations, cost cap, budgets — done |
 | WhatsApp ingestion | ✅ **at parity** | full pipeline, anonymized, deduped |
-| Scheduling & rolling digests | 🟡 **scheduling at parity** | recurrence + per-tenant LLM/budget + live-source fetch done; **rolling-period accumulation (ADR-101) is pure-policy-only, not wired** |
+| Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101); Hybrid merge + rolling dedup are refinements |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
 | Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
@@ -28,9 +28,10 @@ rewrite covers, and what's left. **Keep this current** — see
 done and multi-tenant, and the knowledge subsystem (units + semantic search +
 coherence + wiki, ADR-127) now ships. The remaining work clusters in three
 buckets: (1) **live platform I/O** (Discord/Slack **send**, email/Confluence
-delivery, real OAuth — fetch is done), (2) **rolling-period summaries** (ADR-101
-pure policy exists, end-to-end accumulation/finalization not wired), and (3)
-**production hardening** (Docker/deploy; migrations + basic metrics + audit done).
+delivery, real OAuth — fetch is done), (2) **production hardening** (Docker/deploy;
+migrations + basic metrics + audit done), and (3) **refinements** (rolling now
+wired end-to-end — remaining: Hybrid merge, rolling-ingest dedup ADR-129,
+per-destination rolling delivery).
 
 ---
 
@@ -80,7 +81,7 @@ pure policy exists, end-to-end accumulation/finalization not wired), and (3)
 | Persistent background scheduler | ✅ (APScheduler) | ✅ | `api/scheduler_driver.rs`; grace + auto-disable |
 | Per-tenant LLM + budget on scheduled runs | ✅ | ✅ | `TenantAwareRunner` (cfc9fd9) |
 | Live source fetch on scheduled runs | ✅ | ✅ | a schedule can bind a Discord/Slack source and fetch fresh messages before summarizing (`schedule_sources`, best-effort; ADR-128) |
-| Rolling-period summaries | ✅ | 🔩 | **pure policy only** (`domain/rolling.rs`, ADR-101): `RollingPeriod` window + `decide_rolling` state machine (StartNew/Accumulate/Finalize) + strategies, unit-tested. **Not wired**: no rolling-summary storage / one-active-per-schedule invariant, the runner doesn't accumulate or finalize, no merge execution, no UI. See ROL-001..006 in remaining work |
+| Rolling-period summaries | ✅ | ✅ | **wired end-to-end** (ADR-101): `decide_rolling` policy + `rolling_schedules`/`rolling_summaries` storage (one-active-per-schedule via PK) + runner accumulate/finalize (folds the tail, publishes one digest, clears the accumulator) + schedule API/web config. Append merge implemented; `resummarize`/`hybrid` accepted but alias Append for now; rolling-ingest dedup is ADR-129 |
 | Lookback windows | ✅ | ✅ | per-schedule `lookback_secs` |
 | Manage via API (create/list/pause/trigger/history) | ✅ | ✅ | `api/schedules.rs` |
 | Manage via Discord `/schedule` commands | ✅ | ⛔ | no in-chat command surface |
@@ -160,7 +161,7 @@ pure policy exists, end-to-end accumulation/finalization not wired), and (3)
 1. **Live platform I/O** — Discord + Slack fetch are live, and a schedule can fetch fresh messages before each run (ADR-128). Remaining: channel/DM **send** (deliverer side) and a background poller that syncs on its own cadence (independent of summary schedules).
 2. **Delivery completion** — email (SMTP) deliverer; Confluence publishing; output formats beyond markdown.
 3. **Real OAuth** — replace the dev login seam with Discord/Google/Slack redirect flows.
-4. **Rolling-period summaries (ADR-101)** — wire the pure `decide_rolling` policy end-to-end: rolling-summary storage + the one-active-per-schedule invariant, runner accumulate/finalize, the Hybrid merge, rolling dedup (ADR-118), per-destination delivery (ADR-108), and the period/strategy UI. The state machine is done; storage + orchestration + UI are not.
+4. **Rolling-period summaries (ADR-101)** — ✅ wired end-to-end (storage, runner accumulate/finalize, API/web config, Append merge). Remaining refinements: the **Hybrid** merge (currently aliases Append), rolling-ingest dedup (ADR-129), and per-destination rolling delivery control (ADR-108).
 5. **Production hardening** — Docker/deploy configs (migration runner ✅, basic `/metrics` ✅, audit-log surfacing ✅).
 6. **Knowledge subsystem (Phase 7)** — ✅ done: units + semantic search + coherence gate + wiki synthesis (ADR-127); AI curator + rolling-ingest dedup (below) deferred.
 7. **Nice-to-haves** — per-perspective & custom prompts, push templates, summary caching, extra dashboard pages, Google Drive, voice transcription.

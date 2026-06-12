@@ -51,7 +51,8 @@ pub use message::{
 };
 pub use oauth::{percent_encode, OAuthProvider};
 pub use rolling::{
-    decide_rolling, AccumulationStrategy, PeriodWindow, RollingAction, RollingPeriod, RollingState,
+    decide_rolling, end_weekday, format_day, weekday_from_num, AccumulationStrategy, PeriodWindow,
+    RollingAction, RollingPeriod, RollingState,
 };
 pub use routing::{normalize_subdomain, route_host, HostRoute};
 pub use schedule::{evaluate_tick, Schedule, ScheduleError, ScheduleType, TickAction, TimeOfDay};

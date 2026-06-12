@@ -17,6 +17,7 @@ export function Schedules() {
   const [channel, setChannel] = useState('')
   const [platform, setPlatform] = useState('')
   const [sourceId, setSourceId] = useState('')
+  const [rollingPeriod, setRollingPeriod] = useState('')
   const [note, setNote] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -39,6 +40,7 @@ export function Schedules() {
       channel: channel.trim() || null,
       platform: platform || null,
       source_id: sourceId.trim() || null,
+      rolling_period: rollingPeriod || null,
     })
     setChannel('')
     setSourceId('')
@@ -133,6 +135,25 @@ export function Schedules() {
         <p className="mt-1 text-xs text-slate-400">
           A live source fetches new messages before each run (needs a bot token on the source's tab).
         </p>
+        {/* Optional rolling-period digest: accumulate runs into one final (ADR-101). */}
+        <div className="mt-2 flex items-center gap-2">
+          <select
+            value={rollingPeriod}
+            onChange={(e) => setRollingPeriod(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
+            title="Accumulate each run into a single rolling digest, finalized at period end"
+          >
+            <option value="">one summary per run</option>
+            <option value="weekly">rolling: weekly digest</option>
+            <option value="biweekly">rolling: biweekly digest</option>
+            <option value="monthly">rolling: monthly digest</option>
+          </select>
+          <span className="text-xs text-slate-400">
+            {rollingPeriod
+              ? 'runs accumulate; the digest publishes when the period ends'
+              : ''}
+          </span>
+        </div>
       </form>
 
       {note && (
@@ -155,6 +176,7 @@ export function Schedules() {
                     {s.enabled ? 'enabled' : 'paused'} · next {when(s.next_run)}
                     {s.channel ? ` · #${s.channel}` : ' · (unscoped)'}
                     {s.platform && ` · ↻ ${s.platform}`}
+                    {s.rolling_period && ` · 📅 rolling ${s.rolling_period}`}
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap justify-end gap-1">
