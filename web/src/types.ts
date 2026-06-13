@@ -192,6 +192,31 @@ export interface WikiPage {
   updated_at: number
 }
 
+/** A near-identical group from the AI wiki curator (CUR-*). */
+export interface DuplicateCluster {
+  canonical_id: string
+  kind: string
+  text: string
+  duplicate_ids: string[]
+}
+
+/** A knowledge unit flagged old enough to review. */
+export interface StaleUnit {
+  id: string
+  kind: string
+  text: string
+  age_secs: number
+}
+
+/** The AI wiki curator's advisory health report. */
+export interface CurationReport {
+  total_units: number
+  embedded_units: number
+  redundant_count: number
+  duplicate_clusters: DuplicateCluster[]
+  stale: StaleUnit[]
+}
+
 export interface ConnectionStatus {
   token_set: boolean
   supported: boolean

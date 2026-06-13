@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-13 — two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants (token filtered to entitlement); Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019: timeline + classified gaps, contributor tracking, persisted auto-fulfilled scoped import invitations); Tenants/Members admin tab (RBAC); rolling-ingest dedup Layers 1–3; rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-13 — HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -20,9 +20,9 @@ rewrite covers, and what's left. **Keep this current** — see
 | Delivery | ✅ **~95%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; Discord/Slack channel **send** ✅; DM send + per-destination templates remain |
 | Discord / Slack ingestion | ✅ **both live + scheduled** | Discord + Slack REST fetch → message store (generic `connections/:platform` API); a schedule can fetch fresh messages before each run (ADR-128). Channel **send-back** now shipped (Delivery sinks); DM send + an independent background poller remain |
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants now membership-derived (token filtered to entitlement) ✅ |
-| Knowledge (wiki / vector search) | ✅ **v1 done** | semantic search + coherence gate + wiki synthesis live (ADR-127); AI curator deferred |
+| Knowledge (wiki / vector search) | ✅ **v1 done** | semantic search + coherence gate + wiki synthesis live (ADR-127); rolling-ingest dedup all 4 layers; AI curator (advisory report) shipped |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
-| Ops (Docker, migrations, metrics) | 🟡 **deployable** | container + compose + Fly config ✅; migration ledger ✅; `/metrics` gauges ✅; request-rate counters + structured logs remain |
+| Ops (Docker, migrations, metrics) | ✅ **deployable** | container + compose + Fly config ✅; migration ledger ✅; `/metrics` DB gauges + HTTP request counters ✅; structured JSON access logs ✅ |
 
 **Rough read:** the *summarize → schedule → deliver-to-dashboard/webhook* spine is
 done and multi-tenant, and the knowledge subsystem (units + semantic search +
@@ -146,7 +146,7 @@ per-destination rolling delivery; rolling-ingest dedup ADR-129 fully shipped).
 | Embeddings from a local model (KNO-007) | ✅ | ✅ | OpenAI-compatible `/v1/embeddings`; demo embedder offline; model pinned per unit |
 | Coherence / hallucination gate (COH-001) | ✅ | ✅ | lexical grounding check; grounded score persisted + shown on summaries (LLM-judge is a stronger follow-up) |
 | Wiki synthesis (pages, regenerate) (WIK-001/002/003) | ✅ (extensive) | ✅ | LLM organizes a workspace's units into one topic-grouped `knowledge-base` page; regenerable on demand; per-tenant LLM + budget (ADR-125); verified live + browser-checked. Multi-page emergent structure is a refinement |
-| AI wiki curator (CUR-*) | ✅ | ⛔ | deferred (ADR-127) |
+| AI wiki curator (CUR-*) | ✅ | 🟡 | **advisory health report shipped**: `host::CuratorService` flags duplicate clusters (cosine ≥ 0.95 over stored embeddings, oldest = canonical) + stale units; `POST /workspaces/:ws/wiki/curate`, Curator panel in `Knowledge.tsx`. Read-only (reversible by construction) + audit-logged. Auto-apply (merge/prune with undo) + LLM topic re-org are the remaining refinement |
 | Rolling-ingest dedup (SUM-010) | ✅ | ✅ | **All 4 layers shipped (ADR-129)**: content-addressed unit ids (exact repeats collapse on upsert), a **semantic near-dup gate** (cosine ≥ threshold, default 0.93), **delta-only ingest** (the rolling runner feeds each period's delta into the knowledge base as it accumulates), and **provenance-merge (Layer 4)** — a re-stated/paraphrased fact merges its source message ids into the matched existing unit (strengthening grounding, COH-005) instead of being dropped. All unit-tested |
 
 ## Storage / ops

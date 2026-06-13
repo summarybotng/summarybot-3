@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { Markdown } from '../components/Markdown'
-import type { KnowledgeHit, WikiPage } from '../types'
+import type { CurationReport, KnowledgeHit, WikiPage } from '../types'
 
 // Knowledge subsystem (ADR-127). Two parts: a synthesized **Knowledge Base**
 // page (WIK-001..003 — the workspace's units organized by topic, regenerable on
@@ -15,6 +15,8 @@ export function Knowledge() {
   const [page, setPage] = useState<WikiPage | null>(null)
   const [synthBusy, setSynthBusy] = useState(false)
   const [synthError, setSynthError] = useState<string | null>(null)
+  const [report, setReport] = useState<CurationReport | null>(null)
+  const [curateBusy, setCurateBusy] = useState(false)
 
   useEffect(() => {
     if (!client) return
@@ -47,6 +49,18 @@ export function Knowledge() {
       setSynthError(err instanceof Error ? err.message : 'Synthesis failed')
     } finally {
       setSynthBusy(false)
+    }
+  }
+
+  async function curate() {
+    if (!client) return
+    setCurateBusy(true)
+    try {
+      setReport(await client.curateWiki())
+    } catch {
+      setReport(null)
+    } finally {
+      setCurateBusy(false)
     }
   }
 
@@ -85,6 +99,53 @@ export function Knowledge() {
               No knowledge base yet — summarize some conversations, then generate.
             </p>
           )
+        )}
+      </div>
+
+      {/* AI wiki curator (CUR-*) — advisory health report */}
+      <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-slate-800">Curator</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Review the knowledge base for near-duplicate facts and stale units. Advisory only —
+              nothing is changed.
+            </p>
+          </div>
+          <button
+            onClick={curate}
+            disabled={curateBusy}
+            className="shrink-0 rounded-lg border border-accent px-4 py-2 text-sm font-medium text-accent disabled:opacity-50"
+          >
+            {curateBusy ? 'Reviewing…' : 'Curate'}
+          </button>
+        </div>
+        {report && (
+          <div className="mt-4 border-t border-slate-100 pt-4 text-sm">
+            <p className="text-slate-600">
+              {report.total_units} unit(s) · <span className="font-medium">{report.redundant_count}</span>{' '}
+              redundant · <span className="font-medium">{report.stale.length}</span> stale
+            </p>
+            {report.duplicate_clusters.length > 0 && (
+              <div className="mt-3">
+                <p className="text-xs font-medium text-slate-600">Duplicate clusters</p>
+                <ul className="mt-1 space-y-1">
+                  {report.duplicate_clusters.map((c) => (
+                    <li key={c.canonical_id} className="rounded-lg bg-amber-50 p-2 text-xs text-slate-600">
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5">{c.kind}</span>{' '}
+                      <span className="text-slate-800">{c.text}</span>
+                      <span className="ml-1 text-amber-700">
+                        + {c.duplicate_ids.length} near-duplicate(s)
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {report.duplicate_clusters.length === 0 && report.stale.length === 0 && (
+              <p className="mt-2 text-emerald-700">No duplicates or stale units — the knowledge base is healthy.</p>
+            )}
+          </div>
         )}
       </div>
 

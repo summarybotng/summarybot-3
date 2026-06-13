@@ -18,6 +18,7 @@ import type {
   CoverageGap,
   ImportInvitation,
   WikiPage,
+  CurationReport,
   ConnectionStatus,
   SourceSync,
   Spend,
@@ -323,6 +324,14 @@ export class Client {
   /** (Re)generate the knowledge-base page from this workspace's units. */
   synthesizeWiki(): Promise<WikiPage> {
     return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
+  }
+
+  /** AI wiki curator: advisory health report — duplicate clusters + stale units. */
+  curateWiki(staleDays = 90): Promise<CurationReport> {
+    return this.json<CurationReport>(
+      `/workspaces/${this.ws()}/wiki/curate?stale_days=${staleDays}`,
+      this.body('POST', {}),
+    )
   }
 
   /** Summarization cost analytics over the last `days` (ADR-125). */

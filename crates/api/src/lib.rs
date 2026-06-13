@@ -386,6 +386,7 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/wiki/synthesize",
             post(knowledge::synthesize),
         )
+        .route("/workspaces/:ws/wiki/curate", post(knowledge::curate))
         .route(
             "/workspaces/:ws/connections/:platform",
             get(connections::status),
@@ -618,6 +619,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/wiki/search": { "get": { "summary": "Semantic search over knowledge units — ?q,k (KNO-005, ADR-127)" } },
             "/workspaces/{ws}/wiki/pages": { "get": { "summary": "List synthesized wiki pages (WIK-003)" } },
             "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
+            "/workspaces/{ws}/wiki/curate": { "post": { "summary": "AI wiki curator: advisory health report — duplicate clusters + stale units — ?stale_days (CUR-*)" } },
             "/workspaces/{ws}/connections/{platform}": { "get": { "summary": "Live source status — token_set + supported (discord|slack, ADR-128)" } },
             "/workspaces/{ws}/connections/{platform}/token": {
                 "put": { "summary": "Set/replace the platform bot token (encrypted at rest)" },
@@ -757,6 +759,51 @@ mod tests {
                 citations: vec![],
             },
         }
+    }
+
+    #[tokio::test]
+    async fn wiki_curate_reports_duplicate_clusters() {
+        use repository::{KnowledgeRepository, StoredKnowledgeUnit};
+        let (state, token) = seeded_state(); // token grants ws-1
+        {
+            let repo = state.repo.lock().unwrap();
+            let u = |id: &str, text: &str, emb: Vec<f32>, created: i64| StoredKnowledgeUnit {
+                id: id.into(),
+                summary_id: "s".into(),
+                kind: "key_point".into(),
+                text: text.into(),
+                source_ids: vec![],
+                embedding: Some(emb),
+                model: Some("fixed".into()),
+                created_at: created,
+            };
+            repo.save_units(
+                &domain::WorkspaceId::parse("ws-1").unwrap(),
+                &[
+                    u("a", "migration thursday", vec![0.0, 0.0, 1.0, 0.0], 100),
+                    u("b", "migration is thursday", vec![0.0, 0.0, 1.0, 0.0], 200),
+                    u("c", "ship friday", vec![0.0, 0.0, 0.0, 1.0], 300),
+                ],
+            )
+            .unwrap();
+        }
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/wiki/curate?stale_days=0")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["total_units"], 3);
+        assert_eq!(j["redundant_count"], 1);
+        assert_eq!(j["duplicate_clusters"].as_array().unwrap().len(), 1);
+        assert_eq!(j["duplicate_clusters"][0]["canonical_id"], "a");
+        // stale_days=0 → everything counts as stale.
+        assert_eq!(j["stale"].as_array().unwrap().len(), 3);
     }
 
     #[tokio::test]

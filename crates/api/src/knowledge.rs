@@ -158,6 +158,101 @@ pub async fn synthesize(
     Ok(Json(WikiPageDto::from(page)))
 }
 
+/// `?stale_days=N` — units older than this are flagged stale (default 90).
+#[derive(Deserialize)]
+pub struct CurateQuery {
+    pub stale_days: Option<i64>,
+}
+
+/// One near-identical group from the curator.
+#[derive(Serialize)]
+pub struct DuplicateClusterDto {
+    pub canonical_id: String,
+    pub kind: String,
+    pub text: String,
+    pub duplicate_ids: Vec<String>,
+}
+
+/// A unit flagged old enough to review.
+#[derive(Serialize)]
+pub struct StaleUnitDto {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub age_secs: i64,
+}
+
+/// The curator's read-only knowledge-base health report (CUR-*).
+#[derive(Serialize)]
+pub struct CurationReportDto {
+    pub total_units: usize,
+    pub embedded_units: usize,
+    pub redundant_count: usize,
+    pub duplicate_clusters: Vec<DuplicateClusterDto>,
+    pub stale: Vec<StaleUnitDto>,
+}
+
+/// `POST /workspaces/:ws/wiki/curate?stale_days=N` — the AI wiki curator's
+/// advisory health report: duplicate clusters + stale units (CUR-*, ADR-127).
+/// Read-only (never mutates), so it's inherently reversible; the run is
+/// audit-logged. No LLM call — deterministic over the stored embeddings.
+pub async fn curate(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Query(q): Query<CurateQuery>,
+) -> Result<Json<CurationReportDto>, ApiError> {
+    use host::CuratorService;
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+    let stale_after = q.stale_days.unwrap_or(90).max(0) * 86_400;
+
+    let repo = state.repo.lock().expect("repo mutex");
+    let report = CuratorService::new(&*repo)
+        .curate(&workspace, now, stale_after)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // Audit the curation run (best-effort) so review activity is traceable.
+    use repository::IdentityRepository;
+    let _ = repo.append_audit(&repository::AuditEntry {
+        ts: now,
+        actor: Some(user.0.sub.clone()),
+        action: "knowledge.curated".to_string(),
+        detail: format!(
+            "{} units, {} redundant, {} stale",
+            report.total_units,
+            report.redundant_count(),
+            report.stale.len()
+        ),
+    });
+    Ok(Json(CurationReportDto {
+        total_units: report.total_units,
+        embedded_units: report.embedded_units,
+        redundant_count: report.redundant_count(),
+        duplicate_clusters: report
+            .duplicate_clusters
+            .into_iter()
+            .map(|c| DuplicateClusterDto {
+                canonical_id: c.canonical_id,
+                kind: c.kind,
+                text: c.text,
+                duplicate_ids: c.duplicate_ids,
+            })
+            .collect(),
+        stale: report
+            .stale
+            .into_iter()
+            .map(|u| StaleUnitDto {
+                id: u.id,
+                kind: u.kind,
+                text: u.text,
+                age_secs: u.age_secs,
+            })
+            .collect(),
+    }))
+}
+
 /// Ingest a produced summary's knowledge units (KNO-001..003). Best-effort: a
 /// failure (e.g. the embedder is down) is logged, never propagated — knowledge
 /// ingestion must not fail the summary that was already stored/delivered.

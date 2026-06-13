@@ -9,6 +9,7 @@ use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
 pub mod coverage;
+pub mod curator;
 pub mod delivery;
 pub mod discord;
 pub mod ingest;
@@ -31,6 +32,7 @@ pub use coverage::{
     cancel_invitation, contributors_for, coverage_for, list_invitations, open_invitation,
     reconcile_invitations, workspace_coverage, ChatCoverage, Contribution,
 };
+pub use curator::{CurationReport, CuratorService, DuplicateCluster, StaleUnit};
 pub use delivery::{
     build_deliverers, inject_platform_token, load_workspace_delivery, resolve_destination_config,
     sink_descriptors, ConfiguredDestination, Deliverer, DeliveryOutcome, DeliveryReport,
