@@ -86,7 +86,9 @@ export function Delivery() {
         <h2 className="font-semibold text-slate-800">Delivery destinations</h2>
         <p className="mt-1 text-sm text-slate-500">
           Every summary is always saved to the dashboard. Add a destination to also publish
-          summaries elsewhere. Secrets are stored encrypted and never shown again.
+          summaries elsewhere — you set only the target (channel / space / folder) here. Account
+          credentials are configured once per tenant on the{' '}
+          <span className="font-medium">Plugins</span> tab; a plugin a tenant has disabled is refused.
         </p>
 
         {plugins.length === 0 ? (

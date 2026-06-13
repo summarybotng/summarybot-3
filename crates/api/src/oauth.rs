@@ -9,13 +9,18 @@
 //! identity, mints a session (reusing `AuthService::login`), and redirects back
 //! to the SPA with the session in the URL fragment.
 
-use crate::auth::now_secs;
+use crate::auth::{now_secs, AuthUser};
 use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
 use axum::response::Redirect;
-use domain::{DiscordProvider, GoogleProvider, IdentityProvider, OAuthProvider, ProviderClaims};
+use axum::Json;
+use domain::{
+    DiscordProvider, GoogleProvider, IdentityProvider, OAuthProvider, Permission, ProviderClaims,
+    TenantId,
+};
 use host::AuthService;
-use serde::Deserialize;
+use repository::{TenantPlugin, TenantPluginRepository};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 
@@ -180,6 +185,140 @@ pub async fn callback(
     use base64::Engine as _;
     let blob = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(frag);
     Ok(Redirect::to(&format!("/#session={blob}")))
+}
+
+// ---- Per-tenant plugin connect flow (ADR-126) ------------------------------
+//
+// A tenant admin connects an OAuth-backed plugin (Google Drive) so its refresh
+// token is captured server-side instead of pasted. The `connect` POST authorizes
+// the admin and returns a consent URL whose signed state carries {tenant, kind,
+// verifier}; the provider redirects to the fixed `/oauth/connect/callback`, which
+// trusts that signed state, exchanges the code, and stores the refresh token in
+// the tenant plugin config (`connected = true`).
+
+/// The Google OAuth app (client id/secret) from the environment, if configured.
+fn google_app() -> Option<(OAuthProvider, String)> {
+    provider_from_env("google").map(|(p, secret, _login_redirect)| (p, secret))
+}
+
+/// The single fixed redirect URI registered for the connect flow.
+fn connect_redirect_uri() -> String {
+    let base = env::var("OAUTH_REDIRECT_BASE").unwrap_or_else(|_| "http://localhost:8080".into());
+    format!("{}/oauth/connect/callback", base.trim_end_matches('/'))
+}
+
+#[derive(Serialize)]
+pub struct ConnectUrl {
+    /// The provider consent URL the SPA should navigate to.
+    pub url: String,
+}
+
+/// `POST /tenants/:tenant/plugins/:kind/connect` — admin starts the OAuth connect
+/// for a plugin and gets back the consent URL (ManageSettings).
+pub async fn connect_plugin(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((tenant, kind)): Path<(String, String)>,
+) -> Result<Json<ConnectUrl>, ApiError> {
+    if !crate::plugins::supports_connect(&kind) {
+        return Err(ApiError::bad_request(format!(
+            "plugin '{kind}' has no connect flow"
+        )));
+    }
+    let tenant_id = crate::tenancy::parse_tenant(tenant.clone())?;
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        crate::tenancy::authorize(&repo, &user.0.sub, &tenant_id, Permission::ManageSettings)?;
+    }
+    let (mut cfg, _secret) = google_app().ok_or_else(|| {
+        ApiError::bad_request("server has no GOOGLE_CLIENT_ID configured".to_string())
+    })?;
+    // Drive file-scope (create/manage only files the app made) + offline consent
+    // so Google returns a refresh token.
+    cfg.scopes = vec!["https://www.googleapis.com/auth/drive.file".to_string()];
+    let redirect_uri = connect_redirect_uri();
+    let verifier = host::oauth::random_url_token(32).map_err(ApiError::Internal)?;
+    let challenge = host::oauth::pkce_challenge(&verifier);
+    let nonce = host::oauth::random_url_token(12).map_err(ApiError::Internal)?;
+    let payload = serde_json::json!({
+        "t": tenant,
+        "k": kind,
+        "v": verifier,
+        "n": nonce,
+        "exp": now_secs() + STATE_TTL_SECS,
+    })
+    .to_string();
+    let signed = host::oauth::sign_state(state.signing_key.expose_secret(), &payload);
+    Ok(Json(ConnectUrl {
+        url: cfg.authorize_url(&redirect_uri, &signed, &challenge),
+    }))
+}
+
+/// `GET /oauth/connect/callback?code&state` — the provider redirect. Trusts the
+/// HMAC-signed state (only an authorized admin could have minted it), exchanges
+/// the code, and stores the captured refresh token in the tenant plugin config.
+pub async fn connect_callback(
+    State(state): State<AppState>,
+    Query(q): Query<CallbackQuery>,
+) -> Result<Redirect, ApiError> {
+    if let Some(err) = q.error.filter(|e| !e.is_empty()) {
+        return Err(ApiError::bad_request(format!("oauth provider error: {err}")));
+    }
+    let payload = host::oauth::verify_state(state.signing_key.expose_secret(), &q.state)
+        .ok_or_else(|| ApiError::bad_request("invalid oauth state".to_string()))?;
+    let st: HashMap<String, serde_json::Value> = serde_json::from_str(&payload)
+        .map_err(|_| ApiError::bad_request("bad state".to_string()))?;
+    let f = |k: &str| st.get(k).and_then(|v| v.as_str()).unwrap_or("");
+    if now_secs() > st.get("exp").and_then(|v| v.as_i64()).unwrap_or(0) {
+        return Err(ApiError::bad_request("oauth state expired".to_string()));
+    }
+    let (tenant_raw, kind, verifier) = (f("t"), f("k"), f("v"));
+    if tenant_raw.is_empty() || kind.is_empty() || verifier.is_empty() {
+        return Err(ApiError::bad_request("incomplete oauth state".to_string()));
+    }
+    let tenant = TenantId::parse(tenant_raw).map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let (cfg, secret) = google_app().ok_or_else(|| {
+        ApiError::bad_request("server has no GOOGLE_CLIENT_ID configured".to_string())
+    })?;
+    let redirect_uri = connect_redirect_uri();
+    let tokens = host::oauth::exchange_code(&cfg, &secret, &redirect_uri, &q.code, verifier)
+        .map_err(ApiError::Internal)?;
+    let refresh = tokens.refresh_token.filter(|t| !t.is_empty()).ok_or_else(|| {
+        ApiError::bad_request(
+            "Google did not return a refresh token — remove the app's prior access at \
+             myaccount.google.com and reconnect".to_string(),
+        )
+    })?;
+
+    // The tenant config for gdrive is just the refresh token (folder is a
+    // workspace target). Encrypt + store, enable, and mark connected.
+    let master = state.master_key().ok_or_else(|| {
+        ApiError::bad_request("key encryption not configured on the server (set LLM_CONFIG_KEY)")
+    })?;
+    let blob = serde_json::json!({ "refresh_token": refresh }).to_string();
+    let config_enc = host::encrypt_secret(master, &blob).map_err(|e| ApiError::Internal(e.to_string()))?;
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.upsert_tenant_plugin(
+            &tenant,
+            &TenantPlugin {
+                kind: kind.to_string(),
+                enabled: true,
+                config_enc: Some(config_enc),
+                connected: true,
+                updated_at: now_secs(),
+            },
+        )?;
+        crate::tenancy::audit(&repo, &user_system(), "tenant.plugin.connected", kind.to_string());
+    }
+    Ok(Redirect::to(&format!("/#connected={kind}")))
+}
+
+/// The connect callback has no authenticated user (it's a provider redirect); the
+/// signed state is the capability. Audit the capture as a system actor.
+fn user_system() -> domain::UserId {
+    domain::UserId::parse("system").expect("valid system user id")
 }
 
 /// Map a provider's userinfo to a domain identity provider + claims.

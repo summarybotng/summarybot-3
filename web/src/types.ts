@@ -261,3 +261,22 @@ export interface DeliveryTestResult {
   ok: boolean
   detail: string | null
 }
+
+/** A delivery plugin's tenant-level state (ADR-126 two-layer model). */
+export interface TenantPlugin {
+  kind: string
+  display_name: string
+  /** Fields the tenant configures once (credentials/connection). */
+  tenant_fields: PluginField[]
+  /** Fields a workspace sets per destination (the target) — shown for context. */
+  workspace_fields: PluginField[]
+  enabled: boolean
+  /** All required tenant fields present (true when there are none). */
+  configured: boolean
+  /** OAuth plugins: a refresh token has been captured via Connect. */
+  connected: boolean
+  /** Whether this plugin uses an OAuth "Connect" button vs typed config. */
+  supports_connect: boolean
+  /** Non-secret one-line summary of the configured credentials. */
+  hint: string | null
+}

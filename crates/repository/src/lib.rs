@@ -21,6 +21,7 @@ mod schedule_run;
 mod schedule_source;
 mod session;
 mod summary_store;
+mod tenant_plugin;
 mod whatsapp;
 mod wiki;
 mod workspace;
@@ -41,6 +42,7 @@ pub use session::SessionRepository;
 pub use summary_store::{
     ModelSpend, SpendBreakdown, StructuredSummaryRepository, SummaryQuery, SummaryRecord,
 };
+pub use tenant_plugin::{TenantPlugin, TenantPluginRepository};
 pub use whatsapp::{
     ChatSummary, ImportInvitation, ImportOutcome, ImportRecord, NewImportInvitation, Participant,
     StoredImport, WhatsAppRepository,
@@ -374,6 +376,22 @@ impl SqliteRepository {
                 base_url    TEXT,
                 model       TEXT,
                 api_key_enc TEXT
+            );
+            -- Per-tenant delivery plugin enablement + account credentials (the
+            -- tenant half of the two-layer plugin model). A tenant admin enables a
+            -- plugin and configures/connects its shared credentials once
+            -- (Confluence creds, SMTP creds, a Google Drive refresh token captured
+            -- via OAuth); workspaces then pick only the non-secret target. config_enc
+            -- is encrypted JSON of the tenant-scoped fields (master key, like
+            -- tenant_llm_config); connected marks an OAuth refresh token captured.
+            CREATE TABLE IF NOT EXISTS tenant_plugins (
+                tenant_id  TEXT    NOT NULL,
+                kind       TEXT    NOT NULL,
+                enabled    INTEGER NOT NULL DEFAULT 0,
+                config_enc TEXT,
+                connected  INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (tenant_id, kind)
             );
             -- Per-tenant LLM budget for operator-lent platform-key usage
             -- (ADR-125 Phase 3): a limit over a rolling window, with accrued

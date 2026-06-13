@@ -19,6 +19,7 @@ use domain::{
 };
 use repository::{
     DestinationRepository, PlatformCredentialRepository, StructuredSummaryRepository, SummaryRecord,
+    TenantPluginRepository, WorkspaceRepository,
 };
 use serde_json::Value;
 
@@ -107,6 +108,17 @@ pub enum FieldHint {
     None,
 }
 
+/// Which layer of the two-layer plugin model owns a config field (ADR-126).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldScope {
+    /// Account-level credential/connection, set once by a tenant admin (e.g. a
+    /// Confluence API token, SMTP creds, a Google Drive refresh token).
+    Tenant,
+    /// Per-destination target, set on a workspace destination (e.g. the channel
+    /// id, Confluence space key, Drive folder, recipient, webhook URL).
+    Workspace,
+}
+
 /// One field of a sink plugin's config schema.
 #[derive(Debug, Clone, Copy)]
 pub struct FieldSpec {
@@ -116,6 +128,8 @@ pub struct FieldSpec {
     pub secret: bool,
     pub required: bool,
     pub hint: FieldHint,
+    /// Whether this field is configured at the tenant or workspace layer.
+    pub scope: FieldScope,
 }
 
 /// A sink plugin's descriptor — drives API validation and the dashboard form.
@@ -124,6 +138,23 @@ pub struct SinkDescriptor {
     pub id: &'static str,
     pub display_name: &'static str,
     pub fields: &'static [FieldSpec],
+}
+
+impl SinkDescriptor {
+    /// Fields configured once at the tenant level (credentials/connection).
+    pub fn tenant_fields(&self) -> impl Iterator<Item = &FieldSpec> {
+        self.fields.iter().filter(|f| f.scope == FieldScope::Tenant)
+    }
+    /// Fields configured per workspace destination (the target).
+    pub fn workspace_fields(&self) -> impl Iterator<Item = &FieldSpec> {
+        self.fields
+            .iter()
+            .filter(|f| f.scope == FieldScope::Workspace)
+    }
+    /// Whether this plugin needs any tenant-level credentials at all.
+    pub fn has_tenant_fields(&self) -> bool {
+        self.fields.iter().any(|f| f.scope == FieldScope::Tenant)
+    }
 }
 
 /// Descriptors for every sink plugin compiled into this build (ADR-126). The
@@ -203,6 +234,74 @@ pub fn inject_platform_token(
         }
     }
     config
+}
+
+/// Overlay `overlay`'s keys onto `base` (overlay wins) when both are JSON objects.
+/// Used to merge a workspace destination's target *over* the tenant credentials.
+fn merge_under(base: Value, overlay: Value) -> Value {
+    match (base, overlay) {
+        (Value::Object(mut b), Value::Object(o)) => {
+            for (k, v) in o {
+                b.insert(k, v);
+            }
+            Value::Object(b)
+        }
+        (_, overlay) => overlay,
+    }
+}
+
+/// Apply the per-tenant plugin layer to a workspace destination's config (ADR-126,
+/// two-layer model): merge the tenant's stored account credentials *under* the
+/// workspace target (target keys win). Returns `None` when the tenant has
+/// explicitly disabled this plugin kind (the destination is then skipped).
+///
+/// A workspace with no tenant (dev/unprovisioned) or a kind the tenant has never
+/// touched passes through unchanged — preserving the existing per-workspace
+/// behavior and the dev/demo flow.
+fn apply_tenant_layer(
+    repo: &impl TenantPluginRepository,
+    tenant: Option<&domain::TenantId>,
+    kind: &str,
+    ws_config: Value,
+    master: Option<&[u8; 32]>,
+) -> Option<Value> {
+    let Some(tenant) = tenant else {
+        return Some(ws_config); // dev/unprovisioned workspace: no tenant layer
+    };
+    match repo.get_tenant_plugin(tenant, kind) {
+        Ok(Some(tp)) => {
+            if !tp.enabled {
+                return None; // explicit tenant disable → skip this destination
+            }
+            if let (Some(enc), Some(master)) = (tp.config_enc.as_deref(), master) {
+                if let Ok(plain) = crate::decrypt_secret(master, enc) {
+                    if let Ok(tenant_cfg) = serde_json::from_str::<Value>(&plain) {
+                        return Some(merge_under(tenant_cfg, ws_config));
+                    }
+                }
+            }
+            Some(ws_config)
+        }
+        // No tenant row for this kind → default-on (backward-compatible).
+        _ => Some(ws_config),
+    }
+}
+
+/// Resolve a single destination's effective config exactly as a real delivery
+/// would: apply the per-tenant plugin layer (merge credentials, honor an explicit
+/// disable) then inject any per-workspace platform bot token. Returns `None` when
+/// the tenant has disabled the plugin kind. Used by the test-send path so a test
+/// exercises the same resolution as a live send.
+pub fn resolve_destination_config(
+    repo: &(impl PlatformCredentialRepository + WorkspaceRepository + TenantPluginRepository),
+    workspace: &WorkspaceId,
+    kind: &str,
+    config: Value,
+    master: Option<&[u8; 32]>,
+) -> Option<Value> {
+    let tenant = repo.find_workspace(workspace).ok().flatten().map(|w| w.tenant_id);
+    let config = apply_tenant_layer(repo, tenant.as_ref(), kind, config, master)?;
+    Some(inject_platform_token(repo, workspace, kind, config, master))
 }
 
 /// A gating destination paired with its decrypted config, ready to dispatch.
@@ -321,10 +420,16 @@ fn decode_config(master: Option<&[u8; 32]>, enc: &str) -> Option<Value> {
 /// rejects it rather than sending to a bad address. All stored sinks are
 /// `Service`-class; only **enabled** rows are returned.
 pub fn load_workspace_delivery(
-    repo: &(impl DestinationRepository + PlatformCredentialRepository),
+    repo: &(impl DestinationRepository
+          + PlatformCredentialRepository
+          + WorkspaceRepository
+          + TenantPluginRepository),
     workspace: &WorkspaceId,
     master: Option<&[u8; 32]>,
 ) -> anyhow::Result<(Vec<ConfiguredDestination>, DeliveryCapabilities)> {
+    // The workspace's tenant, if any — drives the per-tenant plugin layer below.
+    // A workspace with no stored row (dev/unprovisioned) has no tenant layer.
+    let tenant = repo.find_workspace(workspace)?.map(|w| w.tenant_id);
     let mut destinations = Vec::new();
     let mut caps = DeliveryCapabilities::default();
     for row in repo.list_destinations(workspace)? {
@@ -336,6 +441,12 @@ pub fn load_workspace_delivery(
         };
         let Some(config) = decode_config(master, enc) else {
             continue;
+        };
+        // Per-tenant plugin layer (ADR-126): merge the tenant's account credentials
+        // under this destination's target, and honor an explicit tenant disable.
+        let config = match apply_tenant_layer(repo, tenant.as_ref(), &row.kind, config, master) {
+            Some(c) => c,
+            None => continue, // the tenant has disabled this plugin kind
         };
         // Channel-send sinks borrow the workspace's stored platform bot token.
         let config = inject_platform_token(repo, workspace, &row.kind, config, master);
@@ -366,6 +477,7 @@ const WEBHOOK_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
         secret: true,
         required: true,
         hint: FieldHint::Host,
+        scope: FieldScope::Workspace,
     }],
 };
 
@@ -431,6 +543,7 @@ const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "space_key",
@@ -438,6 +551,7 @@ const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Workspace,
         },
         FieldSpec {
             name: "email",
@@ -445,6 +559,7 @@ const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "api_token",
@@ -452,6 +567,7 @@ const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: true,
             required: true,
             hint: FieldHint::None,
+            scope: FieldScope::Tenant,
         },
     ],
 };
@@ -545,6 +661,7 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "smtp_port",
@@ -552,6 +669,7 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: false,
             hint: FieldHint::Full,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "username",
@@ -559,6 +677,7 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "password",
@@ -566,6 +685,7 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: true,
             required: true,
             hint: FieldHint::None,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "from",
@@ -573,6 +693,7 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "to",
@@ -580,6 +701,7 @@ const EMAIL_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: true,
             hint: FieldHint::Full,
+            scope: FieldScope::Workspace,
         },
     ],
 };
@@ -682,6 +804,7 @@ const GDRIVE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: true,
             required: true,
             hint: FieldHint::None,
+            scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "folder_id",
@@ -689,6 +812,7 @@ const GDRIVE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
             secret: false,
             required: false,
             hint: FieldHint::Full,
+            scope: FieldScope::Workspace,
         },
     ],
 };
@@ -797,6 +921,7 @@ const DISCORD_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
         secret: false,
         required: true,
         hint: FieldHint::Full,
+        scope: FieldScope::Workspace,
     }],
 };
 
@@ -881,6 +1006,7 @@ const SLACK_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
         secret: false,
         required: true,
         hint: FieldHint::Full,
+        scope: FieldScope::Workspace,
     }],
 };
 
@@ -1155,6 +1281,86 @@ mod tests {
             dests[0].config.get("url").and_then(Value::as_str),
             Some("https://legacy.example/hook")
         );
+    }
+
+    #[test]
+    fn tenant_layer_merges_credentials_under_workspace_target_and_gates() {
+        use repository::{
+            DestinationRepository, StoredDestination, TenantPlugin, TenantPluginRepository,
+            WorkspaceRepository,
+        };
+        let master = [5u8; 32];
+        let store = SqliteRepository::in_memory().unwrap();
+        let tenant = domain::TenantId::parse("acme").unwrap();
+        // A provisioned workspace under the tenant.
+        store
+            .create_workspace(
+                &domain::Workspace::create(
+                    ws(),
+                    tenant.clone(),
+                    "Eng",
+                    domain::UserId::parse("u1").unwrap(),
+                    1,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        // Tenant enables Confluence + stores account credentials.
+        let creds = crate::encrypt_secret(
+            &master,
+            r#"{"base_url":"https://acme.atlassian.net","email":"a@b.com","api_token":"sekret"}"#,
+        )
+        .unwrap();
+        store
+            .upsert_tenant_plugin(
+                &tenant,
+                &TenantPlugin {
+                    kind: "confluence".into(),
+                    enabled: true,
+                    config_enc: Some(creds),
+                    connected: false,
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+        // Workspace destination carries only the target (space key).
+        let target = crate::encrypt_secret(&master, r#"{"space_key":"ENG"}"#).unwrap();
+        store
+            .upsert_destination(
+                &ws(),
+                &StoredDestination {
+                    id: "d1".into(),
+                    kind: "confluence".into(),
+                    address_enc: Some(target),
+                    enabled: true,
+                    created_at: 1,
+                },
+            )
+            .unwrap();
+
+        let (dests, _) = load_workspace_delivery(&store, &ws(), Some(&master)).unwrap();
+        assert_eq!(dests.len(), 1);
+        let cfg = &dests[0].config;
+        // Tenant creds merged in, workspace target preserved.
+        assert_eq!(cfg.get("base_url").and_then(Value::as_str), Some("https://acme.atlassian.net"));
+        assert_eq!(cfg.get("api_token").and_then(Value::as_str), Some("sekret"));
+        assert_eq!(cfg.get("space_key").and_then(Value::as_str), Some("ENG"));
+
+        // Disabling the plugin at the tenant level skips the destination entirely.
+        store
+            .upsert_tenant_plugin(
+                &tenant,
+                &TenantPlugin {
+                    kind: "confluence".into(),
+                    enabled: false,
+                    config_enc: None,
+                    connected: false,
+                    updated_at: 2,
+                },
+            )
+            .unwrap();
+        let (dests, _) = load_workspace_delivery(&store, &ws(), Some(&master)).unwrap();
+        assert!(dests.is_empty());
     }
 
     #[test]

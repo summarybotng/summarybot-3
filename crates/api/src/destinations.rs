@@ -12,7 +12,9 @@ use crate::{ApiError, AppState};
 use axum::extract::{Path, State};
 use axum::Json;
 use host::{FieldHint, SinkDescriptor};
-use repository::{DestinationRepository, StoredDestination};
+use repository::{
+    DestinationRepository, StoredDestination, TenantPluginRepository, WorkspaceRepository,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -110,14 +112,15 @@ pub async fn list_plugins(
 ) -> Result<Json<Vec<PluginDto>>, ApiError> {
     user.require_workspace(&ws)?;
     let _ = state;
+    // Only the Workspace-scoped (target) fields are entered per destination; the
+    // tenant-scoped credentials are configured by an admin under /tenants/:t/plugins.
     let plugins = host::sink_descriptors()
         .into_iter()
         .map(|d| PluginDto {
             id: d.id.to_string(),
             display_name: d.display_name.to_string(),
             fields: d
-                .fields
-                .iter()
+                .workspace_fields()
                 .map(|f| PluginFieldDto {
                     name: f.name.to_string(),
                     label: f.label.to_string(),
@@ -158,10 +161,10 @@ pub async fn create_destination(
         ApiError::bad_request(format!("unsupported destination kind: {}", body.kind))
     })?;
 
-    // Validate against the plugin schema: required fields present + non-empty,
-    // and any URL field must be http(s).
+    // Validate against the plugin's **workspace-scoped** schema only (the target);
+    // tenant credentials are configured separately by an admin (two-layer model).
     let mut config = serde_json::Map::new();
-    for f in desc.fields {
+    for f in desc.workspace_fields() {
         let raw = body
             .config
             .get(f.name)
@@ -204,6 +207,19 @@ pub async fn create_destination(
         created_at: crate::auth::now_secs(),
     };
     let repo = state.repo.lock().expect("repo mutex");
+    // Honor the tenant enablement gate: a workspace can't add a destination for a
+    // plugin its tenant has explicitly disabled (ADR-126). Unprovisioned (dev)
+    // workspaces and kinds the tenant hasn't touched are allowed (default-on).
+    if let Some(tenant) = repo.find_workspace(&workspace)?.map(|w| w.tenant_id) {
+        if let Some(tp) = repo.get_tenant_plugin(&tenant, &row.kind)? {
+            if !tp.enabled {
+                return Err(ApiError::bad_request(format!(
+                    "the '{}' plugin is disabled for your tenant — enable it under Plugins first",
+                    row.kind
+                )));
+            }
+        }
+    }
     repo.upsert_destination(&workspace, &row)?;
     Ok(Json(to_dto(&row, Some(master))))
 }
@@ -250,18 +266,20 @@ pub async fn test_destination(
         .into_iter()
         .find(|d| d.id == id)
         .ok_or(ApiError::NotFound)?;
-    let config = decrypt_config(&row, master).map(|config| {
-        // Channel-send sinks (discord/slack) borrow the workspace's stored bot
-        // token, exactly as a real delivery does — so the test exercises the
-        // same path (host::inject_platform_token).
-        host::inject_platform_token(&*repo, &workspace, &row.kind, config, master)
-    });
+    // Resolve the effective config exactly as a real delivery would: merge the
+    // tenant's account credentials + inject any platform bot token, honoring an
+    // explicit tenant disable (ADR-126).
+    let config = decrypt_config(&row, master)
+        .and_then(|config| host::resolve_destination_config(&*repo, &workspace, &row.kind, config, master));
     drop(repo);
 
     let Some(config) = config else {
         return Ok(Json(TestResult {
             ok: false,
-            detail: Some("destination config could not be read".to_string()),
+            detail: Some(
+                "destination config could not be read, or the plugin is disabled for your tenant"
+                    .to_string(),
+            ),
         }));
     };
     let Some(deliverer) = deliverers.iter().find(|d| d.id() == row.kind) else {

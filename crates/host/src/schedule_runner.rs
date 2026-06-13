@@ -17,7 +17,8 @@ use domain::{decide_rolling, end_weekday, format_day, RollingAction, RollingPeri
 use repository::{
     DestinationRepository, KnowledgeRepository, PlatformCredentialRepository, RollingConfig,
     RollingRepository, RollingSummaryRow, ScheduleSourceRepository, StoredSchedule,
-    StructuredSummaryRepository, SummaryRecord, WhatsAppRepository, WorkspaceSettingsRepository,
+    StructuredSummaryRepository, SummaryRecord, TenantPluginRepository, WhatsAppRepository,
+    WorkspaceRepository, WorkspaceSettingsRepository,
 };
 
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
@@ -142,7 +143,9 @@ where
         + PlatformCredentialRepository
         + ScheduleSourceRepository
         + RollingRepository
-        + KnowledgeRepository,
+        + KnowledgeRepository
+        + WorkspaceRepository
+        + TenantPluginRepository,
     C: LlmClient,
 {
     fn run(&self, stored: &StoredSchedule, now: i64) -> Result<(), String> {
@@ -250,7 +253,9 @@ where
         + PlatformCredentialRepository
         + ScheduleSourceRepository
         + RollingRepository
-        + KnowledgeRepository,
+        + KnowledgeRepository
+        + WorkspaceRepository
+        + TenantPluginRepository,
     C: LlmClient,
 {
     /// Feed one rolling delta's facts into the knowledge base (ADR-129 Layer 3) —

@@ -12,6 +12,7 @@ import { Source } from './views/Source'
 import { Spend } from './views/Spend'
 import { Audit } from './views/Audit'
 import { Members } from './views/Members'
+import { Plugins } from './views/Plugins'
 
 type Tab =
   | 'summaries'
@@ -20,6 +21,7 @@ type Tab =
   | 'discord'
   | 'slack'
   | 'delivery'
+  | 'plugins'
   | 'knowledge'
   | 'spend'
   | 'members'
@@ -106,6 +108,7 @@ export default function App() {
         {tab === 'discord' && <Source platform="discord" />}
         {tab === 'slack' && <Source platform="slack" />}
         {tab === 'delivery' && <Delivery />}
+        {tab === 'plugins' && <Plugins />}
         {tab === 'knowledge' && <Knowledge />}
         {tab === 'spend' && <Spend />}
         {tab === 'members' && <Members />}
@@ -120,5 +123,5 @@ export default function App() {
 const NAV: { section?: string; tabs: Tab[] }[] = [
   { tabs: ['summaries', 'schedules', 'knowledge', 'spend'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
-  { section: 'Admin', tabs: ['delivery', 'members', 'audit', 'settings'] },
+  { section: 'Admin', tabs: ['delivery', 'plugins', 'members', 'audit', 'settings'] },
 ]

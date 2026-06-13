@@ -5,6 +5,7 @@ import type {
   KnowledgeHit,
   LlmConfig,
   Plugin,
+  TenantPlugin,
   LlmConfigUpdate,
   Schedule,
   ScheduleRun,
@@ -437,6 +438,38 @@ export class Client {
 
   clearBudget(tenant: string): Promise<void> {
     return this.json<void>(`/tenants/${tenant}/budget`, { method: 'DELETE' })
+  }
+
+  // --- tenant delivery plugins (enablement + credentials/connect, ADR-126) ---
+
+  listTenantPlugins(tenant: string): Promise<TenantPlugin[]> {
+    return this.json<TenantPlugin[]>(`/tenants/${encodeURIComponent(tenant)}/plugins`)
+  }
+
+  setTenantPlugin(
+    tenant: string,
+    kind: string,
+    body: { enabled: boolean; config: Record<string, string> },
+  ): Promise<TenantPlugin> {
+    return this.json<TenantPlugin>(
+      `/tenants/${encodeURIComponent(tenant)}/plugins/${encodeURIComponent(kind)}`,
+      this.body('PUT', body),
+    )
+  }
+
+  clearTenantPlugin(tenant: string, kind: string): Promise<void> {
+    return this.json<void>(
+      `/tenants/${encodeURIComponent(tenant)}/plugins/${encodeURIComponent(kind)}`,
+      { method: 'DELETE' },
+    )
+  }
+
+  /** Start an OAuth connect for a plugin (e.g. Google Drive); returns the URL. */
+  connectPlugin(tenant: string, kind: string): Promise<{ url: string }> {
+    return this.json<{ url: string }>(
+      `/tenants/${encodeURIComponent(tenant)}/plugins/${encodeURIComponent(kind)}/connect`,
+      { method: 'POST' },
+    )
   }
 
   // --- tenant members + invites (RBAC admin) ---

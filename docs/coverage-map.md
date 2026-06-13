@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-13 — membership-derived workspace grants (token filtered to entitlement); Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019: timeline + classified gaps, contributor tracking, persisted auto-fulfilled scoped import invitations); Tenants/Members admin tab (RBAC); rolling-ingest dedup Layers 1–3; rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-13 — two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants (token filtered to entitlement); Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019: timeline + classified gaps, contributor tracking, persisted auto-fulfilled scoped import invitations); Tenants/Members admin tab (RBAC); rolling-ingest dedup Layers 1–3; rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -96,11 +96,12 @@ per-destination rolling delivery).
 |---|---|---|---|
 | Dashboard store (always-on) | ✅ | ✅ | `repository/summary_store.rs` |
 | Sink **plugin seam** (open kind + encrypted JSON config + schema-driven API/UI) | n/a | ✅ | ADR-126; `host/delivery.rs` registry + descriptors |
+| Two-layer plugin model: per-tenant enable + connect + config | n/a | ✅ | tenant admin enables a plugin and configures/connects its account credentials once (`tenant_plugins` table, `Plugins` admin tab, `/tenants/:t/plugins`); workspaces pick only the non-secret target. `FieldScope::{Tenant,Workspace}` splits each descriptor; delivery merges tenant creds under the workspace target; an explicitly-disabled plugin is refused (ADR-126). Google Drive uses a **Connect** OAuth flow (`drive.file`) to capture the refresh token instead of pasting it |
 | Webhook (generic + Slack/Discord incoming) | ✅ | ✅ | reference **sink plugin** (`--features http-llm`); encrypted config, test-send (verified live) |
 | Confluence publishing | ✅ | ✅ | **sink plugin** (`--features confluence`); Cloud REST, API token; schema-driven UI verified live (real publish not yet tested against a live instance) |
 | Email (SMTP) | ✅ | ✅ | **sink plugin** (`--features email`); lettre blocking SMTP, STARTTLS/TLS; schema-driven UI verified live (real send not yet tested against a live SMTP server) |
 | Discord / Slack channel send | ✅ | ✅ | **sink plugins** (`--features discord`/`slack`): post a summary back to a channel via the platform REST API, reusing the workspace's stored bot token (injected at delivery time, `host::inject_platform_token`) — the same credential used to fetch (ADR-128). Schema-driven UI (channel id) + test-send verified live (clear "no bot token" / transport result without a real bot). DM send + per-destination templates deferred |
-| Google Drive (publish summaries) | ✅ | ✅ | **sink plugin** (`--features gdrive`); publishes HTML as a Google Doc via Drive multipart upload, OAuth refresh-token per workspace. Real upload not yet tested against live Drive; obtaining the refresh token still needs a connect-flow UX (token pasted for now) |
+| Google Drive (publish summaries) | ✅ | ✅ | **sink plugin** (`--features gdrive`); publishes HTML as a Google Doc via Drive multipart upload. Refresh token now captured per **tenant** via a **Connect** OAuth flow (`drive.file`, signed-state callback) instead of pasting; workspaces set only the folder. Real upload not yet tested against live Drive |
 | Output formats (markdown/html/json/text) | ✅ | ✅ | markdown + plain + html ✅ (email HTML, Confluence HTML); webhook payload carries a structured **`data`** JSON object |
 | Push templates per destination | ✅ | ⛔ | — |
 

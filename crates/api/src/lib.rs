@@ -20,6 +20,7 @@ mod events;
 mod knowledge;
 #[cfg(feature = "oauth")]
 mod oauth;
+mod plugins;
 mod scheduler_driver;
 mod schedules;
 mod settings;
@@ -493,6 +494,12 @@ pub fn build_router(state: AppState) -> Router {
                 .put(tenancy::set_budget)
                 .delete(tenancy::clear_budget),
         )
+        // Per-tenant delivery plugin enablement + account config (ADR-126).
+        .route("/tenants/:tenant/plugins", get(plugins::list_plugins))
+        .route(
+            "/tenants/:tenant/plugins/:kind",
+            put(plugins::set_plugin).delete(plugins::delete_plugin),
+        )
         .route("/tenant", get(tenancy::resolve_tenant))
         // Workspace management under a tenant (WSP-009).
         .route(
@@ -528,7 +535,15 @@ pub fn build_router(state: AppState) -> Router {
     {
         router = router
             .route("/auth/oauth/:provider/start", get(oauth::start))
-            .route("/auth/oauth/:provider/callback", get(oauth::callback));
+            .route("/auth/oauth/:provider/callback", get(oauth::callback))
+            // Per-tenant plugin connect flow (e.g. Google Drive): admin starts it,
+            // the provider redirects to the fixed callback, which captures the
+            // refresh token into the tenant plugin config.
+            .route(
+                "/tenants/:tenant/plugins/:kind/connect",
+                post(oauth::connect_plugin),
+            )
+            .route("/oauth/connect/callback", get(oauth::connect_callback));
     }
 
     router
@@ -637,6 +652,13 @@ async fn openapi() -> Json<serde_json::Value> {
                 "put": { "summary": "Set the tenant's LLM endpoint/model/key" },
                 "delete": { "summary": "Clear the tenant's LLM override" }
             },
+            "/tenants/{tenant}/plugins": { "get": { "summary": "List delivery plugins with this tenant's enablement + config state (Admin+; ADR-126)" } },
+            "/tenants/{tenant}/plugins/{kind}": {
+                "put": { "summary": "Enable + configure a plugin's tenant-level credentials" },
+                "delete": { "summary": "Disable + clear a plugin's tenant config" }
+            },
+            "/tenants/{tenant}/plugins/{kind}/connect": { "post": { "summary": "Start an OAuth connect (Google Drive) — returns the consent URL (Admin+)" } },
+            "/oauth/connect/callback": { "get": { "summary": "OAuth connect callback — captures a refresh token into the tenant plugin config" } },
             "/tenants/{tenant}/budget": {
                 "get": { "summary": "Get the tenant's LLM budget + spend (ADR-125 Phase 3)" },
                 "put": { "summary": "Grant/update the tenant's budget (owner)" },
@@ -1570,6 +1592,125 @@ mod tests {
         let j2 = body_json(again).await;
         assert_eq!(j2["stored"], 0);
         assert_eq!(j2["duplicates"], 2);
+    }
+
+    /// Mint a token for `subject` granting `ws`, after seeding membership +
+    /// workspace so the entitlement filter keeps the grant.
+    #[cfg(feature = "confluence")]
+    fn owner_state_with_workspace(tenant: &str, ws: &str) -> (AppState, String) {
+        use repository::{MembershipRepository, WorkspaceRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let k = key();
+        let uid = {
+            let svc = AuthService::new(&repo, &k);
+            svc.login(
+                &domain::DiscordProvider,
+                &domain::ProviderClaims { subject: "owner".into(), email: None },
+                vec![],
+                crate::auth::now_secs(),
+            )
+            .unwrap()
+            .user_id
+        };
+        repo.upsert_membership(&domain::Membership::new(
+            domain::TenantId::parse(tenant).unwrap(),
+            uid.clone(),
+            domain::Role::Owner,
+        ))
+        .unwrap();
+        repo.create_workspace(
+            &domain::Workspace::create(
+                domain::WorkspaceId::parse(ws).unwrap(),
+                domain::TenantId::parse(tenant).unwrap(),
+                "WS",
+                uid.clone(),
+                1,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let token = {
+            let svc = AuthService::new(&repo, &k);
+            svc.login(
+                &domain::DiscordProvider,
+                &domain::ProviderClaims { subject: "owner".into(), email: None },
+                vec![domain::WorkspaceId::parse(ws).unwrap()],
+                crate::auth::now_secs(),
+            )
+            .unwrap()
+            .access_token
+        };
+        (AppState::new(repo, k).with_config_key([1u8; 32]), token)
+    }
+
+    #[cfg(feature = "confluence")]
+    #[tokio::test]
+    async fn tenant_plugin_enable_configure_then_gate_workspace_destination() {
+        let (state, token) = owner_state_with_workspace("acme", "ws-1");
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+
+        // Enable + configure Confluence credentials at the tenant level.
+        let put = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/acme/plugins/confluence")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"enabled":true,"config":{"base_url":"https://acme.atlassian.net","email":"a@b.com","api_token":"sekret"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(put.status(), StatusCode::OK);
+        let j = body_json(put).await;
+        assert_eq!(j["enabled"], true);
+        assert_eq!(j["configured"], true);
+        assert_eq!(j["hint"], "https://acme.atlassian.net · a@b.com");
+        assert!(!j.to_string().contains("sekret")); // secret never echoed
+
+        // The workspace can now add a Confluence destination with only the target.
+        let ok = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/destinations")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"kind":"confluence","config":{"space_key":"ENG"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // Disable the plugin at the tenant → new workspace destinations are refused.
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/tenants/acme/plugins/confluence")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"enabled":false,"config":{}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let denied = app
+            .oneshot(
+                Request::post("/workspaces/ws-1/destinations")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"kind":"confluence","config":{"space_key":"OPS"}}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
