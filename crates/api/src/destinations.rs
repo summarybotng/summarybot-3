@@ -250,9 +250,15 @@ pub async fn test_destination(
         .into_iter()
         .find(|d| d.id == id)
         .ok_or(ApiError::NotFound)?;
+    let config = decrypt_config(&row, master).map(|config| {
+        // Channel-send sinks (discord/slack) borrow the workspace's stored bot
+        // token, exactly as a real delivery does — so the test exercises the
+        // same path (host::inject_platform_token).
+        host::inject_platform_token(&*repo, &workspace, &row.kind, config, master)
+    });
     drop(repo);
 
-    let Some(config) = decrypt_config(&row, master) else {
+    let Some(config) = config else {
         return Ok(Json(TestResult {
             ok: false,
             detail: Some("destination config could not be read".to_string()),

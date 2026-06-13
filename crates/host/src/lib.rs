@@ -32,9 +32,9 @@ pub use coverage::{
     reconcile_invitations, workspace_coverage, ChatCoverage, Contribution,
 };
 pub use delivery::{
-    build_deliverers, load_workspace_delivery, sink_descriptors, ConfiguredDestination, Deliverer,
-    DeliveryOutcome, DeliveryReport, DeliveryService, FieldHint, FieldSpec, RenderedSummary,
-    SinkDescriptor,
+    build_deliverers, inject_platform_token, load_workspace_delivery, sink_descriptors,
+    ConfiguredDestination, Deliverer, DeliveryOutcome, DeliveryReport, DeliveryService, FieldHint,
+    FieldSpec, RenderedSummary, SinkDescriptor,
 };
 #[cfg(feature = "discord")]
 pub use discord::DiscordFetcher;

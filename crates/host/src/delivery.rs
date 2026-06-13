@@ -17,7 +17,9 @@ use domain::{
     resolve_delivery, DeliveryCapabilities, DeliveryClass, DeliveryDecision, DeliveryReject,
     Destination, WorkspaceId,
 };
-use repository::{DestinationRepository, StructuredSummaryRepository, SummaryRecord};
+use repository::{
+    DestinationRepository, PlatformCredentialRepository, StructuredSummaryRepository, SummaryRecord,
+};
 use serde_json::Value;
 
 /// A summary pre-rendered in every format, so each sink can pick the one it
@@ -139,6 +141,10 @@ pub fn sink_descriptors() -> Vec<SinkDescriptor> {
     out.push(EMAIL_DESCRIPTOR);
     #[cfg(feature = "gdrive")]
     out.push(GDRIVE_DESCRIPTOR);
+    #[cfg(feature = "discord")]
+    out.push(DISCORD_DESCRIPTOR);
+    #[cfg(feature = "slack")]
+    out.push(SLACK_DESCRIPTOR);
     out
 }
 
@@ -155,7 +161,48 @@ pub fn build_deliverers() -> Vec<Box<dyn Deliverer>> {
     out.push(Box::new(EmailDeliverer));
     #[cfg(feature = "gdrive")]
     out.push(Box::new(GoogleDriveDeliverer::default()));
+    #[cfg(feature = "discord")]
+    out.push(Box::new(DiscordChannelDeliverer::default()));
+    #[cfg(feature = "slack")]
+    out.push(Box::new(SlackChannelDeliverer::default()));
     out
+}
+
+/// The channel-send sinks (discord/slack) reuse the workspace's stored platform
+/// bot token — the *same* credential used to fetch (ADR-128) — rather than
+/// duplicating it in the destination config. This maps a sink kind to the
+/// platform credential key it needs, or `None` for sinks that carry their own.
+fn platform_token_kind(kind: &str) -> Option<&'static str> {
+    match kind {
+        "discord" => Some("discord"),
+        "slack" => Some("slack"),
+        _ => None,
+    }
+}
+
+/// Merge the decrypted platform bot token into a destination's config for the
+/// channel-send sinks, so the deliverer is a pure function of (config, summary)
+/// yet reuses the single stored credential. A no-op for other kinds, when there
+/// is no master key, or when no credential is stored (the deliverer then fails
+/// fast with a clear "no bot token" message).
+pub fn inject_platform_token(
+    repo: &impl PlatformCredentialRepository,
+    workspace: &WorkspaceId,
+    kind: &str,
+    config: Value,
+    master: Option<&[u8; 32]>,
+) -> Value {
+    let mut config = config;
+    if let (Some(platform), Some(master)) = (platform_token_kind(kind), master) {
+        if let Ok(Some(enc)) = repo.get_platform_token(workspace, platform) {
+            if let Ok(token) = crate::decrypt_secret(master, &enc) {
+                if let Some(obj) = config.as_object_mut() {
+                    obj.insert("token".to_string(), Value::String(token));
+                }
+            }
+        }
+    }
+    config
 }
 
 /// A gating destination paired with its decrypted config, ready to dispatch.
@@ -274,7 +321,7 @@ fn decode_config(master: Option<&[u8; 32]>, enc: &str) -> Option<Value> {
 /// rejects it rather than sending to a bad address. All stored sinks are
 /// `Service`-class; only **enabled** rows are returned.
 pub fn load_workspace_delivery(
-    repo: &impl DestinationRepository,
+    repo: &(impl DestinationRepository + PlatformCredentialRepository),
     workspace: &WorkspaceId,
     master: Option<&[u8; 32]>,
 ) -> anyhow::Result<(Vec<ConfiguredDestination>, DeliveryCapabilities)> {
@@ -290,6 +337,8 @@ pub fn load_workspace_delivery(
         let Some(config) = decode_config(master, enc) else {
             continue;
         };
+        // Channel-send sinks borrow the workspace's stored platform bot token.
+        let config = inject_platform_token(repo, workspace, &row.kind, config, master);
         if !caps.enabled.contains(&row.kind) {
             caps.enabled.push(row.kind.clone());
         }
@@ -734,6 +783,167 @@ impl Deliverer for GoogleDriveDeliverer {
     }
 }
 
+// ---- Discord channel send-back sink (ADR-126/128; DEL-010) -----------------
+
+/// Discord config: the target channel id. The bot token is the workspace's
+/// stored Discord credential (injected at delivery time), not a separate secret.
+#[cfg(feature = "discord")]
+const DISCORD_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "discord",
+    display_name: "Discord channel",
+    fields: &[FieldSpec {
+        name: "channel",
+        label: "Channel ID (right-click a channel → Copy Channel ID)",
+        secret: false,
+        required: true,
+        hint: FieldHint::Full,
+    }],
+};
+
+/// Post each summary back to a Discord channel (the loop's send half). Reuses the
+/// workspace's stored bot token (ADR-128) via `inject_platform_token`; the config
+/// carries only the channel id. Discord caps message content at 2000 chars, so
+/// the markdown is truncated with an ellipsis marker.
+#[cfg(feature = "discord")]
+pub struct DiscordChannelDeliverer {
+    timeout_secs: u64,
+}
+
+#[cfg(feature = "discord")]
+impl Default for DiscordChannelDeliverer {
+    fn default() -> Self {
+        Self { timeout_secs: 15 }
+    }
+}
+
+#[cfg(feature = "discord")]
+impl Deliverer for DiscordChannelDeliverer {
+    fn id(&self) -> &str {
+        "discord"
+    }
+
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+        let channel = config
+            .get("channel")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| "discord destination has no channel id".to_string())?;
+        let token = config
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| {
+                "no Discord bot token set for this workspace (add it under the Discord source)"
+                    .to_string()
+            })?;
+        let content = truncate_chars(&summary.markdown, 2000);
+        let url = format!("https://discord.com/api/v10/channels/{channel}/messages");
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .build();
+        match agent
+            .post(&url)
+            .set("Authorization", &format!("Bot {token}"))
+            .send_json(serde_json::json!({ "content": content }))
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, _)) => Err(format!("discord returned http {code}")),
+            Err(ureq::Error::Transport(t)) => Err(format!("discord transport error: {t}")),
+        }
+    }
+}
+
+/// Truncate to at most `max` characters (not bytes), appending an ellipsis when
+/// cut, so multi-byte content can't split a codepoint or blow a char limit.
+#[cfg(feature = "discord")]
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(1);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push('…');
+    out
+}
+
+// ---- Slack channel send-back sink (ADR-126/128; DEL-010) -------------------
+
+/// Slack config: the target channel id. The bot token is the workspace's stored
+/// Slack credential (injected at delivery time).
+#[cfg(feature = "slack")]
+const SLACK_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "slack",
+    display_name: "Slack channel",
+    fields: &[FieldSpec {
+        name: "channel",
+        label: "Channel ID (e.g. C0123ABCD) or #name",
+        secret: false,
+        required: true,
+        hint: FieldHint::Full,
+    }],
+};
+
+/// Post each summary back to a Slack channel via `chat.postMessage`. Reuses the
+/// workspace's stored bot token (ADR-128). Slack signals failure in the JSON body
+/// (`{"ok": false, "error": …}`) with HTTP 200, so the body is checked.
+#[cfg(feature = "slack")]
+pub struct SlackChannelDeliverer {
+    timeout_secs: u64,
+}
+
+#[cfg(feature = "slack")]
+impl Default for SlackChannelDeliverer {
+    fn default() -> Self {
+        Self { timeout_secs: 15 }
+    }
+}
+
+#[cfg(feature = "slack")]
+impl Deliverer for SlackChannelDeliverer {
+    fn id(&self) -> &str {
+        "slack"
+    }
+
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+        let channel = config
+            .get("channel")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| "slack destination has no channel id".to_string())?;
+        let token = config
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| {
+                "no Slack bot token set for this workspace (add it under the Slack source)"
+                    .to_string()
+            })?;
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.timeout_secs))
+            .build();
+        let resp = agent
+            .post("https://slack.com/api/chat.postMessage")
+            .set("Authorization", &format!("Bearer {token}"))
+            .send_json(serde_json::json!({ "channel": channel, "text": summary.markdown }));
+        let body: Value = match resp {
+            Ok(r) => r.into_json().map_err(|e| format!("slack bad response: {e}"))?,
+            Err(ureq::Error::Status(code, _)) => return Err(format!("slack returned http {code}")),
+            Err(ureq::Error::Transport(t)) => return Err(format!("slack transport error: {t}")),
+        };
+        if body.get("ok").and_then(Value::as_bool) == Some(true) {
+            Ok(())
+        } else {
+            let err = body
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            Err(format!("slack rejected the message: {err}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,6 +1207,77 @@ mod tests {
             )
             .unwrap_err();
         assert!(err.contains("invalid smtp_port"), "got: {err}");
+    }
+
+    #[cfg(feature = "discord")]
+    #[test]
+    fn discord_deliverer_needs_channel_then_token() {
+        let d = DiscordChannelDeliverer::default();
+        assert_eq!(d.id(), "discord");
+        let sample = RenderedSummary::from_text("hi");
+        // No channel → fails before any network.
+        let err = d.deliver(&serde_json::json!({}), &sample).unwrap_err();
+        assert!(err.contains("channel"), "got: {err}");
+        // Channel but no injected token → clear, actionable error (no send).
+        let err = d
+            .deliver(&serde_json::json!({ "channel": "123" }), &sample)
+            .unwrap_err();
+        assert!(err.contains("bot token"), "got: {err}");
+    }
+
+    #[cfg(feature = "discord")]
+    #[test]
+    fn discord_truncates_to_the_2000_char_limit() {
+        let long = "x".repeat(5000);
+        let out = truncate_chars(&long, 2000);
+        assert_eq!(out.chars().count(), 2000);
+        assert!(out.ends_with('…'));
+        // Short content is unchanged.
+        assert_eq!(truncate_chars("short", 2000), "short");
+    }
+
+    #[cfg(feature = "slack")]
+    #[test]
+    fn slack_deliverer_needs_channel_then_token() {
+        let d = SlackChannelDeliverer::default();
+        assert_eq!(d.id(), "slack");
+        let sample = RenderedSummary::from_text("hi");
+        let err = d.deliver(&serde_json::json!({}), &sample).unwrap_err();
+        assert!(err.contains("channel"), "got: {err}");
+        let err = d
+            .deliver(&serde_json::json!({ "channel": "C1" }), &sample)
+            .unwrap_err();
+        assert!(err.contains("bot token"), "got: {err}");
+    }
+
+    #[cfg(any(feature = "discord", feature = "slack"))]
+    #[test]
+    fn inject_platform_token_merges_stored_credential() {
+        use repository::PlatformCredentialRepository;
+        let master = [3u8; 32];
+        let store = SqliteRepository::in_memory().unwrap();
+        let enc = crate::encrypt_secret(&master, "bot-secret-xyz").unwrap();
+        store
+            .set_platform_token(&ws(), "discord", &enc, 1)
+            .unwrap();
+        // discord kind → token merged in.
+        let cfg = inject_platform_token(
+            &store,
+            &ws(),
+            "discord",
+            serde_json::json!({ "channel": "123" }),
+            Some(&master),
+        );
+        assert_eq!(cfg.get("token").and_then(Value::as_str), Some("bot-secret-xyz"));
+        // A non-channel sink (webhook) is left untouched.
+        let cfg = inject_platform_token(
+            &store,
+            &ws(),
+            "webhook",
+            serde_json::json!({ "url": "https://x" }),
+            Some(&master),
+        );
+        assert!(cfg.get("token").is_none());
     }
 
     #[cfg(feature = "gdrive")]

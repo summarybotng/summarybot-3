@@ -17,8 +17,8 @@ rewrite covers, and what's left. **Keep this current** — see
 | Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101); Hybrid merge + rolling dedup are refinements |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **at parity** | 11 tabs + live SSE; incl. Knowledge, Spend, Audit, Tenants/Members admin |
-| Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
-| Discord / Slack ingestion | ✅ **both live + scheduled** | Discord + Slack REST fetch → message store (generic `connections/:platform` API); a schedule can fetch fresh messages before each run (ADR-128). Channel/DM **send** + an independent background poller remain |
+| Delivery | ✅ **~95%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; Discord/Slack channel **send** ✅; DM send + per-destination templates remain |
+| Discord / Slack ingestion | ✅ **both live + scheduled** | Discord + Slack REST fetch → message store (generic `connections/:platform` API); a schedule can fetch fresh messages before each run (ADR-128). Channel **send-back** now shipped (Delivery sinks); DM send + an independent background poller remain |
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants now membership-derived (token filtered to entitlement) ✅ |
 | Knowledge (wiki / vector search) | ✅ **v1 done** | semantic search + coherence gate + wiki synthesis live (ADR-127); AI curator deferred |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
@@ -99,7 +99,7 @@ per-destination rolling delivery).
 | Webhook (generic + Slack/Discord incoming) | ✅ | ✅ | reference **sink plugin** (`--features http-llm`); encrypted config, test-send (verified live) |
 | Confluence publishing | ✅ | ✅ | **sink plugin** (`--features confluence`); Cloud REST, API token; schema-driven UI verified live (real publish not yet tested against a live instance) |
 | Email (SMTP) | ✅ | ✅ | **sink plugin** (`--features email`); lettre blocking SMTP, STARTTLS/TLS; schema-driven UI verified live (real send not yet tested against a live SMTP server) |
-| Discord channel / DM send | ✅ | 🔩 | gating only; needs platform adapter |
+| Discord / Slack channel send | ✅ | ✅ | **sink plugins** (`--features discord`/`slack`): post a summary back to a channel via the platform REST API, reusing the workspace's stored bot token (injected at delivery time, `host::inject_platform_token`) — the same credential used to fetch (ADR-128). Schema-driven UI (channel id) + test-send verified live (clear "no bot token" / transport result without a real bot). DM send + per-destination templates deferred |
 | Google Drive (publish summaries) | ✅ | ✅ | **sink plugin** (`--features gdrive`); publishes HTML as a Google Doc via Drive multipart upload, OAuth refresh-token per workspace. Real upload not yet tested against live Drive; obtaining the refresh token still needs a connect-flow UX (token pasted for now) |
 | Output formats (markdown/html/json/text) | ✅ | ✅ | markdown + plain + html ✅ (email HTML, Confluence HTML); webhook payload carries a structured **`data`** JSON object |
 | Push templates per destination | ✅ | ⛔ | — |
