@@ -24,6 +24,7 @@ mod plugins;
 mod scheduler_driver;
 mod schedules;
 mod settings;
+mod telemetry;
 mod summaries;
 mod tenancy;
 mod whatsapp;
@@ -588,7 +589,8 @@ async fn metrics(
         schedules = c.schedules,
         spend = c.total_spend_micros,
     );
-    Ok(body)
+    // Process-wide HTTP request counters (telemetry middleware).
+    Ok(body + &telemetry::render())
 }
 
 /// Minimal OpenAPI document (OpenAPI-first §12.6 item 1). A full generated spec
@@ -755,6 +757,38 @@ mod tests {
                 citations: vec![],
             },
         }
+    }
+
+    #[tokio::test]
+    async fn metrics_counts_requests_and_status_classes() {
+        let (state, token) = seeded_state();
+        let app = build_router(state);
+        // A 200 (authorized list) and a 401 (no token) — both should be counted,
+        // while the /metrics scrape itself is excluded.
+        app.clone()
+            .oneshot(
+                Request::get("/workspaces/ws-1/summaries")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        app.clone()
+            .oneshot(Request::get("/workspaces/ws-1/summaries").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let resp = app
+            .oneshot(Request::get("/metrics").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.contains("summarybot_http_requests_total"));
+        assert!(body.contains(r#"summarybot_http_responses_total{class="2xx"}"#));
+        assert!(body.contains(r#"summarybot_http_responses_total{class="4xx"}"#));
+        assert!(body.contains("summarybot_http_request_duration_ms_sum"));
     }
 
     #[tokio::test]

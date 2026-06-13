@@ -55,14 +55,33 @@ impl FromRequestParts<AppState> for AuthUser {
 }
 
 /// Stamp every response with a correlation id (generating one per request) so a
-/// request can be followed end-to-end (§12.2 item 3).
+/// request can be followed end-to-end (§12.2 item 3), record request telemetry,
+/// and emit one structured log line per request carrying that id. Infra probes
+/// (`/healthz`, `/metrics`) are skipped to keep counters and logs signal-only.
 pub async fn correlation_id(request: Request<axum::body::Body>, next: Next) -> Response {
     let cid = new_correlation_id()
         .map(|c| c.as_str().to_string())
         .unwrap_or_else(|_| "cid_unknown".to_string());
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let probe = matches!(path.as_str(), "/healthz" | "/metrics");
+    let start = std::time::Instant::now();
+
     let mut response = next.run(request).await;
+
     if let Ok(value) = HeaderValue::from_str(&cid) {
-        response.headers_mut().insert("x-correlation-id", value);
+        response.headers_mut().insert("x-correlation-id", value.clone());
+    }
+    if !probe {
+        let ms = start.elapsed().as_millis() as u64;
+        let status = response.status().as_u16();
+        crate::telemetry::record(status, ms);
+        // Structured (JSON) access log to stderr; `path` is escaped defensively
+        // since it can contain quotes/backslashes.
+        eprintln!(
+            r#"{{"msg":"request","method":"{method}","path":"{path}","status":{status},"duration_ms":{ms},"cid":"{cid}"}}"#,
+            path = path.replace('\\', "\\\\").replace('"', "\\\"")
+        );
     }
     response
 }

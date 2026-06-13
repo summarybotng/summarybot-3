@@ -157,7 +157,7 @@ per-destination rolling delivery).
 | Migration framework | ✅ (58+ tracked) | ✅ | `schema_migrations` ledger + ordered runner; idempotent baseline, future changes append as `(id, sql)` |
 | Audit log | ✅ | ✅ | `audit_log` ledger surfaced: `GET /workspaces/:ws/audit` (Admin+, tenant-member-scoped) + `Audit.tsx` tab; member role/remove + invite issuance now write entries (WSP-014). Per-tenant column + more instrumented events are a refinement |
 | Docker / Fly / Render deploy configs | ✅ | ✅ | multi-stage `Dockerfile` (web SPA → release API binary with the production feature set → slim non-root runtime, rustls so no OpenSSL, healthcheck), `.dockerignore`, `docker-compose.yml` (named volume for the SQLite DB) and `fly.toml`. SECRET_KEY required at runtime (never baked); DB on a `/data` volume |
-| Monitoring / metrics | ✅ | 🟡 | `GET /metrics` Prometheus gauges (tenants/workspaces/summaries/schedules/spend) + stderr logs; request-rate counters are a follow-up |
+| Monitoring / metrics | ✅ | ✅ | `GET /metrics` Prometheus DB gauges + **HTTP request counters** (total, by status class, cumulative duration) from the correlation-id middleware; one **structured JSON access log** per request carrying the correlation id (infra probes excluded) |
 | WASM sandbox boundary | n/a | 🟡 | architecture proven; only WhatsApp parse runs in WASM |
 
 ---
