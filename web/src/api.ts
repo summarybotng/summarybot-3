@@ -14,6 +14,8 @@ import type {
   WhatsappImport,
   ChatCoverage,
   Coverage,
+  CoverageGap,
+  ImportInvitation,
   WikiPage,
   ConnectionStatus,
   SourceSync,
@@ -275,10 +277,31 @@ export class Client {
     return this.json<ChatCoverage[]>(`/workspaces/${this.ws()}/whatsapp/chats`)
   }
 
-  /** One chat's merged coverage: covered span + classified gaps (WHA-016). */
+  /** One chat's merged coverage: gaps + contributors + invitations (WHA-016/018/019). */
   whatsappCoverage(chat: string): Promise<Coverage> {
     return this.json<Coverage>(
       `/workspaces/${this.ws()}/whatsapp/chats/${encodeURIComponent(chat)}/coverage`,
+    )
+  }
+
+  /** Open a scoped import invitation for a date range (WHA-019). */
+  createInvitation(
+    chat: string,
+    body: { range_start: number; range_end: number; kind: CoverageGap['kind']; note?: string },
+  ): Promise<ImportInvitation> {
+    return this.json<ImportInvitation>(
+      `/workspaces/${this.ws()}/whatsapp/chats/${encodeURIComponent(chat)}/invitations`,
+      this.body('POST', body),
+    )
+  }
+
+  /** Withdraw a standing import invitation (WHA-019). */
+  async cancelInvitation(chat: string, id: string): Promise<void> {
+    await this.json<unknown>(
+      `/workspaces/${this.ws()}/whatsapp/chats/${encodeURIComponent(
+        chat,
+      )}/invitations/${encodeURIComponent(id)}/cancel`,
+      { method: 'POST' },
     )
   }
 

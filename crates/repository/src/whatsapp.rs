@@ -76,6 +76,39 @@ pub struct ChatSummary {
     pub latest: i64,
 }
 
+/// A new scoped import invitation to persist (WHA-019).
+#[derive(Debug, Clone)]
+pub struct NewImportInvitation<'a> {
+    pub id: &'a str,
+    pub workspace_id: &'a WorkspaceId,
+    pub chat_id: &'a ChannelId,
+    pub range_start: i64,
+    pub range_end: i64,
+    /// Mirrors the gap classification: `before_join` / `between_imports` / `after_last`.
+    pub kind: &'a str,
+    /// Human-facing export instruction shown to the asked member.
+    pub note: &'a str,
+    pub created_by: &'a UserId,
+    pub created_at: i64,
+}
+
+/// A persisted scoped import invitation, read back for the asks list (WHA-019).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportInvitation {
+    pub id: String,
+    pub chat_id: String,
+    pub range_start: i64,
+    pub range_end: i64,
+    pub kind: String,
+    pub note: String,
+    /// `open` | `fulfilled` | `cancelled`.
+    pub status: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub fulfilled_by: Option<String>,
+    pub fulfilled_at: Option<i64>,
+}
+
 /// Storage boundary for the WhatsApp collection pipeline.
 pub trait WhatsAppRepository {
     /// Record an import, rejecting a re-uploaded identical file (WHA-010).
@@ -84,6 +117,30 @@ pub trait WhatsAppRepository {
     fn list_imports(&self, workspace: &WorkspaceId, chat: &ChannelId) -> Result<Vec<StoredImport>>;
     /// All chats with at least one import in the workspace, with a coverage rollup.
     fn list_chats(&self, workspace: &WorkspaceId) -> Result<Vec<ChatSummary>>;
+    /// Persist a scoped import invitation (WHA-019).
+    fn create_invitation(&self, inv: &NewImportInvitation) -> Result<()>;
+    /// A chat's invitations, newest first.
+    fn list_invitations(
+        &self,
+        workspace: &WorkspaceId,
+        chat: &ChannelId,
+    ) -> Result<Vec<ImportInvitation>>;
+    /// Fetch one invitation by id, scoped to its workspace.
+    fn get_invitation(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+    ) -> Result<Option<ImportInvitation>>;
+    /// Update an invitation's status (e.g. `fulfilled`/`cancelled`), optionally
+    /// recording who fulfilled it and when. Returns `false` if no row matched.
+    fn set_invitation_status(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+        status: &str,
+        fulfilled_by: Option<&str>,
+        fulfilled_at: Option<i64>,
+    ) -> Result<bool>;
     /// Find the participant bound to a phone hash in a chat, if any.
     fn participant_by_phone(
         &self,
@@ -207,6 +264,78 @@ impl WhatsAppRepository for SqliteRepository {
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    fn create_invitation(&self, inv: &NewImportInvitation) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO whatsapp_import_invitations
+               (id, workspace_id, chat_id, range_start, range_end, kind, note,
+                status, created_by, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'open',?8,?9)",
+            params![
+                inv.id,
+                inv.workspace_id.as_str(),
+                inv.chat_id.as_str(),
+                inv.range_start,
+                inv.range_end,
+                inv.kind,
+                inv.note,
+                inv.created_by.as_str(),
+                inv.created_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn list_invitations(
+        &self,
+        workspace: &WorkspaceId,
+        chat: &ChannelId,
+    ) -> Result<Vec<ImportInvitation>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, chat_id, range_start, range_end, kind, note, status,
+                    created_by, created_at, fulfilled_by, fulfilled_at
+             FROM whatsapp_import_invitations
+             WHERE workspace_id = ?1 AND chat_id = ?2
+             ORDER BY created_at DESC, id",
+        )?;
+        let rows = stmt.query_map(params![workspace.as_str(), chat.as_str()], invitation_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    fn get_invitation(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+    ) -> Result<Option<ImportInvitation>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, chat_id, range_start, range_end, kind, note, status,
+                        created_by, created_at, fulfilled_by, fulfilled_at
+                 FROM whatsapp_import_invitations
+                 WHERE workspace_id = ?1 AND id = ?2",
+                params![workspace.as_str(), id],
+                invitation_row,
+            )
+            .optional()?)
+    }
+
+    fn set_invitation_status(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+        status: &str,
+        fulfilled_by: Option<&str>,
+        fulfilled_at: Option<i64>,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE whatsapp_import_invitations
+             SET status = ?3, fulfilled_by = ?4, fulfilled_at = ?5
+             WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace.as_str(), id, status, fulfilled_by, fulfilled_at],
+        )?;
+        Ok(changed > 0)
     }
 
     fn participant_by_phone(
@@ -451,6 +580,23 @@ impl WhatsAppRepository for SqliteRepository {
     }
 }
 
+/// Map a row from `whatsapp_import_invitations` to the read struct.
+fn invitation_row(row: &rusqlite::Row) -> rusqlite::Result<ImportInvitation> {
+    Ok(ImportInvitation {
+        id: row.get(0)?,
+        chat_id: row.get(1)?,
+        range_start: row.get(2)?,
+        range_end: row.get(3)?,
+        kind: row.get(4)?,
+        note: row.get(5)?,
+        status: row.get(6)?,
+        created_by: row.get(7)?,
+        created_at: row.get(8)?,
+        fulfilled_by: row.get(9)?,
+        fulfilled_at: row.get(10)?,
+    })
+}
+
 fn attachment_kind_str(kind: AttachmentKind) -> &'static str {
     match kind {
         AttachmentKind::Image => "image",
@@ -522,6 +668,47 @@ mod tests {
                 .unwrap(),
             ImportOutcome::Duplicate("imp-1".to_string())
         );
+    }
+
+    #[test]
+    fn invitations_persist_list_and_change_status() {
+        let repo = repo();
+        let (ws, c, up) = (ws(), chat(), UserId::parse("u1").unwrap());
+        repo.create_invitation(&NewImportInvitation {
+            id: "inv-1",
+            workspace_id: &ws,
+            chat_id: &c,
+            range_start: 100,
+            range_end: 200,
+            kind: "between_imports",
+            note: "please export Jan",
+            created_by: &up,
+            created_at: 1_000,
+        })
+        .unwrap();
+
+        let list = repo.list_invitations(&ws, &c).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, "open");
+        assert_eq!(list[0].chat_id, "chat-1");
+        assert_eq!(list[0].fulfilled_at, None);
+
+        // Mark fulfilled, attributed to a contributor.
+        assert!(repo
+            .set_invitation_status(&ws, "inv-1", "fulfilled", Some("u2"), Some(2_000))
+            .unwrap());
+        let got = repo.get_invitation(&ws, "inv-1").unwrap().unwrap();
+        assert_eq!(got.status, "fulfilled");
+        assert_eq!(got.fulfilled_by.as_deref(), Some("u2"));
+        assert_eq!(got.fulfilled_at, Some(2_000));
+
+        // Unknown id / cross-workspace are no-ops / invisible (TEN-007).
+        assert!(!repo
+            .set_invitation_status(&ws, "ghost", "cancelled", None, None)
+            .unwrap());
+        let other = WorkspaceId::parse("ws-other").unwrap();
+        assert!(repo.get_invitation(&other, "inv-1").unwrap().is_none());
+        assert!(repo.list_invitations(&other, &c).unwrap().is_empty());
     }
 
     #[test]

@@ -42,7 +42,8 @@ pub use summary_store::{
     ModelSpend, SpendBreakdown, StructuredSummaryRepository, SummaryQuery, SummaryRecord,
 };
 pub use whatsapp::{
-    ChatSummary, ImportOutcome, ImportRecord, Participant, StoredImport, WhatsAppRepository,
+    ChatSummary, ImportInvitation, ImportOutcome, ImportRecord, NewImportInvitation, Participant,
+    StoredImport, WhatsAppRepository,
 };
 pub use wiki::{WikiPage, WikiRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
@@ -198,6 +199,28 @@ impl SqliteRepository {
                 date_end      INTEGER NOT NULL,
                 UNIQUE (workspace_id, chat_id, file_hash)
             );
+            -- Scoped import invitations (WHA-019): a persisted, tracked ask for
+            -- a specific date range of a chat to be exported and uploaded. An
+            -- invitation opens against a fillable coverage gap and is marked
+            -- fulfilled automatically once an import covers the range (the active
+            -- request-the-missing-history loop). kind mirrors the gap
+            -- classification; note is the human-facing instruction.
+            CREATE TABLE IF NOT EXISTS whatsapp_import_invitations (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT    NOT NULL,
+                chat_id      TEXT    NOT NULL,
+                range_start  INTEGER NOT NULL,
+                range_end    INTEGER NOT NULL,
+                kind         TEXT    NOT NULL,
+                note         TEXT    NOT NULL DEFAULT '',
+                status       TEXT    NOT NULL DEFAULT 'open',
+                created_by   TEXT    NOT NULL,
+                created_at   INTEGER NOT NULL,
+                fulfilled_by TEXT,
+                fulfilled_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_wa_invitations_chat
+                ON whatsapp_import_invitations(workspace_id, chat_id, status);
             -- Resolved per-chat participant identities (WHA-013). phone_hash is
             -- unique per chat; aliases are newline-delimited display names.
             CREATE TABLE IF NOT EXISTS whatsapp_participants (

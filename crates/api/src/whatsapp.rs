@@ -111,7 +111,34 @@ pub struct GapDto {
     pub can_fill: bool,
 }
 
-/// A chat's merged coverage picture (WHA-016).
+/// One member's contribution to a chat (WHA-018).
+#[derive(Serialize)]
+pub struct ContributionDto {
+    pub uploader: String,
+    pub import_count: i64,
+    pub message_count: i64,
+    pub earliest: i64,
+    pub latest: i64,
+}
+
+/// A persisted scoped import invitation (WHA-019).
+#[derive(Serialize)]
+pub struct InvitationDto {
+    pub id: String,
+    pub chat_id: String,
+    pub range_start: i64,
+    pub range_end: i64,
+    pub kind: String,
+    pub note: String,
+    pub status: String,
+    pub created_by: String,
+    pub created_at: i64,
+    pub fulfilled_by: Option<String>,
+    pub fulfilled_at: Option<i64>,
+}
+
+/// A chat's merged coverage picture (WHA-016), with contributors (WHA-018) and
+/// any standing scoped invitations (WHA-019).
 #[derive(Serialize)]
 pub struct CoverageDto {
     pub chat_id: String,
@@ -120,6 +147,8 @@ pub struct CoverageDto {
     /// Total seconds covered by the union of import spans.
     pub covered_secs: i64,
     pub gaps: Vec<GapDto>,
+    pub contributors: Vec<ContributionDto>,
+    pub invitations: Vec<InvitationDto>,
 }
 
 /// A chat in the workspace overview: its import stats plus coverage (WHA-017).
@@ -139,7 +168,38 @@ fn gap_kind_tag(k: domain::GapKind) -> &'static str {
     }
 }
 
-fn coverage_dto(chat_id: String, report: domain::CoverageReport) -> CoverageDto {
+fn contribution_dto(c: host::Contribution) -> ContributionDto {
+    ContributionDto {
+        uploader: c.uploader,
+        import_count: c.import_count,
+        message_count: c.message_count,
+        earliest: c.earliest,
+        latest: c.latest,
+    }
+}
+
+fn invitation_dto(i: repository::ImportInvitation) -> InvitationDto {
+    InvitationDto {
+        id: i.id,
+        chat_id: i.chat_id,
+        range_start: i.range_start,
+        range_end: i.range_end,
+        kind: i.kind,
+        note: i.note,
+        status: i.status,
+        created_by: i.created_by,
+        created_at: i.created_at,
+        fulfilled_by: i.fulfilled_by,
+        fulfilled_at: i.fulfilled_at,
+    }
+}
+
+fn coverage_dto(
+    chat_id: String,
+    report: domain::CoverageReport,
+    contributors: Vec<host::Contribution>,
+    invitations: Vec<repository::ImportInvitation>,
+) -> CoverageDto {
     CoverageDto {
         chat_id,
         earliest: report.earliest,
@@ -155,6 +215,8 @@ fn coverage_dto(chat_id: String, report: domain::CoverageReport) -> CoverageDto 
                 can_fill: g.can_fill,
             })
             .collect(),
+        contributors: contributors.into_iter().map(contribution_dto).collect(),
+        invitations: invitations.into_iter().map(invitation_dto).collect(),
     }
 }
 
@@ -167,22 +229,33 @@ pub async fn list_chats(
     user.require_workspace(&ws)?;
     let workspace = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let now = crate::auth::now_secs();
-    let chats = {
+    let dtos = {
         let repo = state.repo.lock().expect("repo mutex");
-        host::workspace_coverage(&*repo, &workspace, now)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-    };
-    Ok(Json(
+        let chats =
+            host::workspace_coverage(&*repo, &workspace, now).map_err(internal)?;
         chats
             .into_iter()
-            .map(|c| ChatCoverageDto {
-                chat_id: c.summary.chat_id.clone(),
-                import_count: c.summary.import_count,
-                message_count: c.summary.message_count,
-                coverage: coverage_dto(c.summary.chat_id, c.report),
+            .map(|c| {
+                let channel = ChannelId::parse(&c.summary.chat_id)
+                    .map_err(|e| ApiError::Internal(e.to_string()))?;
+                let contributors =
+                    host::contributors_for(&*repo, &workspace, &channel).map_err(internal)?;
+                let invitations =
+                    host::list_invitations(&*repo, &workspace, &channel).map_err(internal)?;
+                Ok(ChatCoverageDto {
+                    chat_id: c.summary.chat_id.clone(),
+                    import_count: c.summary.import_count,
+                    message_count: c.summary.message_count,
+                    coverage: coverage_dto(c.summary.chat_id, c.report, contributors, invitations),
+                })
             })
-            .collect(),
-    ))
+            .collect::<Result<Vec<_>, ApiError>>()?
+    };
+    Ok(Json(dtos))
+}
+
+fn internal(e: anyhow::Error) -> ApiError {
+    ApiError::Internal(e.to_string())
 }
 
 /// `GET /workspaces/:ws/whatsapp/chats/:chat/coverage` — one chat's gaps (WHA-016).
@@ -195,10 +268,82 @@ pub async fn chat_coverage(
     let workspace = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let channel = ChannelId::parse(&chat).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let now = crate::auth::now_secs();
-    let report = {
+    let dto = {
         let repo = state.repo.lock().expect("repo mutex");
-        host::coverage_for(&*repo, &workspace, &channel, now)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
+        let report = host::coverage_for(&*repo, &workspace, &channel, now).map_err(internal)?;
+        let contributors = host::contributors_for(&*repo, &workspace, &channel).map_err(internal)?;
+        let invitations = host::list_invitations(&*repo, &workspace, &channel).map_err(internal)?;
+        coverage_dto(channel.as_str().to_string(), report, contributors, invitations)
     };
-    Ok(Json(coverage_dto(channel.as_str().to_string(), report)))
+    Ok(Json(dto))
+}
+
+/// Body for opening a scoped import invitation (WHA-019).
+#[derive(Deserialize)]
+pub struct NewInvitationBody {
+    pub range_start: i64,
+    pub range_end: i64,
+    /// `before_join` | `between_imports` | `after_last`.
+    pub kind: String,
+    /// Optional human-facing export instruction; a default is generated if absent.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `POST /workspaces/:ws/whatsapp/chats/:chat/invitations` — open a scoped ask
+/// for a specific date range to be exported and uploaded (WHA-019).
+pub async fn create_invitation(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, chat)): Path<(String, String)>,
+    Json(body): Json<NewInvitationBody>,
+) -> Result<Json<InvitationDto>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = WorkspaceId::parse(&ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let channel = ChannelId::parse(&chat).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if body.range_end <= body.range_start {
+        return Err(ApiError::bad_request("range_end must be after range_start"));
+    }
+    let note = body.note.unwrap_or_default();
+    let now = crate::auth::now_secs();
+    let dto = {
+        let repo = state.repo.lock().expect("repo mutex");
+        let id = host::open_invitation(
+            &*repo,
+            &workspace,
+            &channel,
+            body.range_start,
+            body.range_end,
+            &body.kind,
+            &note,
+            &user.0.sub,
+            now,
+        )
+        .map_err(internal)?;
+        let inv = repository::WhatsAppRepository::get_invitation(&*repo, &workspace, &id)
+            .map_err(internal)?
+            .ok_or_else(|| ApiError::Internal("invitation vanished after create".into()))?;
+        invitation_dto(inv)
+    };
+    Ok(Json(dto))
+}
+
+/// `POST /workspaces/:ws/whatsapp/chats/:chat/invitations/:id/cancel` — withdraw
+/// a standing ask (WHA-019).
+pub async fn cancel_invitation(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, _chat, id)): Path<(String, String, String)>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = WorkspaceId::parse(&ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let cancelled = {
+        let repo = state.repo.lock().expect("repo mutex");
+        host::cancel_invitation(&*repo, &workspace, &id).map_err(internal)?
+    };
+    if cancelled {
+        Ok(axum::http::StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
 }

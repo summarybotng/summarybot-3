@@ -27,7 +27,10 @@ pub mod tenant_routing;
 pub mod whatsapp;
 pub mod wiki;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
-pub use coverage::{coverage_for, workspace_coverage, ChatCoverage};
+pub use coverage::{
+    cancel_invitation, contributors_for, coverage_for, list_invitations, open_invitation,
+    reconcile_invitations, workspace_coverage, ChatCoverage, Contribution,
+};
 pub use delivery::{
     build_deliverers, load_workspace_delivery, sink_descriptors, ConfiguredDestination, Deliverer,
     DeliveryOutcome, DeliveryReport, DeliveryService, FieldHint, FieldSpec, RenderedSummary,

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../auth'
-import { ApiError } from '../api'
-import type { ChatCoverage, CoverageGap, Summary, WhatsappImport } from '../types'
+import { ApiError, Client } from '../api'
+import type { ChatCoverage, CoverageGap, ImportInvitation, Summary, WhatsappImport } from '../types'
 
 // WhatsApp export ingestion (WHA-001). The browser sends the chosen file as the
 // raw request body; the server unzips, parses, anonymizes, dedups and stores.
@@ -168,7 +168,7 @@ export function Whatsapp() {
         )}
       </div>
 
-      <CoverageOverview chats={chats} />
+      <CoverageOverview chats={chats} client={client} onChange={loadCoverage} />
     </div>
   )
 }
@@ -205,7 +205,26 @@ function askText(chat: string, g: CoverageGap): string {
   return `We're missing #${chat} messages for ${range}. If you have that period, please export the chat (WhatsApp → #${chat} → ⋮ → Export chat → Without media) and upload the .zip here.`
 }
 
-function CoverageOverview({ chats }: { chats: ChatCoverage[] | null }) {
+// Two ranges overlap if neither ends before the other starts.
+function overlaps(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
+  return a.start < b.end && b.start < a.end
+}
+
+const STATUS_BADGE: Record<ImportInvitation['status'], string> = {
+  open: 'bg-amber-100 text-amber-800',
+  fulfilled: 'bg-emerald-100 text-emerald-800',
+  cancelled: 'bg-slate-100 text-slate-500',
+}
+
+function CoverageOverview({
+  chats,
+  client,
+  onChange,
+}: {
+  chats: ChatCoverage[] | null
+  client: Client | null
+  onChange: () => void
+}) {
   if (!chats) return null
   if (chats.length === 0) {
     return (
@@ -218,13 +237,21 @@ function CoverageOverview({ chats }: { chats: ChatCoverage[] | null }) {
     <div className="space-y-4">
       <h2 className="font-semibold text-slate-800">Coverage &amp; history gaps</h2>
       {chats.map((c) => (
-        <ChatCoverageCard key={c.chat_id} chat={c} />
+        <ChatCoverageCard key={c.chat_id} chat={c} client={client} onChange={onChange} />
       ))}
     </div>
   )
 }
 
-function ChatCoverageCard({ chat }: { chat: ChatCoverage }) {
+function ChatCoverageCard({
+  chat,
+  client,
+  onChange,
+}: {
+  chat: ChatCoverage
+  client: Client | null
+  onChange: () => void
+}) {
   const { coverage: cov } = chat
   const now = Math.floor(Date.now() / 1000)
   // Timeline domain: from the earliest known instant (a before_join gap can start
@@ -238,6 +265,7 @@ function ChatCoverageCard({ chat }: { chat: ChatCoverage }) {
   const pct = (v: number) => `${(Math.max(0, Math.min(v, span)) / span) * 100}%`
   const coveragePct = Math.round((cov.covered_secs / span) * 100)
   const fillable = cov.gaps.filter((g) => g.can_fill)
+  const openInvites = cov.invitations.filter((i) => i.status === 'open')
 
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -274,18 +302,115 @@ function ChatCoverageCard({ chat }: { chat: ChatCoverage }) {
             {fillable.length} fillable gap{fillable.length === 1 ? '' : 's'} — ask members to export:
           </p>
           {fillable.map((g, i) => (
-            <GapAsk key={i} chat={chat.chat_id} gap={g} />
+            <GapAsk
+              key={i}
+              chat={chat.chat_id}
+              gap={g}
+              client={client}
+              onChange={onChange}
+              requested={openInvites.some((inv) =>
+                overlaps({ start: inv.range_start, end: inv.range_end }, { start: g.start, end: g.end }),
+              )}
+            />
           ))}
         </div>
       ) : (
         <p className="mt-3 text-xs text-emerald-700">No fillable gaps — this chat is fully covered.</p>
       )}
+
+      <Contributors chat={chat} />
+      <StandingRequests chat={chat.chat_id} invitations={cov.invitations} client={client} onChange={onChange} />
     </div>
   )
 }
 
-function GapAsk({ chat, gap }: { chat: string; gap: CoverageGap }) {
+function Contributors({ chat }: { chat: ChatCoverage }) {
+  const { contributors } = chat.coverage
+  if (contributors.length === 0) return null
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-3">
+      <p className="text-xs font-medium text-slate-600">Contributors (who supplied what)</p>
+      <ul className="mt-1 space-y-1">
+        {contributors.map((c) => (
+          <li key={c.uploader} className="flex justify-between text-xs text-slate-500">
+            <span className="font-medium text-slate-700">{c.uploader}</span>
+            <span>
+              {fmtDate(c.earliest)} → {fmtDate(c.latest)} · {c.import_count} import
+              {c.import_count === 1 ? '' : 's'} · {c.message_count.toLocaleString()} msgs
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function StandingRequests({
+  chat,
+  invitations,
+  client,
+  onChange,
+}: {
+  chat: string
+  invitations: ImportInvitation[]
+  client: Client | null
+  onChange: () => void
+}) {
+  if (invitations.length === 0) return null
+  async function cancel(id: string) {
+    if (!client) return
+    try {
+      await client.cancelInvitation(chat, id)
+      onChange()
+    } catch {
+      /* leave the list as-is; a reload will resync */
+    }
+  }
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-3">
+      <p className="text-xs font-medium text-slate-600">Standing export requests</p>
+      <ul className="mt-1 space-y-1">
+        {invitations.map((inv) => (
+          <li key={inv.id} className="flex items-center justify-between gap-2 text-xs text-slate-500">
+            <span>
+              <span className={`mr-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_BADGE[inv.status]}`}>
+                {inv.status}
+              </span>
+              {GAP_LABEL[inv.kind]} · {fmtDate(inv.range_start)} → {fmtDate(inv.range_end)}
+              {inv.status === 'fulfilled' && inv.fulfilled_by && (
+                <span className="text-emerald-700"> · filled by {inv.fulfilled_by}</span>
+              )}
+            </span>
+            {inv.status === 'open' && (
+              <button
+                onClick={() => void cancel(inv.id)}
+                className="shrink-0 rounded border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:border-slate-400"
+              >
+                Cancel
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function GapAsk({
+  chat,
+  gap,
+  client,
+  onChange,
+  requested,
+}: {
+  chat: string
+  gap: CoverageGap
+  client: Client | null
+  onChange: () => void
+  requested: boolean
+}) {
   const [copied, setCopied] = useState(false)
+  const [requesting, setRequesting] = useState(false)
   const text = askText(chat, gap)
   async function copy() {
     try {
@@ -296,18 +421,52 @@ function GapAsk({ chat, gap }: { chat: string; gap: CoverageGap }) {
       /* clipboard may be unavailable; the text is shown regardless */
     }
   }
+  // Persist this gap as a tracked invitation (WHA-019); it auto-fulfills when a
+  // covering import lands.
+  async function request() {
+    if (!client) return
+    setRequesting(true)
+    try {
+      await client.createInvitation(chat, {
+        range_start: gap.start,
+        range_end: gap.end,
+        kind: gap.kind,
+        note: text,
+      })
+      onChange()
+    } catch {
+      /* surfaced by a failed reload; keep the UI responsive */
+    } finally {
+      setRequesting(false)
+    }
+  }
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs font-medium text-slate-700">
           {GAP_LABEL[gap.kind]} · {fmtDate(gap.start)} → {fmtDate(gap.end)} ({fmtDays(gap.end - gap.start)})
         </span>
-        <button
-          onClick={() => void copy()}
-          className="shrink-0 rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg"
-        >
-          {copied ? 'Copied!' : 'Copy ask'}
-        </button>
+        <div className="flex shrink-0 gap-1">
+          {requested ? (
+            <span className="rounded bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800">
+              Requested
+            </span>
+          ) : (
+            <button
+              onClick={() => void request()}
+              disabled={requesting}
+              className="rounded border border-accent px-2 py-1 text-xs font-medium text-accent disabled:opacity-50"
+            >
+              {requesting ? 'Requesting…' : 'Request export'}
+            </button>
+          )}
+          <button
+            onClick={() => void copy()}
+            className="rounded bg-accent px-2 py-1 text-xs font-medium text-accent-fg"
+          >
+            {copied ? 'Copied!' : 'Copy ask'}
+          </button>
+        </div>
       </div>
       <p className="mt-1 text-xs text-slate-500">{text}</p>
     </div>

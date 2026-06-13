@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-13 — Tenants/Members admin tab (RBAC: roles + invites); rolling-ingest dedup Layers 1–3 (content-hash + semantic gate + delta ingest); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-13 — WhatsApp coverage complete (WHA-014..019): timeline + classified gaps, contributor tracking, persisted auto-fulfilled scoped import invitations; Tenants/Members admin tab (RBAC: roles + invites); rolling-ingest dedup Layers 1–3 (content-hash + semantic gate + delta ingest); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -43,7 +43,9 @@ per-destination rolling delivery).
 | PII anonymization at ingest | ✅ | ✅ | HMAC phone→pseudonym before storage (WHA-006) |
 | Dedup (file + message level) | ✅ | ✅ | SHA-256 + synthetic fingerprint (WHA-010/012) |
 | WhatsApp coverage + history gaps | ✅ | ✅ | per-chat import spans merged → classified `before_join`/`between_imports`/`after_last` gaps; group-creation anchor detected from chat events (WHA-014/015/016); `host/coverage.rs`, `GET /workspaces/:ws/whatsapp/chats[/:chat/coverage]`. Each import now recorded in `whatsapp_imports` (was never populated before) |
-| Coverage timeline + "ask members to export X" | ➖ | ✅ | `Whatsapp.tsx` covered-vs-gaps bar, coverage %, copy-ready scoped export instructions per fillable gap (WHA-017/019). Persisted scoped invitations + contributor tracking (WHA-018) deferred |
+| Coverage timeline + "ask members to export X" | ➖ | ✅ | `Whatsapp.tsx` covered-vs-gaps bar, coverage %, copy-ready scoped export instructions per fillable gap (WHA-017) |
+| Contributor tracking | ✅ | ✅ | per-chat rollup of who supplied which date range / how many imports + messages, from the attributed import records; `host::contributors_for`, surfaced on the coverage card (WHA-018) |
+| Scoped import invitations (persisted, auto-fulfilled) | ✅ | ✅ | `whatsapp_import_invitations` table; open a tracked ask against a gap, auto-marked `fulfilled` (credited to the contributor) when a covering import lands, or `cancelled`; `host/coverage.rs` reconcile wired into ingest; `POST .../chats/:chat/invitations[/:id/cancel]`; Request/Cancel in `Whatsapp.tsx` (WHA-019) |
 | Discord message fetch | ✅ (discord.py) | ✅ | `DiscordFetcher` over Discord REST v10 (blocking `ureq`, `--features discord`); pure normalization unit-tested; bot token encrypted; fetch persists to the message store (ADR-128). Verified live (real 401 on a bogus token). Gateway/streaming + polling scheduler deferred |
 | Slack message fetch | ✅ (OAuth + history) | ✅ | `SlackFetcher` over the Slack Web API (`conversations.list`/`.history`, blocking `ureq`, `--features slack`); pure normalization unit-tested; bot token encrypted; fetch persists to the message store (ADR-128). Verified live (real `invalid_auth` on a bogus token). Bot must be a channel member; name resolution + Slack OAuth install flow deferred |
 | Google Drive sync (as a source) | ✅ | ➖ | not carried as an ingestion source; v3 uses Drive only as a publish sink (see Delivery, ADR-126) |

@@ -84,7 +84,7 @@ pub fn ingest_whatsapp_zip<R: WhatsAppRepository>(
     if let Some((date_start, date_end)) = parsed.date_range {
         let file_hash = hex(&Sha256::digest(bytes));
         let id = format!("imp_{now}_{}", &file_hash[..12.min(file_hash.len())]);
-        repo.record_import(&ImportRecord {
+        let outcome = repo.record_import(&ImportRecord {
             id: &id,
             workspace_id: ctx.workspace_id,
             chat_id: ctx.chat_id,
@@ -97,6 +97,17 @@ pub fn ingest_whatsapp_zip<R: WhatsAppRepository>(
             date_end,
             group_created_at: parsed.group_created_at(),
         })?;
+        // A genuinely new import may have closed a standing ask: mark any scoped
+        // invitation now covered as fulfilled, credited to this uploader (WHA-019).
+        if matches!(outcome, repository::ImportOutcome::Recorded) {
+            crate::coverage::reconcile_invitations(
+                repo,
+                ctx.workspace_id,
+                ctx.chat_id,
+                ctx.uploader,
+                now,
+            )?;
+        }
     }
     Ok((summary, parsed))
 }

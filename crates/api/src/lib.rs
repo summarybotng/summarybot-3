@@ -425,6 +425,15 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/whatsapp/chats/:chat/coverage",
             get(whatsapp::chat_coverage),
         )
+        // Scoped import invitations: persisted, auto-fulfilled asks (WHA-019).
+        .route(
+            "/workspaces/:ws/whatsapp/chats/:chat/invitations",
+            post(whatsapp::create_invitation),
+        )
+        .route(
+            "/workspaces/:ws/whatsapp/chats/:chat/invitations/:id/cancel",
+            post(whatsapp::cancel_invitation),
+        )
         .route("/workspaces/:ws/summaries/:id/pin", post(summaries::pin))
         .route(
             "/workspaces/:ws/summaries/:id/unpin",
@@ -602,7 +611,9 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
             "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
             "/workspaces/{ws}/whatsapp/chats": { "get": { "summary": "Per-chat WhatsApp coverage overview — import/message counts + classified gaps (WHA-017, ADR-121)" } },
-            "/workspaces/{ws}/whatsapp/chats/{chat}/coverage": { "get": { "summary": "One chat's merged coverage: covered span + before_join/between_imports/after_last gaps (WHA-016)" } },
+            "/workspaces/{ws}/whatsapp/chats/{chat}/coverage": { "get": { "summary": "One chat's merged coverage: covered span + gaps + contributors + scoped invitations (WHA-016/018/019)" } },
+            "/workspaces/{ws}/whatsapp/chats/{chat}/invitations": { "post": { "summary": "Open a scoped import invitation for a date range — {range_start,range_end,kind,note?} (WHA-019)" } },
+            "/workspaces/{ws}/whatsapp/chats/{chat}/invitations/{id}/cancel": { "post": { "summary": "Withdraw a standing import invitation (WHA-019)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
             "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } },
@@ -1554,6 +1565,83 @@ mod tests {
         assert_eq!(j["chat_id"], "family");
         let gaps = j["gaps"].as_array().unwrap();
         assert!(gaps.iter().any(|g| g["kind"] == "after_last" && g["can_fill"] == true));
+    }
+
+    #[tokio::test]
+    async fn whatsapp_invitation_opens_and_auto_fulfills_on_import() {
+        let (state, token) = seeded_state(); // token grants ws-1
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        let import = |body: &'static str| {
+            Request::post("/workspaces/ws-1/whatsapp/imports?chat=family&tz=UTC")
+                .header("authorization", &auth)
+                .header("content-type", "text/plain")
+                .body(Body::from(body))
+                .unwrap()
+        };
+        // Seed an early slice, leaving a long after-last gap up to "now".
+        app.clone()
+            .oneshot(import(
+                "[01/01/2020, 09:00:00] Alice: hi\n[02/01/2020, 09:00:00] Bob: yo",
+            ))
+            .await
+            .unwrap();
+
+        // Open a scoped invitation for a wide recent range (definitely gap now).
+        let open = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/whatsapp/chats/family/invitations")
+                    .header("authorization", &auth)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"range_start":1780315200,"range_end":1780488000,"kind":"between_imports","note":"please export early June"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(open.status(), StatusCode::OK);
+        let inv = body_json(open).await;
+        assert_eq!(inv["status"], "open");
+        assert_eq!(inv["kind"], "between_imports");
+
+        // It shows up on the chat's coverage detail.
+        let cov = app
+            .clone()
+            .oneshot(
+                Request::get("/workspaces/ws-1/whatsapp/chats/family/coverage")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cj = body_json(cov).await;
+        assert_eq!(cj["invitations"].as_array().unwrap().len(), 1);
+        // Contributor tracking: Alice's uploader is credited with the import.
+        assert_eq!(cj["contributors"].as_array().unwrap().len(), 1);
+
+        // A recent import spanning the requested range (Jun 1–4) auto-fulfills it.
+        app.clone()
+            .oneshot(import(
+                "[01/06/2026, 09:00:00] Alice: recent\n[02/06/2026, 09:00:00] Bob: more\n[04/06/2026, 09:00:00] Alice: later",
+            ))
+            .await
+            .unwrap();
+        let cov2 = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/whatsapp/chats/family/coverage")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cj2 = body_json(cov2).await;
+        let invs = cj2["invitations"].as_array().unwrap();
+        assert_eq!(invs.len(), 1);
+        assert_eq!(invs[0]["status"], "fulfilled");
     }
 
     #[tokio::test]

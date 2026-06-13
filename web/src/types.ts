@@ -123,13 +123,40 @@ export interface CoverageGap {
   can_fill: boolean
 }
 
-/** One chat's merged coverage picture. */
+/** One member's contribution to a chat (WHA-018). */
+export interface Contribution {
+  uploader: string
+  import_count: number
+  message_count: number
+  earliest: number
+  latest: number
+}
+
+/** A persisted scoped import invitation (WHA-019). */
+export interface ImportInvitation {
+  id: string
+  chat_id: string
+  range_start: number
+  range_end: number
+  kind: CoverageGap['kind']
+  note: string
+  /** `open` | `fulfilled` | `cancelled`. */
+  status: 'open' | 'fulfilled' | 'cancelled'
+  created_by: string
+  created_at: number
+  fulfilled_by: string | null
+  fulfilled_at: number | null
+}
+
+/** One chat's merged coverage picture, with contributors + standing asks. */
 export interface Coverage {
   chat_id: string
   earliest: number | null
   latest: number | null
   covered_secs: number
   gaps: CoverageGap[]
+  contributors: Contribution[]
+  invitations: ImportInvitation[]
 }
 
 /** A chat in the workspace coverage overview. */
