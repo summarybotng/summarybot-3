@@ -14,7 +14,7 @@ rewrite covers, and what's left. **Keep this current** — see
 |---|---|---|
 | Core summarization | ✅ **at/above parity** | map-reduce, citations, cost cap, budgets — done |
 | WhatsApp ingestion | ✅ **at parity** | full pipeline, anonymized, deduped |
-| Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101), Append + Hybrid/Resummarize merges; rolling-ingest dedup Layer 4 is a refinement |
+| Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101), Append + Hybrid/Resummarize merges; per-destination rolling delivery is a refinement |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **at parity** | 11 tabs + live SSE; incl. Knowledge, Spend, Audit, Tenants/Members admin |
 | Delivery | ✅ **~95%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; Discord/Slack channel **send** ✅; DM send + per-destination templates remain |
@@ -31,7 +31,7 @@ buckets: (1) **live platform I/O** (Discord/Slack **send**, email/Confluence
 delivery, real OAuth — fetch is done), (2) **production hardening** (Docker/deploy;
 migrations + basic metrics + audit done), and (3) **refinements** (rolling now
 wired end-to-end with Append + Hybrid/Resummarize merges — remaining:
-rolling-ingest dedup ADR-129 Layer 4, per-destination rolling delivery).
+per-destination rolling delivery; rolling-ingest dedup ADR-129 fully shipped).
 
 ---
 
@@ -147,7 +147,7 @@ rolling-ingest dedup ADR-129 Layer 4, per-destination rolling delivery).
 | Coherence / hallucination gate (COH-001) | ✅ | ✅ | lexical grounding check; grounded score persisted + shown on summaries (LLM-judge is a stronger follow-up) |
 | Wiki synthesis (pages, regenerate) (WIK-001/002/003) | ✅ (extensive) | ✅ | LLM organizes a workspace's units into one topic-grouped `knowledge-base` page; regenerable on demand; per-tenant LLM + budget (ADR-125); verified live + browser-checked. Multi-page emergent structure is a refinement |
 | AI wiki curator (CUR-*) | ✅ | ⛔ | deferred (ADR-127) |
-| Rolling-ingest dedup (SUM-010) | ✅ | 🟡 | **Layers 1–3 shipped (ADR-129)**: content-addressed unit ids (exact repeats collapse on upsert), a **semantic near-dup gate** (cosine ≥ threshold, default 0.93), and **delta-only ingest** — the rolling runner feeds each period's delta into the knowledge base as it accumulates (`with_knowledge`), so finalize needn't re-ingest and dedup handles overlap. All unit-tested. Remaining: replace-set/provenance-merge (Layer 4) |
+| Rolling-ingest dedup (SUM-010) | ✅ | ✅ | **All 4 layers shipped (ADR-129)**: content-addressed unit ids (exact repeats collapse on upsert), a **semantic near-dup gate** (cosine ≥ threshold, default 0.93), **delta-only ingest** (the rolling runner feeds each period's delta into the knowledge base as it accumulates), and **provenance-merge (Layer 4)** — a re-stated/paraphrased fact merges its source message ids into the matched existing unit (strengthening grounding, COH-005) instead of being dropped. All unit-tested |
 
 ## Storage / ops
 

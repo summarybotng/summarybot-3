@@ -34,6 +34,19 @@ pub fn knowledge_unit_id(workspace: &str, kind: &str, text: &str) -> String {
     format!("ku_{:x}", hasher.finalize())
 }
 
+/// Merge `add` into `target` as a set union, preserving order (ADR-129 Layer 4
+/// provenance merge). Returns whether `target` gained any new id.
+fn merge_source_ids(target: &mut Vec<String>, add: &[String]) -> bool {
+    let mut changed = false;
+    for s in add {
+        if !target.iter().any(|t| t == s) {
+            target.push(s.clone());
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// Produces embedding vectors for texts. Batched; the model id is pinned with
 /// each stored vector (Q#8). `Send + Sync` so it can live in shared app state.
 pub trait Embedder: Send + Sync {
@@ -169,35 +182,73 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
             .filter(|u| seen.insert(u.id.clone()))
             .collect();
 
-        // Semantic near-duplicate gate (ADR-129 Layer 2): a genuinely-new unit
-        // whose embedding is within the threshold of an already-stored same-kind
-        // unit is a paraphrase of an existing fact — drop it instead of adding a
-        // near-identical vector. Exact-id matches (Layer 1) pass through to upsert.
-        let existing = self.repo.list_units(workspace)?;
-        let existing_ids: std::collections::HashSet<&str> =
-            existing.iter().map(|u| u.id.as_str()).collect();
+        // Dedup with provenance merge (ADR-129 Layers 1/2/4). A candidate that
+        // matches an already-known fact — by **exact content id** (Layer 1) or by
+        // **semantic near-duplicate** (Layer 2: same-kind embedding within the
+        // threshold) — is not stored as a new unit. Instead its source message ids
+        // are **merged into the matched unit's provenance** (Layer 4), so a
+        // re-stated fact strengthens the existing unit's grounding (COH-005) rather
+        // than being silently dropped. Only genuinely-new facts become new units.
+        let mut existing_by_id: std::collections::HashMap<String, StoredKnowledgeUnit> = self
+            .repo
+            .list_units(workspace)?
+            .into_iter()
+            .map(|u| (u.id.clone(), u))
+            .collect();
         let mut kept: Vec<StoredKnowledgeUnit> = Vec::with_capacity(candidates.len());
+        let mut touched: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         for cand in candidates {
-            if !existing_ids.contains(cand.id.as_str()) {
-                if let Some(ce) = &cand.embedding {
-                    let near_dup = existing
-                        .iter()
-                        .chain(kept.iter())
-                        .filter(|u| u.kind == cand.kind)
-                        .filter_map(|u| u.embedding.as_ref())
-                        .any(|e| {
+            // Exact-id match (Layer 1) against a stored or this-batch unit.
+            if let Some(t) = existing_by_id.get_mut(&cand.id) {
+                if merge_source_ids(&mut t.source_ids, &cand.source_ids) {
+                    touched.insert(cand.id.clone());
+                }
+                continue;
+            }
+            if let Some(t) = kept.iter_mut().find(|u| u.id == cand.id) {
+                merge_source_ids(&mut t.source_ids, &cand.source_ids);
+                continue;
+            }
+            // Semantic near-duplicate (Layer 2) → merge provenance (Layer 4).
+            if let Some(ce) = &cand.embedding {
+                let is_near = |u: &StoredKnowledgeUnit| {
+                    u.kind == cand.kind
+                        && u.embedding.as_ref().is_some_and(|e| {
                             e.len() == ce.len()
                                 && domain::cosine_similarity(ce, e) >= self.near_dup_threshold
-                        });
-                    if near_dup {
-                        continue;
+                        })
+                };
+                if let Some(id) = existing_by_id
+                    .values()
+                    .find(|u| is_near(u))
+                    .map(|u| u.id.clone())
+                {
+                    let t = existing_by_id.get_mut(&id).expect("just found");
+                    if merge_source_ids(&mut t.source_ids, &cand.source_ids) {
+                        touched.insert(id);
                     }
+                    continue;
+                }
+                if let Some(t) = kept.iter_mut().find(|u| is_near(u)) {
+                    merge_source_ids(&mut t.source_ids, &cand.source_ids);
+                    continue;
                 }
             }
             kept.push(cand);
         }
-        self.repo.save_units(workspace, &kept)?;
-        Ok(kept.len())
+
+        // Persist the genuinely-new units plus any existing units whose provenance
+        // grew (re-saved by id → upsert updates source_ids in place).
+        let new_count = kept.len();
+        let mut to_save = kept;
+        for id in touched {
+            if let Some(u) = existing_by_id.remove(&id) {
+                to_save.push(u);
+            }
+        }
+        self.repo.save_units(workspace, &to_save)?;
+        Ok(new_count)
     }
 
     /// Semantic search: embed `query`, rank the workspace's embedded units by
@@ -457,6 +508,60 @@ mod tests {
         svc.ingest(&ws(), &s2, "sum_2", 200).unwrap();
         // +headline beta, +gamma; the migration paraphrase is gated → 3 + 2 = 5.
         assert_eq!(repo.count_units(&ws()).unwrap(), 5);
+    }
+
+    #[test]
+    fn near_duplicate_merges_provenance_into_the_existing_unit() {
+        use repository::KnowledgeRepository;
+        // Fixed embedder: the word "migration" maps to a stable vector, so the
+        // paraphrase is a deterministic near-dup of the original.
+        struct FixedEmbedder;
+        impl Embedder for FixedEmbedder {
+            fn model(&self) -> &str {
+                "fixed-4"
+            }
+            fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+                Ok(texts
+                    .iter()
+                    .map(|t| {
+                        if t.to_lowercase().contains("migration") {
+                            vec![0.0, 0.0, 1.0, 0.0]
+                        } else {
+                            vec![0.25, 0.25, 0.25, 0.25]
+                        }
+                    })
+                    .collect())
+            }
+        }
+        fn cited(text: &str, msg: &str) -> ExtractedSummary {
+            ExtractedSummary {
+                text: text.into(),
+                key_points: vec![],
+                action_items: vec![],
+                technical_terms: vec![],
+                participants: vec![],
+                citations: vec![domain::summarize::ResolvedCitation {
+                    message_id: domain::MessageId::parse(msg).unwrap(),
+                    quote: None,
+                }],
+            }
+        }
+
+        let repo = SqliteRepository::in_memory().unwrap();
+        let emb = FixedEmbedder;
+        let svc = KnowledgeService::new(&repo, &emb).with_near_dup_threshold(0.93);
+
+        // Original fact, grounded in message m1.
+        assert_eq!(svc.ingest(&ws(), &cited("the migration runs thursday", "m1"), "s1", 1).unwrap(), 1);
+        // A paraphrase grounded in m2 → no new unit, but its provenance merges in.
+        assert_eq!(svc.ingest(&ws(), &cited("migration is scheduled for thursday", "m2"), "s2", 2).unwrap(), 0);
+        assert_eq!(repo.count_units(&ws()).unwrap(), 1, "paraphrase did not add a unit");
+
+        let units = repo.list_units(&ws()).unwrap();
+        let migration = units.iter().find(|u| u.text.contains("migration")).unwrap();
+        // Layer 4: the surviving unit is now grounded in BOTH source messages.
+        assert!(migration.source_ids.contains(&"m1".to_string()));
+        assert!(migration.source_ids.contains(&"m2".to_string()));
     }
 
     #[test]
