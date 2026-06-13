@@ -14,7 +14,7 @@ rewrite covers, and what's left. **Keep this current** — see
 |---|---|---|
 | Core summarization | ✅ **at/above parity** | map-reduce, citations, cost cap, budgets — done |
 | WhatsApp ingestion | ✅ **at parity** | full pipeline, anonymized, deduped |
-| Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101); Hybrid merge + rolling dedup are refinements |
+| Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101), Append + Hybrid/Resummarize merges; rolling-ingest dedup Layer 4 is a refinement |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
 | Dashboard / web UI | ✅ **at parity** | 11 tabs + live SSE; incl. Knowledge, Spend, Audit, Tenants/Members admin |
 | Delivery | ✅ **~95%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; Discord/Slack channel **send** ✅; DM send + per-destination templates remain |
@@ -30,8 +30,8 @@ coherence + wiki, ADR-127) now ships. The remaining work clusters in three
 buckets: (1) **live platform I/O** (Discord/Slack **send**, email/Confluence
 delivery, real OAuth — fetch is done), (2) **production hardening** (Docker/deploy;
 migrations + basic metrics + audit done), and (3) **refinements** (rolling now
-wired end-to-end — remaining: Hybrid merge, rolling-ingest dedup ADR-129,
-per-destination rolling delivery).
+wired end-to-end with Append + Hybrid/Resummarize merges — remaining:
+rolling-ingest dedup ADR-129 Layer 4, per-destination rolling delivery).
 
 ---
 
@@ -85,7 +85,7 @@ per-destination rolling delivery).
 | Persistent background scheduler | ✅ (APScheduler) | ✅ | `api/scheduler_driver.rs`; grace + auto-disable |
 | Per-tenant LLM + budget on scheduled runs | ✅ | ✅ | `TenantAwareRunner` (cfc9fd9) |
 | Live source fetch on scheduled runs | ✅ | ✅ | a schedule can bind a Discord/Slack source and fetch fresh messages before summarizing (`schedule_sources`, best-effort; ADR-128) |
-| Rolling-period summaries | ✅ | ✅ | **wired end-to-end** (ADR-101): `decide_rolling` policy + `rolling_schedules`/`rolling_summaries` storage (one-active-per-schedule via PK) + runner accumulate/finalize (folds the tail, publishes one digest, clears the accumulator) + schedule API/web config. Append merge implemented; `resummarize`/`hybrid` accepted but alias Append for now; rolling-ingest dedup is ADR-129 |
+| Rolling-period summaries | ✅ | ✅ | **wired end-to-end** (ADR-101): `decide_rolling` policy + `rolling_schedules`/`rolling_summaries` storage (one-active-per-schedule via PK) + runner accumulate/finalize (folds the tail, publishes one digest, clears the accumulator) + schedule API/web config. Merge strategies implemented: **Append** (dated sections verbatim) and **Hybrid/Resummarize** (a synthesis LLM pass at finalize folds the accumulated sections into one coherent digest with merged structured fields) |
 | Lookback windows | ✅ | ✅ | per-schedule `lookback_secs` |
 | Manage via API (create/list/pause/trigger/history) | ✅ | ✅ | `api/schedules.rs` |
 | Manage via Discord `/schedule` commands | ✅ | ⛔ | no in-chat command surface |
@@ -167,7 +167,7 @@ per-destination rolling delivery).
 1. **Live platform I/O** — Discord + Slack fetch are live, a schedule can fetch fresh messages before each run, and channel **send-back** now ships as delivery sinks (ADR-128). Remaining: **DM** send and a background poller that syncs on its own cadence (independent of summary schedules).
 2. **Delivery completion** — email (SMTP) deliverer; Confluence publishing; output formats beyond markdown.
 3. **Real OAuth** — Discord/Google redirect flows exist (`--features oauth`); remaining: run them end-to-end + Slack. Login workspace grants are now entitlement-filtered (membership-derived) ✅.
-4. **Rolling-period summaries (ADR-101)** — ✅ wired end-to-end (storage, runner accumulate/finalize, API/web config, Append merge). Remaining refinements: the **Hybrid** merge (currently aliases Append), rolling-ingest dedup (ADR-129), and per-destination rolling delivery control (ADR-108).
+4. **Rolling-period summaries (ADR-101)** — ✅ wired end-to-end (storage, runner accumulate/finalize, API/web config, Append merge). Remaining refinements: rolling-ingest dedup Layer 4 (ADR-129) and per-destination rolling delivery control (ADR-108); Append + Hybrid/Resummarize merges done.
 5. **Production hardening** — ✅ container + compose + Fly config (migration runner ✅, basic `/metrics` ✅, audit-log surfacing ✅). Remaining: request-rate counters + structured logs.
 6. **Knowledge subsystem (Phase 7)** — ✅ done: units + semantic search + coherence gate + wiki synthesis (ADR-127); AI curator + rolling-ingest dedup (below) deferred.
 7. **Nice-to-haves** — per-perspective & custom prompts, push templates, summary caching, extra dashboard pages, Google Drive, voice transcription.

@@ -13,7 +13,10 @@ use crate::llm::{LlmClient, LlmProvider, RequestPriority, ResilientLlm};
 use crate::scheduler::ScheduleRunner;
 use crate::summarize::{SummarizationService, SummarizeRequest, SummaryOutcome};
 use domain::summarize::{ExtractedSummary, ModelLadder, SummaryLength};
-use domain::{decide_rolling, end_weekday, format_day, RollingAction, RollingPeriod, RollingState};
+use domain::{
+    decide_rolling, end_weekday, format_day, AccumulationStrategy, RollingAction, RollingPeriod,
+    RollingState,
+};
 use repository::{
     DestinationRepository, KnowledgeRepository, PlatformCredentialRepository, RollingConfig,
     RollingRepository, RollingSummaryRow, ScheduleSourceRepository, StoredSchedule,
@@ -335,11 +338,70 @@ where
         Ok(Some(outcome))
     }
 
+    /// Synthesize the accumulated rolling document into one coherent digest
+    /// (ADR-101 Hybrid/Resummarize merge): the per-day dated sections are fed back
+    /// through the summarizer as input so the published digest has merged
+    /// highlights + deduped structured fields, instead of a raw concatenation.
+    /// `None` if there's nothing to synthesize.
+    fn synthesize_digest(
+        &self,
+        stored: &StoredSchedule,
+        channel: &domain::ChannelId,
+        content_md: &str,
+    ) -> Result<Option<SummaryOutcome>, String> {
+        let trimmed = content_md.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        // Feed each dated section back through the summarizer as one input message;
+        // its map-reduce (ADR-095) handles a long period. Synthetic messages carry
+        // the section text so the reduce produces a coherent, deduped digest.
+        let messages: Vec<domain::NormalizedMessage> = trimmed
+            .split("\n## ")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .enumerate()
+            .map(|(i, text)| domain::NormalizedMessage {
+                id: domain::MessageId::parse(format!("digest-{i}")).expect("valid synthetic id"),
+                platform: domain::Platform::WhatsApp,
+                channel_id: channel.clone(),
+                author_id: "digest".into(),
+                author_name: "Digest".into(),
+                content: text.to_string(),
+                timestamp: i as i64,
+                is_system: false,
+                reply_to: None,
+                attachments: vec![],
+            })
+            .collect();
+        if messages.is_empty() {
+            return Ok(None);
+        }
+        let instructions = self
+            .repo
+            .get_settings(&stored.schedule.workspace_id)
+            .map_err(|e| e.to_string())?
+            .summary_instructions;
+        let outcome = SummarizationService::new(self.engine, self.ladder)
+            .summarize(&SummarizeRequest {
+                messages: &messages,
+                // The period digest is the cumulative view → richer than a daily.
+                length: SummaryLength::Detailed,
+                provider: self.provider,
+                priority: RequestPriority::Low,
+                cap_micros: self.cap_micros,
+                instructions: instructions.as_deref(),
+            })
+            .map_err(|e| format!("{e:?}"))?;
+        Ok(Some(outcome))
+    }
+
     /// Drive the rolling-period state machine (ADR-101) for a due run: open a new
     /// period, accumulate the days since the last run, or finalize a period that
-    /// has ended (publishing it as a normal summary and clearing the accumulator).
-    /// v1 merge is **Append** (dated sections); `resummarize`/`hybrid` are accepted
-    /// but currently behave as append (a documented refinement, ADR-129).
+    /// has ended (publishing it as a summary and clearing the accumulator).
+    /// The merge strategy applies at finalize: **Append** publishes the dated
+    /// sections as-is; **Hybrid**/**Resummarize** run a synthesis pass so the
+    /// digest is coherent with merged structured fields (ADR-101).
     fn run_rolling(
         &self,
         stored: &StoredSchedule,
@@ -439,13 +501,57 @@ where
                         format_day(row.period_start, tz),
                         format_day(row.period_end.saturating_sub(1), tz),
                     );
+                    let strategy = AccumulationStrategy::parse(&cfg.strategy)
+                        .unwrap_or(AccumulationStrategy::Append);
+                    // Hybrid/Resummarize fold the accumulated sections into one
+                    // coherent digest; Append publishes them verbatim.
+                    let (summary, model) = match strategy {
+                        AccumulationStrategy::Append => (
+                            ExtractedSummary {
+                                text: format!("{header}{}", row.content_md),
+                                key_points: vec![],
+                                action_items: vec![],
+                                technical_terms: vec![],
+                                participants: vec![],
+                                citations: vec![],
+                            },
+                            row.model.clone(),
+                        ),
+                        AccumulationStrategy::Hybrid | AccumulationStrategy::Resummarize => {
+                            match self.synthesize_digest(stored, channel, &row.content_md)? {
+                                Some(o) => {
+                                    row.cost_micros += o.cost_micros;
+                                    let model = if o.model.is_empty() {
+                                        row.model.clone()
+                                    } else {
+                                        o.model
+                                    };
+                                    let mut s = o.summary;
+                                    s.text = format!("{header}{}", s.text.trim());
+                                    (s, model)
+                                }
+                                // Synthesis produced nothing → fall back to the raw doc.
+                                None => (
+                                    ExtractedSummary {
+                                        text: format!("{header}{}", row.content_md),
+                                        key_points: vec![],
+                                        action_items: vec![],
+                                        technical_terms: vec![],
+                                        participants: vec![],
+                                        citations: vec![],
+                                    },
+                                    row.model.clone(),
+                                ),
+                            }
+                        }
+                    };
                     let record = SummaryRecord {
                         id: format!("sum_{}_{}", stored.id, row.period_end),
                         channel_id: Some(channel.clone()),
-                        model: if row.model.is_empty() {
+                        model: if model.is_empty() {
                             "rolling".to_string()
                         } else {
-                            row.model.clone()
+                            model
                         },
                         cost_micros: row.cost_micros,
                         degraded: false,
@@ -454,14 +560,7 @@ where
                         archived: false,
                         tags: vec![format!("rolling-{}", cfg.period)],
                         coherence_score: None,
-                        summary: ExtractedSummary {
-                            text: format!("{header}{}", row.content_md),
-                            key_points: vec![],
-                            action_items: vec![],
-                            technical_terms: vec![],
-                            participants: vec![],
-                            citations: vec![],
-                        },
+                        summary,
                     };
                     self.deliver_record(ws, &record)?;
                 }
@@ -638,6 +737,51 @@ mod tests {
         assert!(records[0].summary.text.contains("digest"));
         assert!(records[0].tags.contains(&"rolling-weekly".to_string()));
         assert_eq!(records[0].channel_id.as_ref().unwrap().as_str(), "c1");
+        // Append publishes the raw dated sections → no synthesized structured fields.
+        assert!(records[0].summary.key_points.is_empty());
+    }
+
+    #[test]
+    fn rolling_hybrid_finalize_synthesizes_a_structured_digest() {
+        use repository::{RollingConfig, RollingRepository};
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.create_schedule(&schedule_with_channel(&ws, 0)).unwrap();
+        // Same flow as the append test, but with the Hybrid merge strategy.
+        repo.set_rolling_config(
+            "sch_1",
+            &RollingConfig {
+                period: "weekly".into(),
+                strategy: "hybrid".into(),
+                end_day: 6,
+            },
+        )
+        .unwrap();
+
+        let tz = chrono_tz::UTC;
+        let window = RollingPeriod::Weekly
+            .window(1_767_700_000, tz, end_weekday(6))
+            .unwrap();
+        repo.save_message(&ws, &msg("m0", window.start + 500, "we shipped the release today"))
+            .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let runner = SummarizingScheduleRunner::new(&repo, &engine, &l);
+        let sched = repo.get_schedule(&ws, "sch_1").unwrap().unwrap();
+
+        runner.run(&sched, window.start + 1_000).unwrap(); // StartNew
+        runner.run(&sched, window.end + 10).unwrap(); // Finalize
+
+        let records = repo.list_records(&ws, false, 10).unwrap();
+        assert_eq!(records.len(), 1);
+        // Hybrid ran a synthesis pass at finalize → the digest carries the
+        // synthesized structured fields (FakeLlm returns a key point + participant),
+        // unlike the raw-concatenation Append path.
+        assert!(!records[0].summary.key_points.is_empty(), "hybrid digest has key points");
+        assert!(!records[0].summary.participants.is_empty(), "hybrid digest has participants");
+        assert!(records[0].summary.text.contains("digest")); // header preserved
     }
 
     #[test]
