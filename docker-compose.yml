@@ -1,0 +1,36 @@
+# Single-host deployment of SummaryBot (build + run the production image).
+#
+#   SECRET_KEY=$(openssl rand -hex 32) \
+#   LLM_CONFIG_KEY=$(openssl rand -hex 32) \
+#   OPENROUTER_API_KEY=sk-or-...           \
+#   docker compose up --build
+#
+# The SQLite database persists in the named `sb-data` volume across restarts.
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      # REQUIRED — HS256 signing key for access tokens. No default; the compose
+      # run errors out if it's unset rather than booting an insecure server.
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY, e.g. openssl rand -hex 32}
+      # Optional — 64 hex chars; enables encrypted BYO-key + platform-credential
+      # storage (tenant LLM keys, Discord/Slack bot tokens).
+      LLM_CONFIG_KEY: ${LLM_CONFIG_KEY:-}
+      # Optional — real summarization backend. Set OPENROUTER_API_KEY for a
+      # hosted model, or LLM_BASE_URL (+ optional LLM_API_KEY) for any
+      # OpenAI-compatible endpoint (self-hosted / local). Defaults to the
+      # deterministic demo model when neither is set.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_CONTEXT_TOKENS: ${LLM_CONTEXT_TOKENS:-}
+      BASE_DOMAIN: ${BASE_DOMAIN:-summarybot.app}
+    volumes:
+      - sb-data:/data
+    restart: unless-stopped
+
+volumes:
+  sb-data:

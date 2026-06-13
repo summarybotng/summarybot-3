@@ -1,0 +1,41 @@
+# Fly.io deployment for SummaryBot. One-time setup:
+#
+#   fly launch --no-deploy --copy-config        # reuse this file
+#   fly volumes create sb_data --size 1         # 1GB for the SQLite DB
+#   fly secrets set SECRET_KEY=$(openssl rand -hex 32) \
+#                   LLM_CONFIG_KEY=$(openssl rand -hex 32)
+#   fly secrets set OPENROUTER_API_KEY=sk-or-...   # or LLM_BASE_URL=...
+#   fly deploy
+#
+# Secrets (SECRET_KEY, LLM_CONFIG_KEY, OPENROUTER_API_KEY, …) are set via
+# `fly secrets`, never committed here.
+app = "summarybot"
+primary_region = "yyz"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  API_BIND = "0.0.0.0:8080"
+  WEB_DIR = "/app/web/dist"
+  DATABASE_URL = "/data/summarybot.db"
+
+# The SQLite database lives on a persistent volume (create it with the size you
+# need before the first deploy).
+[[mounts]]
+  source = "sb_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  # Keep one machine warm so the SQLite writer + scheduler stay available.
+  min_machines_running = 1
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "3s"
+  method = "get"
+  path = "/healthz"

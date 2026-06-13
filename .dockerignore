@@ -1,0 +1,17 @@
+# Keep the build context small and the image clean. Build artifacts, deps and
+# any private/local data never belong in the image.
+.git/
+target/
+**/target/
+node_modules/
+**/node_modules/
+web/dist/
+# Local databases + private WhatsApp export data (also gitignored).
+*.db
+*.db-*
+**/*.zip
+# Secrets / local env / logs / editor cruft.
+.env
+.env.*
+*.log
+.DS_Store

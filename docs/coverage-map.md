@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-13 — WhatsApp coverage complete (WHA-014..019): timeline + classified gaps, contributor tracking, persisted auto-fulfilled scoped import invitations; Tenants/Members admin tab (RBAC: roles + invites); rolling-ingest dedup Layers 1–3 (content-hash + semantic gate + delta ingest); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-13 — membership-derived workspace grants (token filtered to entitlement); Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019: timeline + classified gaps, contributor tracking, persisted auto-fulfilled scoped import invitations); Tenants/Members admin tab (RBAC); rolling-ingest dedup Layers 1–3; rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -22,7 +22,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants now membership-derived (token filtered to entitlement) ✅ |
 | Knowledge (wiki / vector search) | ✅ **v1 done** | semantic search + coherence gate + wiki synthesis live (ADR-127); AI curator deferred |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
-| Ops (Docker, migrations, metrics) | 🟡 **thin** | single binary; ad-hoc schema; minimal telemetry |
+| Ops (Docker, migrations, metrics) | 🟡 **deployable** | container + compose + Fly config ✅; migration ledger ✅; `/metrics` gauges ✅; request-rate counters + structured logs remain |
 
 **Rough read:** the *summarize → schedule → deliver-to-dashboard/webhook* spine is
 done and multi-tenant, and the knowledge subsystem (units + semantic search +
@@ -155,7 +155,7 @@ per-destination rolling delivery).
 | SQLite persistence + repository pattern | ✅ | ✅ | `repository/` traits + `SqliteRepository` |
 | Migration framework | ✅ (58+ tracked) | ✅ | `schema_migrations` ledger + ordered runner; idempotent baseline, future changes append as `(id, sql)` |
 | Audit log | ✅ | ✅ | `audit_log` ledger surfaced: `GET /workspaces/:ws/audit` (Admin+, tenant-member-scoped) + `Audit.tsx` tab; member role/remove + invite issuance now write entries (WSP-014). Per-tenant column + more instrumented events are a refinement |
-| Docker / Fly / Render deploy configs | ✅ | ⛔ | single binary; no container/deploy config |
+| Docker / Fly / Render deploy configs | ✅ | ✅ | multi-stage `Dockerfile` (web SPA → release API binary with the production feature set → slim non-root runtime, rustls so no OpenSSL, healthcheck), `.dockerignore`, `docker-compose.yml` (named volume for the SQLite DB) and `fly.toml`. SECRET_KEY required at runtime (never baked); DB on a `/data` volume |
 | Monitoring / metrics | ✅ | 🟡 | `GET /metrics` Prometheus gauges (tenants/workspaces/summaries/schedules/spend) + stderr logs; request-rate counters are a follow-up |
 | WASM sandbox boundary | n/a | 🟡 | architecture proven; only WhatsApp parse runs in WASM |
 
@@ -163,11 +163,11 @@ per-destination rolling delivery).
 
 ## Remaining work to reach legacy parity (rough priority)
 
-1. **Live platform I/O** — Discord + Slack fetch are live, and a schedule can fetch fresh messages before each run (ADR-128). Remaining: channel/DM **send** (deliverer side) and a background poller that syncs on its own cadence (independent of summary schedules).
+1. **Live platform I/O** — Discord + Slack fetch are live, a schedule can fetch fresh messages before each run, and channel **send-back** now ships as delivery sinks (ADR-128). Remaining: **DM** send and a background poller that syncs on its own cadence (independent of summary schedules).
 2. **Delivery completion** — email (SMTP) deliverer; Confluence publishing; output formats beyond markdown.
-3. **Real OAuth** — replace the dev login seam with Discord/Google/Slack redirect flows.
+3. **Real OAuth** — Discord/Google redirect flows exist (`--features oauth`); remaining: run them end-to-end + Slack. Login workspace grants are now entitlement-filtered (membership-derived) ✅.
 4. **Rolling-period summaries (ADR-101)** — ✅ wired end-to-end (storage, runner accumulate/finalize, API/web config, Append merge). Remaining refinements: the **Hybrid** merge (currently aliases Append), rolling-ingest dedup (ADR-129), and per-destination rolling delivery control (ADR-108).
-5. **Production hardening** — Docker/deploy configs (migration runner ✅, basic `/metrics` ✅, audit-log surfacing ✅).
+5. **Production hardening** — ✅ container + compose + Fly config (migration runner ✅, basic `/metrics` ✅, audit-log surfacing ✅). Remaining: request-rate counters + structured logs.
 6. **Knowledge subsystem (Phase 7)** — ✅ done: units + semantic search + coherence gate + wiki synthesis (ADR-127); AI curator + rolling-ingest dedup (below) deferred.
 7. **Nice-to-haves** — per-perspective & custom prompts, push templates, summary caching, extra dashboard pages, Google Drive, voice transcription.
 
