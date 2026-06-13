@@ -12,6 +12,8 @@ import type {
   Tenant,
   TokenResponse,
   WhatsappImport,
+  ChatCoverage,
+  Coverage,
   WikiPage,
   ConnectionStatus,
   SourceSync,
@@ -266,6 +268,18 @@ export class Client {
       method: 'POST',
       body: file,
     })
+  }
+
+  /** Per-chat WhatsApp coverage overview — counts + classified gaps (WHA-017). */
+  whatsappChats(): Promise<ChatCoverage[]> {
+    return this.json<ChatCoverage[]>(`/workspaces/${this.ws()}/whatsapp/chats`)
+  }
+
+  /** One chat's merged coverage: covered span + classified gaps (WHA-016). */
+  whatsappCoverage(chat: string): Promise<Coverage> {
+    return this.json<Coverage>(
+      `/workspaces/${this.ws()}/whatsapp/chats/${encodeURIComponent(chat)}/coverage`,
+    )
   }
 
   // --- knowledge: semantic search (ADR-127) ---

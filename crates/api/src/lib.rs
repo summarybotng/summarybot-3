@@ -418,6 +418,13 @@ pub fn build_router(state: AppState) -> Router {
             post(whatsapp::import_whatsapp)
                 .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
+        // WhatsApp coverage: per-chat overview + one chat's classified gaps
+        // (WHA-016/017; ADR-121).
+        .route("/workspaces/:ws/whatsapp/chats", get(whatsapp::list_chats))
+        .route(
+            "/workspaces/:ws/whatsapp/chats/:chat/coverage",
+            get(whatsapp::chat_coverage),
+        )
         .route("/workspaces/:ws/summaries/:id/pin", post(summaries::pin))
         .route(
             "/workspaces/:ws/summaries/:id/unpin",
@@ -594,6 +601,8 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/spend": { "get": { "summary": "Summarization cost analytics — ?days (ADR-125)" } },
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },
             "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
+            "/workspaces/{ws}/whatsapp/chats": { "get": { "summary": "Per-chat WhatsApp coverage overview — import/message counts + classified gaps (WHA-017, ADR-121)" } },
+            "/workspaces/{ws}/whatsapp/chats/{chat}/coverage": { "get": { "summary": "One chat's merged coverage: covered span + before_join/between_imports/after_last gaps (WHA-016)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
             "/workspaces/{ws}/summaries/{id}/archive": { "post": { "summary": "Archive" } },
             "/workspaces/{ws}/summaries/{id}/tags": { "put": { "summary": "Set tags" } },
@@ -1489,6 +1498,62 @@ mod tests {
         let j2 = body_json(again).await;
         assert_eq!(j2["stored"], 0);
         assert_eq!(j2["duplicates"], 2);
+    }
+
+    #[tokio::test]
+    async fn whatsapp_coverage_lists_chats_and_reports_gaps() {
+        let (state, token) = seeded_state(); // token grants ws-1
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        // Two non-adjacent days in one chat → an after_last gap up to "now".
+        let body =
+            "[01/01/2020, 09:00:00] Alice: morning\n[01/01/2020, 09:01:00] Bob: morning back";
+        app.clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/whatsapp/imports?chat=family&tz=UTC")
+                    .header("authorization", &auth)
+                    .header("content-type", "text/plain")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Overview lists the chat with its counts + coverage.
+        let chats = app
+            .clone()
+            .oneshot(
+                Request::get("/workspaces/ws-1/whatsapp/chats")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chats.status(), StatusCode::OK);
+        let cj = body_json(chats).await;
+        let arr = cj.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["chat_id"], "family");
+        assert_eq!(arr[0]["import_count"], 1);
+        assert_eq!(arr[0]["message_count"], 2);
+
+        // Per-chat coverage: a long after_last gap (2020 → now) that members
+        // can fill by exporting more recent history.
+        let cov = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/whatsapp/chats/family/coverage")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cov.status(), StatusCode::OK);
+        let j = body_json(cov).await;
+        assert_eq!(j["chat_id"], "family");
+        let gaps = j["gaps"].as_array().unwrap();
+        assert!(gaps.iter().any(|g| g["kind"] == "after_last" && g["can_fill"] == true));
     }
 
     #[tokio::test]

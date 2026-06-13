@@ -21,7 +21,7 @@ use domain::{
     ParsedExport, Platform, RawWhatsAppMessage, Secret, UserId, WorkspaceId,
 };
 use hmac::{Hmac, Mac};
-use repository::{Participant, WhatsAppRepository};
+use repository::{ImportRecord, Participant, WhatsAppRepository};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 
@@ -68,6 +68,7 @@ pub fn ingest_whatsapp_zip<R: WhatsAppRepository>(
     bytes: &[u8],
     timezone: &str,
     order_hint: DateOrder,
+    now: i64,
 ) -> Result<(IngestSummary, ParsedExport)> {
     let zone: chrono_tz::Tz = timezone
         .parse()
@@ -76,7 +77,36 @@ pub fn ingest_whatsapp_zip<R: WhatsAppRepository>(
     let order = detect_date_order(&text).unwrap_or(order_hint);
     let parsed = parse_export(&text, zone, order);
     let summary = WhatsAppIngestor::new(repo, anon_key).ingest(ctx, &parsed.messages)?;
+
+    // Record the import's span so coverage analysis (WHA-016) has data. File-hash
+    // dedup (WHA-010) means a re-uploaded identical export records once. Only
+    // exports with a real date range anchor a span.
+    if let Some((date_start, date_end)) = parsed.date_range {
+        let file_hash = hex(&Sha256::digest(bytes));
+        let id = format!("imp_{now}_{}", &file_hash[..12.min(file_hash.len())]);
+        repo.record_import(&ImportRecord {
+            id: &id,
+            workspace_id: ctx.workspace_id,
+            chat_id: ctx.chat_id,
+            file_hash: &file_hash,
+            uploader: ctx.uploader,
+            imported_at: now,
+            format: format_tag(parsed.format),
+            message_count: parsed.messages.len() as i64,
+            date_start,
+            date_end,
+            group_created_at: parsed.group_created_at(),
+        })?;
+    }
     Ok((summary, parsed))
+}
+
+/// Stable lowercase tag for the stored `format` column.
+fn format_tag(f: domain::WhatsAppFormat) -> &'static str {
+    match f {
+        domain::WhatsAppFormat::Ios => "ios",
+        domain::WhatsAppFormat::Android => "android",
+    }
 }
 
 /// Context for one import: where it lands and who uploaded it.
@@ -461,11 +491,16 @@ mod tests {
             &zip,
             "UTC",
             DateOrder::DayMonthYear,
+            1_700_000_000,
         )
         .unwrap();
         assert_eq!(summary.stored, 2);
         assert_eq!(parsed.messages.len(), 2);
         assert!(parsed.date_range.is_some());
+        // The import span was recorded (WHA-009) so coverage has data.
+        let imports = repo.list_imports(&ws, &chat).unwrap();
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].message_count, 2);
     }
 
     #[test]
@@ -481,6 +516,7 @@ mod tests {
             b"[01/01/2026, 09:00:00] Alice: hi",
             "Mars/Olympus",
             DateOrder::DayMonthYear,
+            1_700_000_000,
         );
         assert!(err.is_err());
     }

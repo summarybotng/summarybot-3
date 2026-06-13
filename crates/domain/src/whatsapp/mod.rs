@@ -63,6 +63,19 @@ pub struct ParsedExport {
     pub date_range: Option<(i64, i64)>,
 }
 
+impl ParsedExport {
+    /// The detected group-creation instant (WHA-015), if a `GroupCreated` event
+    /// was found — the anchor for `before_join` coverage gaps. Earliest such
+    /// event wins (an export can only legitimately show one).
+    pub fn group_created_at(&self) -> Option<i64> {
+        self.events
+            .iter()
+            .filter(|e| e.kind == ChatEventKind::GroupCreated)
+            .map(|e| e.timestamp)
+            .min()
+    }
+}
+
 /// Parse a WhatsApp export. `zone`/`order` are declared at upload (the file
 /// carries neither). Lines that don't begin a new message are treated as
 /// continuations of the previous one; unparseable headers are skipped.

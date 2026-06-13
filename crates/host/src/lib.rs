@@ -8,6 +8,7 @@ use domain::WorkspaceId;
 use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
+pub mod coverage;
 pub mod delivery;
 pub mod discord;
 pub mod ingest;
@@ -26,6 +27,7 @@ pub mod tenant_routing;
 pub mod whatsapp;
 pub mod wiki;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
+pub use coverage::{coverage_for, workspace_coverage, ChatCoverage};
 pub use delivery::{
     build_deliverers, load_workspace_delivery, sink_descriptors, ConfiguredDestination, Deliverer,
     DeliveryOutcome, DeliveryReport, DeliveryService, FieldHint, FieldSpec, RenderedSummary,

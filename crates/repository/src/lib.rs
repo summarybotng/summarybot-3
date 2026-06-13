@@ -41,7 +41,9 @@ pub use session::SessionRepository;
 pub use summary_store::{
     ModelSpend, SpendBreakdown, StructuredSummaryRepository, SummaryQuery, SummaryRecord,
 };
-pub use whatsapp::{ImportOutcome, ImportRecord, Participant, WhatsAppRepository};
+pub use whatsapp::{
+    ChatSummary, ImportOutcome, ImportRecord, Participant, StoredImport, WhatsAppRepository,
+};
 pub use wiki::{WikiPage, WikiRepository};
 pub use workspace::{AttachError, WorkspaceRepository};
 pub use workspace_settings::{WorkspaceSettings, WorkspaceSettingsRepository};
@@ -465,6 +467,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0003_summary_coherence_score",
         "ALTER TABLE summary_records ADD COLUMN coherence_score REAL",
+    ),
+    // Detected group-creation instant for a WhatsApp chat (WHA-015), the anchor
+    // for `before_join` coverage gaps. NULL when no creation event was found.
+    (
+        "0004_whatsapp_group_created_at",
+        "ALTER TABLE whatsapp_imports ADD COLUMN group_created_at INTEGER",
     ),
 ];
 

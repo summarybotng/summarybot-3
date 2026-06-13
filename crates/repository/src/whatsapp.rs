@@ -48,12 +48,42 @@ pub struct ImportRecord<'a> {
     pub message_count: i64,
     pub date_start: i64,
     pub date_end: i64,
+    /// Detected group-creation instant, if a creation/added system message was
+    /// found in this export (WHA-015). Anchors `before_join` coverage gaps.
+    pub group_created_at: Option<i64>,
+}
+
+/// A stored import, read back for coverage analysis (WHA-016).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredImport {
+    pub id: String,
+    pub uploader: String,
+    pub imported_at: i64,
+    pub message_count: i64,
+    pub date_start: i64,
+    pub date_end: i64,
+    pub group_created_at: Option<i64>,
+}
+
+/// Per-chat rollup for the coverage overview (WHA-017): how many imports, total
+/// messages, and the covered span endpoints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSummary {
+    pub chat_id: String,
+    pub import_count: i64,
+    pub message_count: i64,
+    pub earliest: i64,
+    pub latest: i64,
 }
 
 /// Storage boundary for the WhatsApp collection pipeline.
 pub trait WhatsAppRepository {
     /// Record an import, rejecting a re-uploaded identical file (WHA-010).
     fn record_import(&self, rec: &ImportRecord) -> Result<ImportOutcome>;
+    /// A chat's imports, oldest first — the spans fed to coverage analysis.
+    fn list_imports(&self, workspace: &WorkspaceId, chat: &ChannelId) -> Result<Vec<StoredImport>>;
+    /// All chats with at least one import in the workspace, with a coverage rollup.
+    fn list_chats(&self, workspace: &WorkspaceId) -> Result<Vec<ChatSummary>>;
     /// Find the participant bound to a phone hash in a chat, if any.
     fn participant_by_phone(
         &self,
@@ -121,8 +151,8 @@ impl WhatsAppRepository for SqliteRepository {
         self.conn.execute(
             "INSERT INTO whatsapp_imports
                (id, workspace_id, chat_id, file_hash, uploader, imported_at,
-                format, message_count, date_start, date_end)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                format, message_count, date_start, date_end, group_created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 rec.id,
                 rec.workspace_id.as_str(),
@@ -134,9 +164,49 @@ impl WhatsAppRepository for SqliteRepository {
                 rec.message_count,
                 rec.date_start,
                 rec.date_end,
+                rec.group_created_at,
             ],
         )?;
         Ok(ImportOutcome::Recorded)
+    }
+
+    fn list_imports(&self, workspace: &WorkspaceId, chat: &ChannelId) -> Result<Vec<StoredImport>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, uploader, imported_at, message_count, date_start, date_end, group_created_at
+             FROM whatsapp_imports WHERE workspace_id = ?1 AND chat_id = ?2
+             ORDER BY date_start, imported_at",
+        )?;
+        let rows = stmt.query_map(params![workspace.as_str(), chat.as_str()], |row| {
+            Ok(StoredImport {
+                id: row.get(0)?,
+                uploader: row.get(1)?,
+                imported_at: row.get(2)?,
+                message_count: row.get(3)?,
+                date_start: row.get(4)?,
+                date_end: row.get(5)?,
+                group_created_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    }
+
+    fn list_chats(&self, workspace: &WorkspaceId) -> Result<Vec<ChatSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT chat_id, COUNT(*), COALESCE(SUM(message_count),0),
+                    MIN(date_start), MAX(date_end)
+             FROM whatsapp_imports WHERE workspace_id = ?1
+             GROUP BY chat_id ORDER BY chat_id",
+        )?;
+        let rows = stmt.query_map(params![workspace.as_str()], |row| {
+            Ok(ChatSummary {
+                chat_id: row.get(0)?,
+                import_count: row.get(1)?,
+                message_count: row.get(2)?,
+                earliest: row.get(3)?,
+                latest: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
     }
 
     fn participant_by_phone(
@@ -434,6 +504,7 @@ mod tests {
             message_count: 10,
             date_start: 0,
             date_end: 100,
+            group_created_at: None,
         }
     }
 

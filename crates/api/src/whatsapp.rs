@@ -76,8 +76,16 @@ pub async fn import_whatsapp(
             chat_id: &chat,
             uploader: &user.0.sub,
         };
-        host::ingest_whatsapp_zip(&*repo, &state.signing_key, &ctx, &body, &q.tz, order)
-            .map_err(|e| ApiError::bad_request(e.to_string()))?
+        host::ingest_whatsapp_zip(
+            &*repo,
+            &state.signing_key,
+            &ctx,
+            &body,
+            &q.tz,
+            order,
+            crate::auth::now_secs(),
+        )
+        .map_err(|e| ApiError::bad_request(e.to_string()))?
     };
 
     Ok(Json(ImportDto {
@@ -90,4 +98,107 @@ pub async fn import_whatsapp(
         date_start: parsed.date_range.map(|(s, _)| s),
         date_end: parsed.date_range.map(|(_, e)| e),
     }))
+}
+
+/// One classified gap in a chat's coverage, with a copy-ready ask (WHA-017/019).
+#[derive(Serialize)]
+pub struct GapDto {
+    pub start: i64,
+    pub end: i64,
+    /// `before_join` | `between_imports` | `after_last`.
+    pub kind: String,
+    /// Whether a member could plausibly export this range to fill it.
+    pub can_fill: bool,
+}
+
+/// A chat's merged coverage picture (WHA-016).
+#[derive(Serialize)]
+pub struct CoverageDto {
+    pub chat_id: String,
+    pub earliest: Option<i64>,
+    pub latest: Option<i64>,
+    /// Total seconds covered by the union of import spans.
+    pub covered_secs: i64,
+    pub gaps: Vec<GapDto>,
+}
+
+/// A chat in the workspace overview: its import stats plus coverage (WHA-017).
+#[derive(Serialize)]
+pub struct ChatCoverageDto {
+    pub chat_id: String,
+    pub import_count: i64,
+    pub message_count: i64,
+    pub coverage: CoverageDto,
+}
+
+fn gap_kind_tag(k: domain::GapKind) -> &'static str {
+    match k {
+        domain::GapKind::BeforeJoin => "before_join",
+        domain::GapKind::BetweenImports => "between_imports",
+        domain::GapKind::AfterLast => "after_last",
+    }
+}
+
+fn coverage_dto(chat_id: String, report: domain::CoverageReport) -> CoverageDto {
+    CoverageDto {
+        chat_id,
+        earliest: report.earliest,
+        latest: report.latest,
+        covered_secs: report.covered_secs,
+        gaps: report
+            .gaps
+            .into_iter()
+            .map(|g| GapDto {
+                start: g.start,
+                end: g.end,
+                kind: gap_kind_tag(g.kind).to_string(),
+                can_fill: g.can_fill,
+            })
+            .collect(),
+    }
+}
+
+/// `GET /workspaces/:ws/whatsapp/chats` — per-chat coverage overview (WHA-017).
+pub async fn list_chats(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+) -> Result<Json<Vec<ChatCoverageDto>>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+    let chats = {
+        let repo = state.repo.lock().expect("repo mutex");
+        host::workspace_coverage(&*repo, &workspace, now)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+    Ok(Json(
+        chats
+            .into_iter()
+            .map(|c| ChatCoverageDto {
+                chat_id: c.summary.chat_id.clone(),
+                import_count: c.summary.import_count,
+                message_count: c.summary.message_count,
+                coverage: coverage_dto(c.summary.chat_id, c.report),
+            })
+            .collect(),
+    ))
+}
+
+/// `GET /workspaces/:ws/whatsapp/chats/:chat/coverage` — one chat's gaps (WHA-016).
+pub async fn chat_coverage(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, chat)): Path<(String, String)>,
+) -> Result<Json<CoverageDto>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let channel = ChannelId::parse(&chat).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+    let report = {
+        let repo = state.repo.lock().expect("repo mutex");
+        host::coverage_for(&*repo, &workspace, &channel, now)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+    Ok(Json(coverage_dto(channel.as_str().to_string(), report)))
 }

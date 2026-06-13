@@ -113,6 +113,33 @@ export interface WhatsappImport {
   date_end: number | null
 }
 
+/** A classified hole in a chat's coverage (WHA-016/017; ADR-121). */
+export interface CoverageGap {
+  start: number
+  end: number
+  /** `before_join` | `between_imports` | `after_last`. */
+  kind: 'before_join' | 'between_imports' | 'after_last'
+  /** Whether a member could plausibly export this range to fill it. */
+  can_fill: boolean
+}
+
+/** One chat's merged coverage picture. */
+export interface Coverage {
+  chat_id: string
+  earliest: number | null
+  latest: number | null
+  covered_secs: number
+  gaps: CoverageGap[]
+}
+
+/** A chat in the workspace coverage overview. */
+export interface ChatCoverage {
+  chat_id: string
+  import_count: number
+  message_count: number
+  coverage: Coverage
+}
+
 export interface Destination {
   id: string
   kind: string
