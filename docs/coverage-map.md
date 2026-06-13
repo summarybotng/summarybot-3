@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-12 — rolling-period summaries wired end-to-end (ADR-101): storage + runner accumulate/finalize + schedule config; weekly/biweekly/monthly digests
+- **As of:** 2026-06-13 — Tenants/Members admin tab (RBAC: roles + invites); rolling-ingest dedup Layers 1–3 (content-hash + semantic gate + delta ingest); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -16,7 +16,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | WhatsApp ingestion | ✅ **at parity** | full pipeline, anonymized, deduped |
 | Scheduling & rolling digests | ✅ **at parity** | recurrence + per-tenant LLM/budget + live-source fetch + **rolling-period accumulation wired end-to-end** (ADR-101); Hybrid merge + rolling dedup are refinements |
 | Multi-tenancy & roles | ✅ **at/above parity** | tenants, members, invites, routing |
-| Dashboard / web UI | ✅ **core parity** | 5 tabs + live SSE; missing legacy's extra pages |
+| Dashboard / web UI | ✅ **at parity** | 11 tabs + live SSE; incl. Knowledge, Spend, Audit, Tenants/Members admin |
 | Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
 | Discord / Slack ingestion | ✅ **both live + scheduled** | Discord + Slack REST fetch → message store (generic `connections/:platform` API); a schedule can fetch fresh messages before each run (ADR-128). Channel/DM **send** + an independent background poller remain |
 | Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants not yet membership-derived |
@@ -110,11 +110,12 @@ per-destination rolling delivery).
 | Discord / Slack ingestion | ✅ | ✅ | one generic `Source.tsx` behind Discord + Slack tabs (bot token + sync + per-channel summarize; `--features discord`/`slack`) |
 | Delivery destinations | ✅ | ✅ | `Delivery.tsx` (webhook add/test/remove) |
 | Settings (LLM config + budget) | ✅ | ✅ | `Settings.tsx` |
+| Tenant members admin (roles + invites) | ✅ | ✅ | `Members.tsx` — list/role/remove members, issue/revoke invites over the tenancy API (RBAC, TEN-005) |
 | Cost / spend dashboard | partial | ✅ | `Spend.tsx` — total + recent-window + per-model breakdown |
 | Audit log | ✅ | ✅ | `Audit.tsx` — admin/security events, newest first (Admin+) |
 | Live updates | ✅ | ✅ | SSE (`summary.created/deleted`) |
 | Per-tenant branding | ✅ | 🟡 | accent + name; no logo/full theme |
-| Extra legacy pages (Tenants admin, Jobs, Archive) | ✅ | ⛔ | not built (Wiki, Slack, Audit log now have tabs) |
+| Extra legacy pages (Jobs, Archive) | ✅ | ⛔ | not built (Wiki, Slack, Audit, Tenants/Members admin now have tabs) |
 
 ## Auth / identity / multi-tenancy
 

@@ -11,6 +11,7 @@ import { Knowledge } from './views/Knowledge'
 import { Source } from './views/Source'
 import { Spend } from './views/Spend'
 import { Audit } from './views/Audit'
+import { Members } from './views/Members'
 
 type Tab =
   | 'summaries'
@@ -21,6 +22,7 @@ type Tab =
   | 'delivery'
   | 'knowledge'
   | 'spend'
+  | 'members'
   | 'audit'
   | 'settings'
 
@@ -75,6 +77,7 @@ export default function App() {
               'delivery',
               'knowledge',
               'spend',
+              'members',
               'audit',
               'settings',
             ] as Tab[]
@@ -103,6 +106,7 @@ export default function App() {
         {tab === 'delivery' && <Delivery />}
         {tab === 'knowledge' && <Knowledge />}
         {tab === 'spend' && <Spend />}
+        {tab === 'members' && <Members />}
         {tab === 'audit' && <Audit />}
         {tab === 'settings' && <Settings />}
       </main>

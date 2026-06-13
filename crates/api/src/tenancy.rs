@@ -304,7 +304,12 @@ pub async fn list_invites(
 /// Body carrying a raw invite token.
 #[derive(Deserialize)]
 pub struct TokenRequest {
-    pub token: String,
+    /// The raw invite token (used by the invitee). Admins revoking from the
+    /// invite list pass `token_hash` instead (the raw token is shown only once).
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub token_hash: Option<String>,
 }
 
 /// `POST /tenants/:tenant/invites/revoke` — revoke a pending invite (204/404).
@@ -317,10 +322,16 @@ pub async fn revoke_invite(
     let tenant = parse_tenant(tenant)?;
     let repo = state.repo.lock().expect("repo mutex");
     authorize(&repo, &user.0.sub, &tenant, Permission::ManageMembers)?;
-    if InviteService::new(&*repo)
-        .revoke(&body.token)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?
-    {
+    let svc = InviteService::new(&*repo);
+    // Admins revoke by `token_hash` (from the invite list); the raw `token` path
+    // remains for completeness.
+    let revoked = match (&body.token_hash, &body.token) {
+        (Some(hash), _) => svc.revoke_by_hash(hash),
+        (None, Some(raw)) => svc.revoke(raw),
+        (None, None) => return Err(ApiError::bad_request("token or token_hash required")),
+    }
+    .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    if revoked {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
@@ -346,9 +357,13 @@ pub async fn accept_invite(
     user: AuthUser,
     Json(body): Json<TokenRequest>,
 ) -> Result<Json<AcceptResponse>, ApiError> {
+    let raw = body
+        .token
+        .as_deref()
+        .ok_or_else(|| ApiError::bad_request("token required"))?;
     let repo = state.repo.lock().expect("repo mutex");
     let outcome = InviteService::new(&*repo)
-        .accept(&body.token, &user.0.sub, now_secs())
+        .accept(raw, &user.0.sub, now_secs())
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(Json(match outcome {
         AcceptOutcome::Accept(role) => AcceptResponse {

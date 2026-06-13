@@ -17,6 +17,9 @@ import type {
   SourceSync,
   Spend,
   AuditEntry,
+  Membership,
+  Invite,
+  IssuedInvite,
 } from './types'
 
 const SESSION_KEY = 'sb_session'
@@ -397,5 +400,41 @@ export class Client {
 
   clearBudget(tenant: string): Promise<void> {
     return this.json<void>(`/tenants/${tenant}/budget`, { method: 'DELETE' })
+  }
+
+  // --- tenant members + invites (RBAC admin) ---
+
+  listMembers(tenant: string): Promise<Membership[]> {
+    return this.json<Membership[]>(`/tenants/${tenant}/members`)
+  }
+
+  setMemberRole(tenant: string, user: string, role: string): Promise<Membership> {
+    return this.json<Membership>(
+      `/tenants/${tenant}/members/${encodeURIComponent(user)}`,
+      this.body('PUT', { role }),
+    )
+  }
+
+  removeMember(tenant: string, user: string): Promise<void> {
+    return this.json<void>(`/tenants/${tenant}/members/${encodeURIComponent(user)}`, {
+      method: 'DELETE',
+    })
+  }
+
+  listInvites(tenant: string): Promise<Invite[]> {
+    return this.json<Invite[]>(`/tenants/${tenant}/invites`)
+  }
+
+  /** Issue an invite; the raw `token` is returned exactly once. */
+  createInvite(tenant: string, email: string, role: string): Promise<IssuedInvite> {
+    return this.json<IssuedInvite>(`/tenants/${tenant}/invites`, this.body('POST', { email, role }))
+  }
+
+  /** Revoke a listed invite by its `token_hash` (the raw token is shown once). */
+  revokeInvite(tenant: string, tokenHash: string): Promise<void> {
+    return this.json<void>(
+      `/tenants/${tenant}/invites/revoke`,
+      this.body('POST', { token_hash: tokenHash }),
+    )
   }
 }

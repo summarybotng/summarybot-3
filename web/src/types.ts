@@ -158,6 +158,30 @@ export interface AuditEntry {
   detail: string
 }
 
+export interface Membership {
+  tenant_id: string
+  user_id: string
+  role: string
+}
+
+export interface Invite {
+  token_hash: string
+  tenant_id: string
+  email: string
+  role: string
+  created_at: number
+  expires_at: number
+  status: string
+}
+
+export interface IssuedInvite {
+  token: string
+  token_hash: string
+  email: string
+  role: string
+  expires_at: number
+}
+
 export interface SourceSync {
   channel_ids: string[]
   fetched: number

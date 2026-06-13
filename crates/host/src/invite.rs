@@ -83,9 +83,15 @@ impl<'a, R: MembershipRepository> InviteService<'a, R> {
 
     /// Revoke an invite by its raw token. Returns whether a row changed.
     pub fn revoke(&self, raw_token: &str) -> Result<bool, AuthError> {
+        self.revoke_by_hash(&sha256_hex(raw_token))
+    }
+
+    /// Revoke by the stored `token_hash` — what an admin sees in the invite list
+    /// (the raw token is shown only once at issue). Returns whether a row changed.
+    pub fn revoke_by_hash(&self, token_hash: &str) -> Result<bool, AuthError> {
         Ok(self
             .repo
-            .set_invite_status(&sha256_hex(raw_token), InviteStatus::Revoked)?)
+            .set_invite_status(token_hash, InviteStatus::Revoked)?)
     }
 }
 
@@ -157,5 +163,21 @@ mod tests {
             svc.accept(&issued.raw_token, &user, 10).unwrap(),
             AcceptOutcome::Reject(AcceptReject::NotPending)
         );
+    }
+
+    #[test]
+    fn revoke_by_hash_matches_revoke_by_token() {
+        // Admins revoke by the stored token_hash (the raw token is shown once).
+        let repo = repo();
+        let svc = InviteService::new(&repo).with_ttl(3_600);
+        let issued = svc.issue(tenant(), "a@b.com", Role::Member, 0).unwrap();
+        assert!(svc.revoke_by_hash(&issued.invite.token_hash).unwrap());
+        let user = UserId::parse("u1").unwrap();
+        assert_eq!(
+            svc.accept(&issued.raw_token, &user, 10).unwrap(),
+            AcceptOutcome::Reject(AcceptReject::NotPending)
+        );
+        // Revoking an unknown hash changes nothing.
+        assert!(!svc.revoke_by_hash("deadbeef").unwrap());
     }
 }
