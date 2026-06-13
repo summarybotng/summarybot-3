@@ -19,7 +19,7 @@ rewrite covers, and what's left. **Keep this current** — see
 | Dashboard / web UI | ✅ **at parity** | 11 tabs + live SSE; incl. Knowledge, Spend, Audit, Tenants/Members admin |
 | Delivery | 🟡 **~80%** | plugin seam ✅, webhook/Confluence/email/Google Drive ✅; platform channel/DM send 🔩 |
 | Discord / Slack ingestion | ✅ **both live + scheduled** | Discord + Slack REST fetch → message store (generic `connections/:platform` API); a schedule can fetch fresh messages before each run (ADR-128). Channel/DM **send** + an independent background poller remain |
-| Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants not yet membership-derived |
+| Auth / OAuth | 🟡 **mostly there** | sessions/roles ✅; real OAuth login ✅ (Google/Discord); workspace grants now membership-derived (token filtered to entitlement) ✅ |
 | Knowledge (wiki / vector search) | ✅ **v1 done** | semantic search + coherence gate + wiki synthesis live (ADR-127); AI curator deferred |
 | External integrations | ⛔ **mostly absent** | Confluence, Google Drive, voice transcription |
 | Ops (Docker, migrations, metrics) | 🟡 **thin** | single binary; ad-hoc schema; minimal telemetry |
@@ -129,7 +129,7 @@ per-destination rolling delivery).
 | OAuth redirect (Google/Discord) | ✅ | ✅ | authorization-code + PKCE + signed state (`--features oauth`); needs provider keys; live flow not yet run end-to-end |
 | OAuth (Slack) | ✅ | ⛔ | not added |
 | Email magic-link | ✅ | 🔩 | dev provider stub (no real link delivery) |
-| Workspace grants from membership | ✅ | ⛔ | login still grants requested workspaces; should derive from memberships |
+| Workspace grants from membership | ✅ | ✅ | the access token is filtered to entitlement at issue time (`AuthService::entitle`): a requested workspace is granted only if the user owns it or is a member of its tenant; unclaimed workspaces (no row) stay open for dev/first-run, denials are audit-logged. Enforced on login + refresh |
 | Tenants: provision / update / route by domain | partial | ✅ | `api/tenancy.rs`, `host/tenant_routing.rs` |
 | Members + roles (Owner/Admin/Member/Guest) | ✅ (RBAC) | ✅ | `domain/membership.rs` |
 | Invitations | partial | ✅ | `host/invite.rs` |

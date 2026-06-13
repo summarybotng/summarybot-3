@@ -735,6 +735,67 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn login_does_not_grant_a_workspace_the_user_is_not_a_member_of() {
+        use repository::WorkspaceRepository;
+        let repo = SqliteRepository::in_memory().unwrap();
+        // A real workspace under a tenant, owned by someone else.
+        repo.create_workspace(
+            &domain::Workspace::create(
+                domain::WorkspaceId::parse("ws-secret").unwrap(),
+                domain::TenantId::parse("acme").unwrap(),
+                "Secret",
+                domain::UserId::parse("u-owner").unwrap(),
+                1,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let app = build_router(AppState::new(repo, key()));
+
+        // An outsider logs in requesting the protected workspace + an unclaimed one.
+        let login = app
+            .clone()
+            .oneshot(
+                Request::post("/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"provider":"email","subject":"outsider","email":"o@e.com","workspaces":["ws-secret","ws-open"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let token = body_json(login).await["access_token"].as_str().unwrap().to_string();
+        let auth = format!("Bearer {token}");
+
+        // The protected workspace was filtered out → 403.
+        let denied = app
+            .clone()
+            .oneshot(
+                Request::get("/workspaces/ws-secret/summaries")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+
+        // The unclaimed workspace was granted → 200.
+        let allowed = app
+            .oneshot(
+                Request::get("/workspaces/ws-open/summaries")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+    }
+
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await

@@ -32,7 +32,9 @@ use domain::{
     LinkOutcome, ProviderClaims, RefreshOutcome, RefreshReject, Secret, Session, SessionId, UserId,
     WorkspaceId,
 };
-use repository::{AuditEntry, IdentityRepository, SessionRepository};
+use repository::{
+    AuditEntry, IdentityRepository, MembershipRepository, SessionRepository, WorkspaceRepository,
+};
 
 /// Failure modes of the auth flows, kept distinct so the caller (web layer) can
 /// map each to the right response and audit signal.
@@ -97,7 +99,7 @@ pub struct AuthService<'a, R> {
 
 impl<'a, R> AuthService<'a, R>
 where
-    R: IdentityRepository + SessionRepository,
+    R: IdentityRepository + SessionRepository + WorkspaceRepository + MembershipRepository,
 {
     /// Build with the default token lifetimes (15-min access, 30-day refresh).
     pub fn new(repo: &'a R, signing_key: &'a Secret<Vec<u8>>) -> Self {
@@ -226,13 +228,43 @@ where
         verify_access(token, self.signing_key.expose_secret(), now)
     }
 
-    /// Open a session + mint a token pair for an established user.
+    /// Filter the *requested* workspaces down to the ones `user` is actually
+    /// entitled to (WSP — the access token must never out-grant entitlement).
+    ///
+    /// A user is entitled to a workspace if they own it or are a member of its
+    /// tenant. A requested workspace with **no stored row** is treated as
+    /// *unclaimed* and granted: real tenant workspaces always carry a tenant +
+    /// owner, so this protects them while leaving dev/unclaimed workspaces (and
+    /// the dev sign-in flow) usable. Each dropped grant is audit-logged.
+    fn entitle(&self, user: &UserId, requested: Vec<WorkspaceId>, now: i64) -> Vec<WorkspaceId> {
+        requested
+            .into_iter()
+            .filter(|ws| match self.repo.find_workspace(ws) {
+                // Unclaimed / does not exist → open (dev + first-run UX).
+                Ok(None) => true,
+                Ok(Some(w)) => {
+                    let entitled = &w.owner_user_id == user
+                        || matches!(self.repo.get_membership(&w.tenant_id, user), Ok(Some(_)));
+                    if !entitled {
+                        self.audit(now, Some(user), "auth.workspace.denied", ws.as_str());
+                    }
+                    entitled
+                }
+                // On a storage error, fail closed (do not grant).
+                Err(_) => false,
+            })
+            .collect()
+    }
+
+    /// Open a session + mint a token pair for an established user. The requested
+    /// `workspaces` are filtered to the user's entitlement before being signed in.
     fn issue_pair(
         &self,
         user: UserId,
         workspaces: Vec<WorkspaceId>,
         now: i64,
     ) -> Result<TokenPair, AuthError> {
+        let workspaces = self.entitle(&user, workspaces, now);
         let raw = generate_token()?;
         let hash = hash_token(&raw)?;
         let session_id = new_session_id()?;
@@ -278,7 +310,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use domain::{DiscordProvider, EmailProvider, GoogleProvider};
+    use domain::{DiscordProvider, EmailProvider, GoogleProvider, Membership, Role, TenantId};
     use repository::SqliteRepository;
 
     fn key() -> Secret<Vec<u8>> {
@@ -308,6 +340,95 @@ mod tests {
         assert_eq!(first.user_id, second.user_id);
         assert_ne!(first.session_id, second.session_id);
         assert_ne!(first.refresh_token, second.refresh_token);
+    }
+
+    #[test]
+    fn login_grants_only_entitled_or_unclaimed_workspaces() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = key();
+        let tenant = TenantId::parse("acme").unwrap();
+        let other = UserId::parse("u-other").unwrap();
+        // A real workspace under a tenant, owned by someone else.
+        repo.create_workspace(
+            &domain::Workspace::create(
+                WorkspaceId::parse("ws-eng").unwrap(),
+                tenant.clone(),
+                "Eng",
+                other.clone(),
+                10,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let svc = AuthService::new(&repo, &key);
+        let req = || {
+            vec![
+                WorkspaceId::parse("ws-eng").unwrap(),
+                WorkspaceId::parse("ws-demo").unwrap(), // unclaimed (no row)
+            ]
+        };
+
+        // A brand-new user: ws-eng is a real workspace they're not in → dropped;
+        // ws-demo is unclaimed → granted (dev/first-run UX preserved).
+        let pair = svc
+            .login(&DiscordProvider, &claims("u", None), req(), 1_000)
+            .unwrap();
+        let granted = svc.verify_access(&pair.access_token, 1_010).unwrap().workspaces;
+        assert_eq!(granted, vec![WorkspaceId::parse("ws-demo").unwrap()]);
+
+        // Grant the user membership in the tenant → ws-eng is now entitled.
+        repo.upsert_membership(&Membership::new(
+            tenant.clone(),
+            pair.user_id.clone(),
+            Role::Member,
+        ))
+        .unwrap();
+        let pair2 = svc
+            .login(&DiscordProvider, &claims("u", None), req(), 2_000)
+            .unwrap();
+        let granted2 = svc.verify_access(&pair2.access_token, 2_010).unwrap().workspaces;
+        assert_eq!(
+            granted2,
+            vec![
+                WorkspaceId::parse("ws-eng").unwrap(),
+                WorkspaceId::parse("ws-demo").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_owner_is_entitled_without_a_membership_row() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = key();
+        let svc = AuthService::new(&repo, &key);
+        // Provision the user first so we know their id, then create a workspace
+        // they own (no membership row).
+        let me = svc
+            .login(&DiscordProvider, &claims("owner", None), vec![], 0)
+            .unwrap()
+            .user_id;
+        repo.create_workspace(
+            &domain::Workspace::create(
+                WorkspaceId::parse("ws-mine").unwrap(),
+                TenantId::parse("acme").unwrap(),
+                "Mine",
+                me.clone(),
+                10,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let pair = svc
+            .login(
+                &DiscordProvider,
+                &claims("owner", None),
+                vec![WorkspaceId::parse("ws-mine").unwrap()],
+                20,
+            )
+            .unwrap();
+        let granted = svc.verify_access(&pair.access_token, 30).unwrap().workspaces;
+        assert_eq!(granted, vec![WorkspaceId::parse("ws-mine").unwrap()]);
     }
 
     #[test]
