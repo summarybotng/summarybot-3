@@ -85,10 +85,16 @@ Updates stream live (SSE), so new summaries appear without refreshing.
 
 ## 6. Creating a summary
 
-- From the **WhatsApp/Source** tab use **Summarize now** for a quick recent-window
-  summary, or
-- **Summaries** tab → the **New summary** box: paste messages (one per line) and
-  **Summarize**.
+The quickest path is the **Create** tab — one wizard for every kind of summary:
+
+1. **What** — pick a platform (WhatsApp / Discord / Slack), then a chat/channel
+   (or **All channels in this workspace**). Discord/Slack let you pick a server first.
+2. **When** — choose **Now** (a recent-window summary, with 4h/24h/7d/30d presets),
+   **Recurring** (create a schedule, optionally a rolling digest), or **Past** (a
+   by-week retrospective across a WhatsApp chat's imported history).
+
+The older entry points still work too: **Summarize now** on the WhatsApp/Source
+tab, or the **New summary** paste box on the **Summaries** tab.
 
 Every summary is **structured** (key points, action items, technical terms,
 participants) with **citations**, and is saved to the dashboard automatically. Use

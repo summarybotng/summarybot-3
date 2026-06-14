@@ -124,10 +124,11 @@ roadmap are listed at the end so the boundary is explicit.
 
 ## Dashboard (web UI)
 
-A left-nav SPA with: Summaries (search/filter/pin/archive/tag), Schedules,
-Knowledge (base + search + curator), Spend, WhatsApp (import + coverage), Discord
-& Slack sources, Delivery destinations, Plugins (tenant admin), Members, Audit,
-and Settings. Live updates stream over Server-Sent Events.
+A left-nav SPA with: Create (unified summary wizard), Summaries
+(search/filter/pin/archive/tag), Schedules, Knowledge (base + search + curator),
+Spend, Jobs, WhatsApp (import + coverage), Discord & Slack sources, Delivery
+destinations, Plugins (tenant admin), Members, Audit, and Settings. Live updates
+stream over Server-Sent Events.
 
 ## Operations
 

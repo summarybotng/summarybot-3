@@ -3,6 +3,7 @@ import { useAuth } from './auth'
 import { applyTenantAccent } from './theme'
 import { Login } from './views/Login'
 import { Summaries } from './views/Summaries'
+import { CreateSummary } from './views/CreateSummary'
 import { Schedules } from './views/Schedules'
 import { Settings } from './views/Settings'
 import { Whatsapp } from './views/Whatsapp'
@@ -16,6 +17,7 @@ import { Plugins } from './views/Plugins'
 import { Jobs } from './views/Jobs'
 
 type Tab =
+  | 'create'
   | 'summaries'
   | 'schedules'
   | 'whatsapp'
@@ -128,6 +130,7 @@ export default function App() {
       </aside>
 
       <main key={activeWs} className="flex-1 overflow-y-auto px-4 py-6">
+        {tab === 'create' && <CreateSummary />}
         {tab === 'summaries' && <Summaries />}
         {tab === 'schedules' && <Schedules />}
         {tab === 'whatsapp' && <Whatsapp />}
@@ -148,7 +151,7 @@ export default function App() {
 
 /// Left-nav groups (vertical sidebar). Grouping keeps 11 tabs scannable.
 const NAV: { section?: string; tabs: Tab[] }[] = [
-  { tabs: ['summaries', 'schedules', 'knowledge', 'spend', 'jobs'] },
+  { tabs: ['create', 'summaries', 'schedules', 'knowledge', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
   { section: 'Admin', tabs: ['delivery', 'plugins', 'members', 'audit', 'settings'] },
 ]
