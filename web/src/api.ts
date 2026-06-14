@@ -269,6 +269,7 @@ export class Client {
   async summarizeChannelNow(
     chat: string,
     lookbackSecs: number,
+    source?: { platform: string; sourceId: string | null },
   ): Promise<{ produced: boolean; summary: Summary | null }> {
     const sched = await this.createSchedule({
       schedule_type: 'daily',
@@ -276,6 +277,9 @@ export class Client {
       timezone: 'UTC',
       channel: chat,
       lookback_secs: lookbackSecs,
+      // A live source lets category/channel scope resolve fresh before the run.
+      platform: source?.platform ?? null,
+      source_id: source?.sourceId ?? null,
     })
     try {
       return await this.triggerSchedule(sched.id)

@@ -318,8 +318,10 @@ export interface SourceServer {
 export interface SourceChannel {
   id: string
   name: string
-  /** Discord category; null for Slack / uncategorized. */
+  /** Discord category name; null for Slack / uncategorized. */
   category: string | null
+  /** Discord category id — the scope target for a category schedule (ADR-011). */
+  category_id: string | null
 }
 
 export interface PluginField {

@@ -30,6 +30,18 @@ use repository::{
 /// channel). Chosen as a value no real platform channel id uses.
 pub const ALL_CHANNELS: &str = "*";
 
+/// Sentinel prefix for a category-scoped schedule (ADR-011 category scope):
+/// `category:<platform-category-id>`. At run time the bound platform source
+/// (Discord) resolves the category to its current channel set, so a summary
+/// follows channels added to / removed from the category over time. Chosen so it
+/// can't collide with a real channel id (which never contains this prefix).
+pub const CATEGORY_PREFIX: &str = "category:";
+
+/// If `channel` is a category sentinel, return the platform category id.
+pub fn parse_category(channel: &str) -> Option<&str> {
+    channel.strip_prefix(CATEGORY_PREFIX).filter(|s| !s.is_empty())
+}
+
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
 /// LLM client so it's testable with fakes.
 pub struct SummarizingScheduleRunner<'a, R, C: LlmClient> {
@@ -111,35 +123,85 @@ where
         start: i64,
         now: i64,
     ) {
+        let Some(fetcher) = self.build_fetcher(stored) else {
+            return;
+        };
         let ws = &stored.schedule.workspace_id;
-        let Some(master) = self.master else { return };
-        let Ok(Some(src)) = self.repo.get_schedule_source(&stored.id) else {
-            return;
-        };
-        let Ok(platform) = domain::Platform::parse(&src.platform) else {
-            return;
-        };
-        let Ok(Some(enc)) = self.repo.get_platform_token(ws, &src.platform) else {
-            return;
-        };
-        let Ok(token) = crate::decrypt_secret(&master, &enc) else {
-            eprintln!(
-                "scheduled live sync: cannot decrypt token for {}",
-                stored.id
-            );
-            return;
-        };
-        let fetcher = match crate::make_platform_fetcher(platform, token, src.source_id) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("scheduled live sync skipped for {}: {e}", stored.id);
-                return;
-            }
-        };
         let scope = crate::FetchScope::Channels(vec![channel.clone()]);
         if let Err(e) = crate::sync_into_store(&*fetcher, self.repo, ws, &scope, start, now) {
             eprintln!("scheduled live sync failed for {}: {e}", stored.id);
         }
+    }
+
+    /// Build the live platform fetcher for a schedule's bound source (ADR-128),
+    /// or `None` if there's no master key / source / token / compiled platform.
+    /// Best-effort: every miss logs (where useful) and yields `None` so the
+    /// caller falls back to whatever is already stored.
+    fn build_fetcher(&self, stored: &StoredSchedule) -> Option<Box<dyn crate::PlatformFetcher>> {
+        let ws = &stored.schedule.workspace_id;
+        let master = self.master?;
+        let src = self.repo.get_schedule_source(&stored.id).ok()??;
+        let platform = domain::Platform::parse(&src.platform).ok()?;
+        let enc = self.repo.get_platform_token(ws, &src.platform).ok()??;
+        let token = match crate::decrypt_secret(&master, &enc) {
+            Ok(t) => t,
+            Err(_) => {
+                eprintln!("scheduled live sync: cannot decrypt token for {}", stored.id);
+                return None;
+            }
+        };
+        match crate::make_platform_fetcher(platform, token, src.source_id) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("scheduled live sync skipped for {}: {e}", stored.id);
+                None
+            }
+        }
+    }
+
+    /// Category scope (ADR-011): resolve the category's current channels from the
+    /// bound source, sync their recent messages into the store, and return the
+    /// resolved channel set. Best-effort — any failure (no source/token/feature,
+    /// or a platform that lacks categories like Slack) yields an empty set, so a
+    /// category schedule with no reachable Discord source quietly produces nothing.
+    fn sync_category(
+        &self,
+        stored: &StoredSchedule,
+        category_id: &str,
+        start: i64,
+        now: i64,
+    ) -> Vec<domain::ChannelId> {
+        let Some(fetcher) = self.build_fetcher(stored) else {
+            return vec![];
+        };
+        let ws = &stored.schedule.workspace_id;
+        let scope = crate::FetchScope::Category(category_id.to_string());
+        let channels = fetcher.resolve_channels(&scope).unwrap_or_default();
+        if let Err(e) = crate::sync_into_store(&*fetcher, self.repo, ws, &scope, start, now) {
+            eprintln!("scheduled category sync failed for {}: {e}", stored.id);
+        }
+        channels
+    }
+
+    /// Read every message in `[start, now]` across `channels`, merged into one
+    /// chronological stream — the basis for a category-scoped summary.
+    fn read_across(
+        &self,
+        ws: &domain::WorkspaceId,
+        channels: &[domain::ChannelId],
+        start: i64,
+        now: i64,
+    ) -> Result<Vec<domain::NormalizedMessage>, String> {
+        let mut all = Vec::new();
+        for ch in channels {
+            let mut msgs = self
+                .repo
+                .list_messages(ws, ch, start, now)
+                .map_err(|e| e.to_string())?;
+            all.append(&mut msgs);
+        }
+        all.sort_by_key(|m| m.timestamp);
+        Ok(all)
     }
 }
 
@@ -173,6 +235,7 @@ where
 
         let start = now - stored.schedule.lookback_secs;
         let all = channel.as_str() == ALL_CHANNELS;
+        let category = parse_category(channel.as_str());
 
         // If this schedule has a live source (ADR-128), pull fresh messages into
         // the store before reading the window. Best-effort: missing creds, an
@@ -180,17 +243,20 @@ where
         // whatever was already stored — a scheduled summary never fails on sync.
         // (All-channels scope reads the store directly; there's no single channel
         // to live-sync.)
-        if !all {
+        if !all && category.is_none() {
             self.live_sync(stored, &channel, start, now);
         }
 
-        // Scope (ADR-011): a specific channel, or all of the workspace's channels.
-        let messages = if all {
-            self.repo.list_messages_all(ws, start, now)
+        // Scope (ADR-011): a specific channel, a category's channels (resolved
+        // live from the bound Discord source), or all of the workspace's channels.
+        let messages = if let Some(cat) = category {
+            let channels = self.sync_category(stored, cat, start, now);
+            self.read_across(ws, &channels, start, now)?
+        } else if all {
+            self.repo.list_messages_all(ws, start, now).map_err(|e| e.to_string())?
         } else {
-            self.repo.list_messages(ws, &channel, start, now)
-        }
-        .map_err(|e| e.to_string())?;
+            self.repo.list_messages(ws, &channel, start, now).map_err(|e| e.to_string())?
+        };
         // Nothing substantial in the window → skip quietly (no empty summaries).
         if !messages.iter().any(|m| m.is_substantial()) {
             return Ok(());
@@ -214,17 +280,26 @@ where
             })
             .map_err(|e| format!("{e:?}"))?;
 
+        // All-channels and category scopes span multiple channels, so the record
+        // has no single channel; each carries a tag describing its scope.
+        let multi = all || category.is_some();
+        let tags = if all {
+            vec!["all-channels".to_string()]
+        } else if let Some(cat) = category {
+            vec![format!("category:{cat}")]
+        } else {
+            vec![]
+        };
         let record = SummaryRecord {
             id: format!("sum_{}_{}", stored.id, now),
-            // All-channels scope is workspace-wide, so it has no single channel.
-            channel_id: if all { None } else { Some(channel) },
+            channel_id: if multi { None } else { Some(channel) },
             model: outcome.model,
             cost_micros: outcome.cost_micros,
             degraded: outcome.degraded,
             created_at: now,
             pinned: false,
             archived: false,
-            tags: if all { vec!["all-channels".to_string()] } else { vec![] },
+            tags,
             coherence_score: Some(outcome.coherence.score),
             summary: outcome.summary,
         };
@@ -1045,6 +1120,80 @@ mod tests {
             seen.borrow().clone(),
             vec!["https://one.example/hook".to_string()]
         );
+    }
+
+    #[test]
+    fn parse_category_recognizes_the_sentinel() {
+        assert_eq!(super::parse_category("category:c-eng"), Some("c-eng"));
+        assert_eq!(super::parse_category("category:"), None); // empty id
+        assert_eq!(super::parse_category("c-eng"), None);
+        assert_eq!(super::parse_category(super::ALL_CHANNELS), None);
+    }
+
+    #[test]
+    fn read_across_merges_selected_channels_chronologically() {
+        // The deterministic core of category scope (ADR-011): once the category's
+        // channels are resolved, read+merge their messages in time order, leaving
+        // out channels that aren't in the set.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        let m = |id: &str, ch: &str, ts: i64| NormalizedMessage {
+            id: domain::MessageId::parse(id).unwrap(),
+            platform: Platform::Discord,
+            channel_id: ChannelId::parse(ch).unwrap(),
+            author_id: "p1".into(),
+            author_name: "Alice".into(),
+            content: format!("msg {id}"),
+            timestamp: ts,
+            is_system: false,
+            reply_to: None,
+            attachments: vec![],
+        };
+        repo.save_message(&ws, &m("a2", "c1", 200)).unwrap();
+        repo.save_message(&ws, &m("a1", "c1", 100)).unwrap();
+        repo.save_message(&ws, &m("b1", "c2", 150)).unwrap();
+        repo.save_message(&ws, &m("z1", "c3", 120)).unwrap(); // outside the category
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let runner = SummarizingScheduleRunner::new(&repo, &engine, &l);
+
+        let chans = vec![ChannelId::parse("c1").unwrap(), ChannelId::parse("c2").unwrap()];
+        let got = runner.read_across(&ws, &chans, 0, 1_000).unwrap();
+        let ids: Vec<&str> = got.iter().map(|x| x.id.as_str()).collect();
+        // c1 + c2 only, merged in timestamp order; c3 excluded.
+        assert_eq!(ids, vec!["a1", "b1", "a2"]);
+    }
+
+    #[test]
+    fn category_scope_without_a_source_is_a_quiet_noop() {
+        // A category-scoped schedule with no bound Discord source can't resolve
+        // its channels, so it produces nothing rather than failing.
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.save_message(&ws, &msg("m0", 3_500, "we shipped the release today"))
+            .unwrap();
+        let schedule = Schedule::build(
+            ws.clone(), "hourly", 0, 0, &[], 1, "UTC", None, 0, true, Some("category:c-eng"), 100_000,
+        )
+        .unwrap();
+        repo.create_schedule(&StoredSchedule {
+            id: "sch_cat".into(),
+            schedule,
+            next_run: 3_600,
+            consecutive_failures: 0,
+        })
+        .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let runner = SummarizingScheduleRunner::new(&repo, &engine, &l);
+
+        let report = SchedulerService::new(&repo).tick(&runner, 3_600).unwrap();
+        assert_eq!(report.fired, 1);
+        assert!(repo.list_records(&ws, false, 10).unwrap().is_empty());
     }
 
     #[test]

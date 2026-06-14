@@ -129,6 +129,7 @@ mod tests {
                     id: c.clone(),
                     name: c.as_str().to_string(),
                     category: None,
+                    category_id: None,
                 })
                 .collect())
         }

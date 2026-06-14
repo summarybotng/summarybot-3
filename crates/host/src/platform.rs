@@ -62,6 +62,9 @@ pub struct ChannelInfo {
     pub id: ChannelId,
     pub name: String,
     pub category: Option<String>,
+    /// The platform's category id (Discord `parent_id`), so a category-scoped
+    /// schedule can be pinned to a stable id rather than a display name (ADR-011).
+    pub category_id: Option<String>,
 }
 
 /// Display context for summary headers (resolved names, never ids).
@@ -227,6 +230,7 @@ mod tests {
                     id: c.clone(),
                     name: c.as_str().to_string(),
                     category: None,
+                    category_id: None,
                 })
                 .collect();
             chans.dedup_by(|a, b| a.id == b.id);

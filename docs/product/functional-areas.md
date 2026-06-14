@@ -85,6 +85,10 @@ Runs summarization on a cadence and accumulates rolling periods.
 
 - **Scheduler** — persistent schedules (once/hourly/daily/weekly/monthly/custom),
   a background tick loop with grace and auto-disable, manual trigger, run history.
+- **Channel scope** (ADR-011) — a schedule targets one channel, **all channels**
+  in the workspace (`*` sentinel), or a **Discord category** (`category:<id>`): the
+  runner resolves the category's current channels from the bound source at run
+  time, so the summary follows channels added to / removed from the category.
 - **Rolling state machine** — `decide_rolling` (StartNew / Accumulate / Finalize)
   with the one-active-period-per-schedule invariant; catch-up across missed days;
   idempotent finalize. Merge strategies: Append and Hybrid/Resummarize. *(ADR-101/130)*

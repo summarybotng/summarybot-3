@@ -98,14 +98,14 @@ pub fn parse_channel_directory(channels: &serde_json::Value) -> Vec<crate::platf
     arr.iter()
         .filter(|c| is_text_channel(c))
         .filter_map(|c| {
+            let parent_id = c.get("parent_id").and_then(|p| p.as_str());
             Some(ChannelInfo {
                 id: ChannelId::parse(c.get("id")?.as_str()?).ok()?,
                 name: c.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-                category: c
-                    .get("parent_id")
-                    .and_then(|p| p.as_str())
+                category: parent_id
                     .and_then(|pid| categories.get(pid))
                     .map(|s| s.to_string()),
+                category_id: parent_id.map(|s| s.to_string()),
             })
         })
         .collect()

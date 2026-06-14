@@ -88,7 +88,9 @@ Updates stream live (SSE), so new summaries appear without refreshing.
 The quickest path is the **Create** tab — one wizard for every kind of summary:
 
 1. **What** — pick a platform (WhatsApp / Discord / Slack), then a chat/channel
-   (or **All channels in this workspace**). Discord/Slack let you pick a server first.
+   (or **All channels in this workspace**). Discord/Slack let you pick a server
+   first; for Discord you can also scope to **all channels in a category** (the
+   category's channels are resolved fresh each run).
 2. **When** — choose **Now** (a recent-window summary, with 4h/24h/7d/30d presets),
    **Recurring** (create a schedule, optionally a rolling digest), or **Past** (a
    by-week retrospective across a WhatsApp chat's imported history).

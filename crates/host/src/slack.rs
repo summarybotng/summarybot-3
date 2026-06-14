@@ -350,6 +350,7 @@ mod live {
                                         .unwrap_or("")
                                         .to_string(),
                                     category: None,
+                                    category_id: None,
                                 });
                             }
                         }

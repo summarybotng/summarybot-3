@@ -85,7 +85,8 @@ export function CreateSummary() {
     setMade(null)
     try {
       if (when === 'now') {
-        const r = await client.summarizeChannelNow(channel, nowSecs)
+        const src = platform === 'whatsapp' ? undefined : { platform: platform as string, sourceId: server || null }
+        const r = await client.summarizeChannelNow(channel, nowSecs, src)
         setMade(r.summary)
         setResult(
           r.produced ? 'Summary produced — see it below / on the Summaries tab.' : 'No messages in that window — nothing produced.',
@@ -122,6 +123,15 @@ export function CreateSummary() {
   const [rolling, setRolling] = useState('')
 
   const canPast = platform === 'whatsapp' && channel !== ALL && channel !== ''
+
+  // Distinct categories among the loaded channels (Discord), for a category scope.
+  const categories = Array.from(
+    new Map(
+      channels
+        .filter((c) => c.category_id && c.category)
+        .map((c) => [c.category_id as string, { id: c.category_id as string, name: c.category as string }]),
+    ).values(),
+  )
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -171,7 +181,7 @@ export function CreateSummary() {
             </label>
           )}
 
-          {/* Channel / chat selection (with an "all channels" shortcut). */}
+          {/* Channel / chat selection (with "all channels" + per-category shortcuts). */}
           {platform && (
             <div className="space-y-1">
               <p className="text-sm text-slate-500">Select {platform === 'whatsapp' ? 'a chat' : 'a channel'}</p>
@@ -179,6 +189,16 @@ export function CreateSummary() {
                 <input type="radio" checked={channel === ALL} onChange={() => setChannel(ALL)} />
                 <span>All {platform === 'whatsapp' ? 'chats' : 'channels'} in this workspace</span>
               </label>
+              {/* Category scope (ADR-011): one option per distinct Discord category. */}
+              {categories.map((cat) => {
+                const val = `category:${cat.id}`
+                return (
+                  <label key={cat.id} className="flex items-center gap-2 text-sm">
+                    <input type="radio" checked={channel === val} onChange={() => setChannel(val)} />
+                    <span>📂 All channels in <span className="font-medium">{cat.name}</span></span>
+                  </label>
+                )
+              })}
               {(platform === 'whatsapp' ? chats.map((c) => ({ id: c.chat_id, name: c.chat_id })) : channels).map(
                 (c) => (
                   <label key={c.id} className="flex items-center gap-2 text-sm">

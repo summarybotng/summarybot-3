@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-14 — **unified "Create Summary" wizard** (ADR-088/089: a Create tab with a What→When flow over Now/Recurring/Past, dispatching to the existing summarize-now/schedule/retrospective endpoints); **per-schedule delivery destinations** (ADR-014: a destination picker pins a schedule to a chosen subset; `schedule_destinations` + runner filter); **tenant discovery** ("Your tenants" picker via `GET /tenants` — no more typing a tenant id, TEN-001); **retrospective weekly summaries** of an imported chat ("Summarize by week", ADR-088/089/101); v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix audited against the ADRs (per-schedule destinations, schedule scope, jobs/progress, create-summary wizard called out); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-14 — **Discord-category schedule scope** (ADR-011: a `category:<id>` scope the runner resolves to the category's live channels and summarizes across; selectable in the Create wizard once a Discord source is connected); **unified "Create Summary" wizard** (ADR-088/089: a Create tab with a What→When flow over Now/Recurring/Past, dispatching to the existing summarize-now/schedule/retrospective endpoints); **per-schedule delivery destinations** (ADR-014: a destination picker pins a schedule to a chosen subset; `schedule_destinations` + runner filter); **tenant discovery** ("Your tenants" picker via `GET /tenants` — no more typing a tenant id, TEN-001); **retrospective weekly summaries** of an imported chat ("Summarize by week", ADR-088/089/101); v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix audited against the ADRs (per-schedule destinations, schedule scope, jobs/progress, create-summary wizard called out); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -82,7 +82,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
 | Choose delivery destinations *per schedule* | ✅ | Schedules | a destination picker pins a schedule to a chosen subset; empty = all enabled (ADR-014). Stored in `schedule_destinations`; the runner filters delivery to the selection. ADR-108 (intermediate-vs-finalize routing per destination) is the remaining refinement |
 | Schedule scope = all-channels (workspace) | ✅ | Schedules | "all channels" toggle → a workspace-wide digest across every channel (ADR-011) |
-| Schedule scope = Discord category | ⛔ | — | needs live channel resolution from a bound Discord source (ADR-011); all-channels + single-channel shipped |
+| Schedule scope = Discord category | ✅ | Create | a `category:<id>` scope: the runner resolves the category's current channels from the bound Discord source at run time (reusing the tested `resolve_channels`), syncs them, and summarizes across them (tagged `category:<id>`). The Create wizard offers a per-category option once a Discord source is connected (ADR-011). Live HTTP resolution is exercised only with a real Discord token; the resolve→merge→summarize chain is unit-tested |
 | Jobs view (long-running work + progress) | ✅ | Jobs | a Jobs tab lists background work with status/progress/cost; the retrospective by-week run records a job (ADR-040). Live streaming progress mid-run is a refinement |
 | Wiki raw units + provenance | ✅ | Knowledge | "Knowledge units (raw)" lists every fact with its source-message count (ADR-063) |
 | Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |
@@ -100,15 +100,15 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 
 **Reading the gaps (audited against the v2 ADRs):** the only remaining 🟡 rows are
 **OAuth sign-in** and **Google Drive Connect**, both of which work but need server
-config (`--features oauth` + provider keys) rather than more code. The remaining ⛔
-rows are v2-spec'd flows the rewrite hasn't built: **Discord-category schedule
-scope** (ADR-011; all-channel + single-channel shipped) and **per-destination
-rolling delivery routing** (ADR-108; per-schedule destination *selection* shipped
-via ADR-014). The earlier UX backlog this matrix opened — per-schedule
-destinations, all-channel scope, jobs/progress, the curator apply step, the wiki
-raw-provenance tab, tenant discovery, and the unified create-summary wizard — is
-now closed. None are 🔌 (shipped backend, no UI) right now. These ⛔/🟡 rows are
-the live UX backlog; close them against the spec, not by guessing.
+config (`--features oauth` + provider keys) rather than more code. The one
+remaining ⛔ row is **per-destination rolling delivery routing** (ADR-108;
+per-schedule destination *selection* shipped via ADR-014) — it depends on
+intermediate rolling delivery that isn't built yet. The earlier UX backlog this
+matrix opened — per-schedule destinations, all-channel **and category** schedule
+scope, jobs/progress, the curator apply step, the wiki raw-provenance tab, tenant
+discovery, and the unified create-summary wizard — is now closed. None are 🔌
+(shipped backend, no UI) right now. These ⛔/🟡 rows are the live UX backlog; close
+them against the spec, not by guessing.
 
 ---
 
