@@ -75,10 +75,10 @@ roadmap are listed at the end so the boundary is explicit.
   send-back** (post the summary into a channel, reusing the workspace's bot
   token).
 - **Two-layer plugin model** — a tenant admin **enables** a plugin and configures
-  its account credentials once (including a **Connect Google Drive** OAuth flow
-  that captures the refresh token instead of pasting it); each workspace then
-  picks only the non-secret target (channel / space / folder). A plugin a tenant
-  has disabled is refused.
+  its account credentials once (including **Connect** OAuth flows for **Google
+  Drive** and **Confluence** that capture the token instead of pasting it; ADR-132);
+  each workspace then picks only the non-secret target (channel / space / folder).
+  A plugin a tenant has disabled is refused.
 - **Gating** — destinations are gated by the pure delivery policy (enabled +
   configured / connected) before anything is sent.
 - **Per-schedule + per-destination rolling control** — a schedule can pin delivery

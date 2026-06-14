@@ -201,6 +201,67 @@ fn google_app() -> Option<(OAuthProvider, String)> {
     provider_from_env("google").map(|(p, secret, _login_redirect)| (p, secret))
 }
 
+/// The OAuth app + scopes for a plugin's **connect** flow, by plugin kind
+/// (ADR-126 gdrive; ADR-132 confluence). `None` if the server has no app
+/// configured for that kind.
+fn connect_app(kind: &str) -> Option<(OAuthProvider, String)> {
+    match kind {
+        "gdrive" => {
+            let (mut p, secret) = google_app()?;
+            // Drive file-scope (only files the app creates) + offline consent so
+            // Google returns a refresh token.
+            p.scopes = vec!["https://www.googleapis.com/auth/drive.file".to_string()];
+            Some((p, secret))
+        }
+        "confluence" => {
+            let client_id = env::var("ATLASSIAN_CLIENT_ID").ok().filter(|s| !s.is_empty())?;
+            let client_secret = env::var("ATLASSIAN_CLIENT_SECRET").ok().filter(|s| !s.is_empty())?;
+            let s = |x: &str| x.to_string();
+            Some((
+                OAuthProvider {
+                    name: "atlassian".into(),
+                    auth_url: "https://auth.atlassian.com/authorize".into(),
+                    token_url: "https://auth.atlassian.com/oauth/token".into(),
+                    userinfo_url: None,
+                    client_id,
+                    scopes: vec![
+                        s("write:confluence-content"),
+                        s("read:confluence-space.summary"),
+                        s("offline_access"),
+                    ],
+                    extra_auth_params: vec![
+                        (s("audience"), s("api.atlassian.com")),
+                        (s("prompt"), s("consent")),
+                    ],
+                },
+                client_secret,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve the Atlassian site's cloudId (and URL) for the freshly-issued access
+/// token (ADR-132). Confluence Cloud REST calls are addressed by cloudId. Uses
+/// the first accessible site; multi-site selection is a later refinement.
+fn atlassian_cloud(access_token: &str) -> Result<(String, String), ApiError> {
+    let v = host::oauth::fetch_userinfo(
+        "https://api.atlassian.com/oauth/token/accessible-resources",
+        access_token,
+    )
+    .map_err(ApiError::Internal)?;
+    let first = v
+        .as_array()
+        .and_then(|a| a.first())
+        .ok_or_else(|| ApiError::bad_request("Atlassian returned no accessible sites for this account"))?;
+    let id = first.get("id").and_then(|x| x.as_str()).unwrap_or("");
+    let url = first.get("url").and_then(|x| x.as_str()).unwrap_or("");
+    if id.is_empty() {
+        return Err(ApiError::bad_request("Atlassian site has no cloud id"));
+    }
+    Ok((id.to_string(), url.to_string()))
+}
+
 /// The single fixed redirect URI registered for the connect flow.
 fn connect_redirect_uri() -> String {
     let base = env::var("OAUTH_REDIRECT_BASE").unwrap_or_else(|_| "http://localhost:8080".into());
@@ -230,12 +291,11 @@ pub async fn connect_plugin(
         let repo = state.repo.lock().expect("repo mutex");
         crate::tenancy::authorize(&repo, &user.0.sub, &tenant_id, Permission::ManageSettings)?;
     }
-    let (mut cfg, _secret) = google_app().ok_or_else(|| {
-        ApiError::bad_request("server has no GOOGLE_CLIENT_ID configured".to_string())
+    let (cfg, _secret) = connect_app(&kind).ok_or_else(|| {
+        ApiError::bad_request(format!(
+            "server has no OAuth app configured for '{kind}' (set the provider client id/secret)"
+        ))
     })?;
-    // Drive file-scope (create/manage only files the app made) + offline consent
-    // so Google returns a refresh token.
-    cfg.scopes = vec!["https://www.googleapis.com/auth/drive.file".to_string()];
     let redirect_uri = connect_redirect_uri();
     let verifier = host::oauth::random_url_token(32).map_err(ApiError::Internal)?;
     let challenge = host::oauth::pkce_challenge(&verifier);
@@ -278,25 +338,32 @@ pub async fn connect_callback(
     }
     let tenant = TenantId::parse(tenant_raw).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let (cfg, secret) = google_app().ok_or_else(|| {
-        ApiError::bad_request("server has no GOOGLE_CLIENT_ID configured".to_string())
+    let (cfg, secret) = connect_app(kind).ok_or_else(|| {
+        ApiError::bad_request(format!("server has no OAuth app configured for '{kind}'"))
     })?;
     let redirect_uri = connect_redirect_uri();
     let tokens = host::oauth::exchange_code(&cfg, &secret, &redirect_uri, &q.code, verifier)
         .map_err(ApiError::Internal)?;
-    let refresh = tokens.refresh_token.filter(|t| !t.is_empty()).ok_or_else(|| {
+    let refresh = tokens.refresh_token.clone().filter(|t| !t.is_empty()).ok_or_else(|| {
         ApiError::bad_request(
-            "Google did not return a refresh token — remove the app's prior access at \
-             myaccount.google.com and reconnect".to_string(),
+            "the provider did not return a refresh token — remove the app's prior access and \
+             reconnect (and ensure offline access was granted)".to_string(),
         )
     })?;
 
-    // The tenant config for gdrive is just the refresh token (folder is a
-    // workspace target). Encrypt + store, enable, and mark connected.
+    // Per-kind tenant config: gdrive stores just the refresh token (folder is a
+    // workspace target); confluence also stores the resolved cloud id (ADR-132).
     let master = state.master_key().ok_or_else(|| {
         ApiError::bad_request("key encryption not configured on the server (set LLM_CONFIG_KEY)")
     })?;
-    let blob = serde_json::json!({ "refresh_token": refresh }).to_string();
+    let blob = match kind {
+        "confluence" => {
+            let (cloud_id, site_url) = atlassian_cloud(&tokens.access_token)?;
+            serde_json::json!({ "refresh_token": refresh, "cloud_id": cloud_id, "site_url": site_url })
+                .to_string()
+        }
+        _ => serde_json::json!({ "refresh_token": refresh }).to_string(),
+    };
     let config_enc = host::encrypt_secret(master, &blob).map_err(|e| ApiError::Internal(e.to_string()))?;
     {
         let repo = state.repo.lock().expect("repo mutex");

@@ -127,9 +127,10 @@ each workspace picks the target on **Delivery**.
    listing the tenants you belong to (with your role) so you can pick one instead of
    typing its id; type an id there to join or create a new tenant (you become Owner).
 2. For each plugin (Confluence, Email, Google Drive, Discord, Slack, Webhook):
-   **Enable** it and fill its **account credentials** (Confluence base/creds, SMTP
-   creds…). For **Google Drive**, click **Connect Google Drive** to authorize via
-   OAuth — the refresh token is captured for you (no pasting).
+   **Enable** it and fill its **account credentials** (SMTP creds…). For **Google
+   Drive** and **Confluence**, click **Connect** to authorize via OAuth — the
+   token is captured for you (no pasting). Confluence Connect uses Atlassian OAuth
+   and resolves your site automatically; an existing API-token setup keeps working.
 
 **As a workspace user (Delivery tab):**
 3. Pick a **Type** (only the per-workspace **target** fields appear — channel id,

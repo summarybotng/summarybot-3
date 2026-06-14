@@ -563,9 +563,13 @@ impl Deliverer for WebhookDeliverer {
     }
 }
 
-// ---- Confluence sink plugin (ADR-126; legacy ADR-099) ----------------------
+// ---- Confluence sink plugin (ADR-126; OAuth ADR-132, legacy ADR-099) -------
 
-/// Confluence Cloud config: base URL, space key, account email + API token.
+/// Confluence Cloud config. The primary path is **Atlassian OAuth** (ADR-132):
+/// the tenant clicks Connect and a `refresh_token` + `cloud_id` are captured.
+/// The legacy `base_url`/`email`/`api_token` Basic-auth fields remain (now
+/// optional) so destinations configured before OAuth keep delivering. `space_key`
+/// is the per-workspace target either way.
 #[cfg(feature = "confluence")]
 const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
     id: "confluence",
@@ -573,9 +577,9 @@ const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
     fields: &[
         FieldSpec {
             name: "base_url",
-            label: "Base URL (e.g. https://acme.atlassian.net)",
+            label: "Base URL (legacy API-token auth; leave blank if connecting via OAuth)",
             secret: false,
-            required: true,
+            required: false,
             hint: FieldHint::Full,
             scope: FieldScope::Tenant,
         },
@@ -589,17 +593,17 @@ const CONFLUENCE_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
         },
         FieldSpec {
             name: "email",
-            label: "Account email",
+            label: "Account email (legacy API-token auth)",
             secret: false,
-            required: true,
+            required: false,
             hint: FieldHint::Full,
             scope: FieldScope::Tenant,
         },
         FieldSpec {
             name: "api_token",
-            label: "API token",
+            label: "API token (legacy API-token auth)",
             secret: true,
-            required: true,
+            required: false,
             hint: FieldHint::None,
             scope: FieldScope::Tenant,
         },
@@ -629,36 +633,59 @@ impl Deliverer for ConfluenceDeliverer {
     }
 
     fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
-        use base64::engine::general_purpose::STANDARD;
-        use base64::Engine;
-
         let field = |k: &str| config.get(k).and_then(Value::as_str).unwrap_or("").trim();
-        let base_url = field("base_url").trim_end_matches('/');
         let space_key = field("space_key");
-        let email = field("email");
-        let token = field("api_token");
-        if base_url.is_empty() || space_key.is_empty() || email.is_empty() || token.is_empty() {
-            return Err("confluence config is incomplete".to_string());
+        if space_key.is_empty() {
+            return Err("confluence destination has no space_key".to_string());
         }
-
-        let title = confluence_title(summary.title());
         let body = serde_json::json!({
             "type": "page",
-            "title": title,
+            "title": confluence_title(summary.title()),
             "space": { "key": space_key },
             // Our HTML render is valid Confluence storage-format XHTML.
-            "body": {
-                "storage": { "value": summary.html, "representation": "storage" }
-            }
+            "body": { "storage": { "value": summary.html, "representation": "storage" } }
         });
+
+        // Primary path (ADR-132): OAuth — refresh to an access token and POST to
+        // the Cloud API at api.atlassian.com/ex/confluence/{cloud_id}.
+        let refresh_token = field("refresh_token");
+        let cloud_id = field("cloud_id");
+        if !refresh_token.is_empty() && !cloud_id.is_empty() {
+            let endpoint =
+                format!("https://api.atlassian.com/ex/confluence/{cloud_id}/wiki/rest/api/content");
+            let access = self.atlassian_access_token(refresh_token)?;
+            return self.post_page(&endpoint, &format!("Bearer {access}"), body);
+        }
+
+        // Legacy fallback: Basic auth against the tenant's own base URL.
+        let base_url = field("base_url").trim_end_matches('/');
+        let email = field("email");
+        let token = field("api_token");
+        if base_url.is_empty() || email.is_empty() || token.is_empty() {
+            return Err(
+                "confluence destination is not connected — connect via OAuth, or set base_url + email + api_token"
+                    .to_string(),
+            );
+        }
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
         let auth = format!("Basic {}", STANDARD.encode(format!("{email}:{token}")));
         let endpoint = format!("{base_url}/wiki/rest/api/content");
+        self.post_page(&endpoint, &auth, body)
+    }
+}
+
+#[cfg(feature = "confluence")]
+impl ConfluenceDeliverer {
+    /// POST a storage-format page to a Confluence content endpoint with the given
+    /// `Authorization` header (Bearer for OAuth, Basic for legacy).
+    fn post_page(&self, endpoint: &str, authorization: &str, body: Value) -> Result<(), String> {
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(self.timeout_secs))
             .build();
         match agent
-            .post(&endpoint)
-            .set("Authorization", &auth)
+            .post(endpoint)
+            .set("Authorization", authorization)
             .set("Content-Type", "application/json")
             .send_json(body)
         {
@@ -667,6 +694,46 @@ impl Deliverer for ConfluenceDeliverer {
             Err(ureq::Error::Transport(t)) => Err(format!("confluence transport error: {t}")),
         }
     }
+
+    /// Exchange the stored Atlassian refresh token for an access token (ADR-132),
+    /// using the operator's Atlassian OAuth app from the environment.
+    fn atlassian_access_token(&self, refresh_token: &str) -> Result<String, String> {
+        let (provider, secret) = atlassian_oauth_app()?;
+        Ok(crate::oauth::refresh(&provider, &secret, refresh_token)?.access_token)
+    }
+}
+
+/// The operator's Atlassian OAuth app (client id/secret) from the environment.
+/// Shared by the Connect callback and the deliverer's token refresh (ADR-132).
+#[cfg(feature = "confluence")]
+pub fn atlassian_oauth_app() -> Result<(domain::OAuthProvider, String), String> {
+    let client_id = std::env::var("ATLASSIAN_CLIENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "server has no ATLASSIAN_CLIENT_ID configured".to_string())?;
+    let client_secret = std::env::var("ATLASSIAN_CLIENT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "server has no ATLASSIAN_CLIENT_SECRET configured".to_string())?;
+    Ok((
+        domain::OAuthProvider {
+            name: "atlassian".into(),
+            auth_url: "https://auth.atlassian.com/authorize".into(),
+            token_url: "https://auth.atlassian.com/oauth/token".into(),
+            userinfo_url: None,
+            client_id,
+            scopes: vec![
+                "write:confluence-content".into(),
+                "read:confluence-space.summary".into(),
+                "offline_access".into(),
+            ],
+            extra_auth_params: vec![
+                ("audience".into(), "api.atlassian.com".into()),
+                ("prompt".into(), "consent".into()),
+            ],
+        },
+        client_secret,
+    ))
 }
 
 /// A unique page title (Confluence titles are unique per space) from a snippet
@@ -1164,6 +1231,27 @@ mod tests {
             config: serde_json::json!({ "url": "https://x" }),
             rolling_deliver_intermediate: false,
         }
+    }
+
+    #[cfg(feature = "confluence")]
+    #[test]
+    fn confluence_deliver_selects_path_and_guards_config() {
+        // ADR-132: space_key is required; with neither OAuth (refresh_token +
+        // cloud_id) nor legacy Basic (base_url + email + api_token) creds, the
+        // deliver fails fast with a clear message before any network call.
+        let d = ConfluenceDeliverer::default();
+        let r = RenderedSummary::new(&record().summary);
+
+        let missing_space = d.deliver(&serde_json::json!({}), &r).unwrap_err();
+        assert!(missing_space.contains("space_key"), "got: {missing_space}");
+
+        let not_connected = d
+            .deliver(&serde_json::json!({ "space_key": "ENG" }), &r)
+            .unwrap_err();
+        assert!(
+            not_connected.contains("connect") || not_connected.contains("api_token"),
+            "expected a 'not connected' hint, got: {not_connected}"
+        );
     }
 
     #[test]

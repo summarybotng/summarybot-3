@@ -62,9 +62,10 @@ pub struct TenantPluginDto {
     pub operator_disabled: bool,
 }
 
-/// Whether a plugin captures its credential via the OAuth connect flow.
+/// Whether a plugin captures its credential via the OAuth connect flow
+/// (Google Drive — ADR-126; Confluence — ADR-132).
 pub(crate) fn supports_connect(kind: &str) -> bool {
-    kind == "gdrive"
+    kind == "gdrive" || kind == "confluence"
 }
 
 fn descriptor(kind: &str) -> Option<SinkDescriptor> {
