@@ -38,7 +38,7 @@ export function Whatsapp() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!client || !file || !chat.trim()) return
+    if (!client || !file) return
     setBusy(true)
     setErr(null)
     setResult(null)
@@ -105,7 +105,7 @@ export function Whatsapp() {
             <input
               value={chat}
               onChange={(e) => setChat(e.target.value)}
-              placeholder="channel id (e.g. family-group)"
+              placeholder="channel id (optional — auto-detected from a group export)"
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
             />
             <input
@@ -117,12 +117,13 @@ export function Whatsapp() {
             />
           </div>
           <p className="text-xs text-slate-400">
-            Timezone is auto-detected from your browser. The date format is read from the file
-            automatically.
+            Leave the channel id blank for a group chat — the group name is detected from the
+            export. Timezone is auto-detected from your browser; the date format is read from the
+            file automatically.
           </p>
           <button
             type="submit"
-            disabled={busy || !file || !chat.trim()}
+            disabled={busy || !file}
             className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg disabled:opacity-50"
           >
             {busy ? 'Importing…' : 'Import'}
@@ -134,6 +135,9 @@ export function Whatsapp() {
           <div className="mt-4 rounded-lg bg-accent/10 p-3 text-sm text-slate-700">
             Imported <span className="font-medium">{result.stored}</span> messages into{' '}
             <span className="font-medium">#{result.chat_id}</span>
+            {result.chat_auto_detected && (
+              <span className="ml-1 text-xs text-slate-500">(name auto-detected)</span>
+            )}
             {result.duplicates > 0 && <> ({result.duplicates} duplicates skipped)</>} ·{' '}
             {result.new_participants} participants · {result.format} export.
             <div className="mt-2">

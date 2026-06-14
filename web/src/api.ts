@@ -288,14 +288,19 @@ export class Client {
     }
   }
 
-  /** Upload a WhatsApp export (.zip or _chat.txt) as the raw request body. */
+  /**
+   * Upload a WhatsApp export (.zip or _chat.txt) as the raw request body. `chat`
+   * is optional — when blank, the server auto-detects the group name from the
+   * export (v2 ADR-081) and returns the resolved `chat_id` + `chat_auto_detected`.
+   */
   importWhatsapp(
     chat: string,
     tz: string,
     dateOrder: string,
     file: File,
   ): Promise<WhatsappImport> {
-    const p = new URLSearchParams({ chat, tz })
+    const p = new URLSearchParams({ tz })
+    if (chat.trim()) p.set('chat', chat.trim())
     if (dateOrder) p.set('date_order', dateOrder)
     return this.json<WhatsappImport>(`/workspaces/${this.ws()}/whatsapp/imports?${p}`, {
       method: 'POST',

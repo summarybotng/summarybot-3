@@ -55,6 +55,16 @@ pub fn extract_whatsapp_text(bytes: &[u8]) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Auto-detect the chat's group name from an export (WHA-001; v2 ADR-081 made
+/// the chat id optional/auto-detected). Extracts the transcript and reads the
+/// group name out of its naming system lines — independent of timezone/date
+/// order, so a fixed parse is fine. `None` for a 1:1 chat or an export with no
+/// naming event (the caller then asks the user for a name).
+pub fn detect_whatsapp_chat_name(bytes: &[u8]) -> Result<Option<String>> {
+    let text = extract_whatsapp_text(bytes)?;
+    Ok(parse_export(&text, chrono_tz::UTC, DateOrder::DayMonthYear).detected_chat_name)
+}
+
 /// Ingest a WhatsApp export upload end-to-end (WHA-001): extract the transcript
 /// from `bytes` (zip or raw text), parse it under the declared `timezone`
 /// (WHA-020), then anonymize/dedup/persist. The date-component order is **inferred

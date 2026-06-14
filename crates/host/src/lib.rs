@@ -62,7 +62,8 @@ use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 pub use whatsapp::{
-    extract_whatsapp_text, ingest_whatsapp_zip, IngestContext, IngestSummary, WhatsAppIngestor,
+    detect_whatsapp_chat_name, extract_whatsapp_text, ingest_whatsapp_zip, IngestContext,
+    IngestSummary, WhatsAppIngestor,
 };
 pub use wiki::{build_synthesis_prompt, WikiError, WikiOutcome, WikiService, KNOWLEDGE_BASE_SLUG};
 

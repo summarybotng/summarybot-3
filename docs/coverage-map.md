@@ -114,7 +114,7 @@ config-dependent, not code debt; keep closing against the spec, not by guessing.
 
 | Feature | Legacy | Rewrite | Notes |
 |---|---|---|---|
-| WhatsApp import (zip / `_chat.txt`) | ✅ (REST ingest) | ✅ | `host/whatsapp.rs`, `api/whatsapp.rs`; iOS/Android parse, TZ + date-order inference (WHA-001/020) |
+| WhatsApp import (zip / `_chat.txt`) | ✅ (REST ingest) | ✅ | `host/whatsapp.rs`, `api/whatsapp.rs`; iOS/Android parse, TZ + date-order inference (WHA-001/020); **chat id auto-detected from the group name** (creation / subject-change system lines) so it needn't be typed — v2 ADR-081 parity |
 | PII anonymization at ingest | ✅ | ✅ | HMAC phone→pseudonym before storage (WHA-006) |
 | Dedup (file + message level) | ✅ | ✅ | SHA-256 + synthetic fingerprint (WHA-010/012) |
 | WhatsApp coverage + history gaps | ✅ | ✅ | per-chat import spans merged → classified `before_join`/`between_imports`/`after_last` gaps; group-creation anchor detected from chat events (WHA-014/015/016); `host/coverage.rs`, `GET /workspaces/:ws/whatsapp/chats[/:chat/coverage]`. Each import now recorded in `whatsapp_imports` (was never populated before) |

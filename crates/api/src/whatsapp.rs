@@ -19,8 +19,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Deserialize)]
 pub struct ImportQuery {
     /// The workspace channel id this chat is filed under (so schedules can scope
-    /// to it).
-    pub chat: String,
+    /// to it). **Optional** — when omitted, the group name is auto-detected from
+    /// the export's naming system lines (WHA-001; v2 ADR-081).
+    #[serde(default)]
+    pub chat: Option<String>,
     /// IANA timezone the export's local timestamps are in (default UTC).
     #[serde(default = "default_tz")]
     pub tz: String,
@@ -34,10 +36,35 @@ fn default_tz() -> String {
     "UTC".to_string()
 }
 
+/// Turn a detected group name into a stable, URL-safe channel id:
+/// lowercase, non-alphanumerics collapsed to single hyphens, trimmed. Returns
+/// `None` if nothing usable remains (so the caller asks for an explicit id).
+fn slugify(name: &str) -> Option<String> {
+    let mut out = String::with_capacity(name.len());
+    let mut prev_dash = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let slug = out.trim_matches('-').to_string();
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug)
+    }
+}
+
 /// Outcome of an import.
 #[derive(Serialize)]
 pub struct ImportDto {
     pub chat_id: String,
+    /// Whether `chat_id` was auto-detected from the export (no `chat` supplied).
+    pub chat_auto_detected: bool,
     /// Detected export dialect (`Ios` / `Android`).
     pub format: String,
     pub messages: usize,
@@ -58,10 +85,28 @@ pub async fn import_whatsapp(
 ) -> Result<Json<ImportDto>, ApiError> {
     user.require_workspace(&ws)?;
     let workspace = WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
-    let chat = ChannelId::parse(q.chat).map_err(|e| ApiError::bad_request(e.to_string()))?;
     if body.is_empty() {
         return Err(ApiError::bad_request("empty upload"));
     }
+    // Resolve the chat id: an explicit `?chat=` wins; otherwise auto-detect the
+    // group name from the export and slugify it (WHA-001; v2 ADR-081). A 1:1 chat
+    // or a nameless export with no `chat` is a clear 400 asking for one.
+    let explicit_chat = q.chat.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let chat_auto_detected = explicit_chat.is_none();
+    let chat = match explicit_chat {
+        Some(c) => ChannelId::parse(c).map_err(|e| ApiError::bad_request(e.to_string()))?,
+        None => {
+            let detected = host::detect_whatsapp_chat_name(&body)
+                .map_err(|e| ApiError::bad_request(e.to_string()))?
+                .and_then(|name| slugify(&name));
+            let slug = detected.ok_or_else(|| {
+                ApiError::bad_request(
+                    "couldn't auto-detect a chat name from this export (e.g. a 1:1 chat); please provide a chat id",
+                )
+            })?;
+            ChannelId::parse(slug).map_err(|e| ApiError::bad_request(e.to_string()))?
+        }
+    };
     let order = match q.date_order.as_deref() {
         Some("mdy") | Some("MDY") => DateOrder::MonthDayYear,
         _ => DateOrder::DayMonthYear,
@@ -90,6 +135,7 @@ pub async fn import_whatsapp(
 
     Ok(Json(ImportDto {
         chat_id: chat.as_str().to_string(),
+        chat_auto_detected,
         format: format!("{:?}", parsed.format),
         messages: parsed.messages.len(),
         stored: summary.stored,

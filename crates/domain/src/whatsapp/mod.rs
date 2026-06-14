@@ -61,6 +61,11 @@ pub struct ParsedExport {
     pub events: Vec<ChatEvent>,
     /// (earliest, latest) UTC timestamp across messages + events, if any.
     pub date_range: Option<(i64, i64)>,
+    /// The group's name, auto-detected from system lines (creation or the most
+    /// recent subject change) so the importer needn't be told it (WHA-001; v2
+    /// ADR-081 made the chat id optional/auto-detected). `None` for a 1:1 chat or
+    /// when no naming event appears in the export.
+    pub detected_chat_name: Option<String>,
 }
 
 impl ParsedExport {
@@ -83,6 +88,9 @@ pub fn parse_export(raw: &str, zone: Tz, order: DateOrder) -> ParsedExport {
     let mut format = WhatsAppFormat::Ios;
     let mut messages: Vec<RawWhatsAppMessage> = Vec::new();
     let mut events: Vec<ChatEvent> = Vec::new();
+    // Latest group name seen in a system line wins (creation, then any rename),
+    // since lines are processed in chronological file order.
+    let mut detected_chat_name: Option<String> = None;
 
     for line in raw.lines() {
         let line = sanitize_line(line);
@@ -100,6 +108,9 @@ pub fn parse_export(raw: &str, zone: Tz, order: DateOrder) -> ParsedExport {
                             timestamp: ts,
                             text: content.clone(),
                         });
+                    }
+                    if let Some(name) = extract_group_name(&content) {
+                        detected_chat_name = Some(name);
                     }
                 }
                 messages.push(RawWhatsAppMessage {
@@ -129,7 +140,50 @@ pub fn parse_export(raw: &str, zone: Tz, order: DateOrder) -> ParsedExport {
         messages,
         events,
         date_range,
+        detected_chat_name,
     }
+}
+
+/// Extract a group name from a system line that names the group — creation
+/// (`created group "X"`) or a subject change (`changed the subject to "X"`,
+/// `changed this group's subject from "Old" to "New"`). Returns the last quoted
+/// run (so a from/to rename yields the new name). Handles straight (`"`) and
+/// WhatsApp's curly (`“ ”`) quotes. `None` if the line isn't a naming event.
+fn extract_group_name(text: &str) -> Option<String> {
+    let t = text.to_lowercase();
+    let names = t.contains("created group")
+        || t.contains("created this group")
+        || t.contains("subject"); // "changed the subject", "group's subject"
+    if !names {
+        return None;
+    }
+    let name = last_quoted(text)?;
+    let name = name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// The text inside the last quoted run in `s` — supports straight (`"`) and
+/// WhatsApp's curly quotes. Used to pull the group name out of a naming line
+/// (a from/to rename then yields the *new* name, the last quoted run).
+fn last_quoted(s: &str) -> Option<String> {
+    let mut segments: Vec<String> = Vec::new();
+    let mut buf: Option<String> = None; // Some(..) while inside a quoted run.
+    for c in s.chars() {
+        let is_quote = matches!(c, '"' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}');
+        if is_quote {
+            match buf.take() {
+                Some(done) => segments.push(done), // closing quote
+                None => buf = Some(String::new()),  // opening quote
+            }
+        } else if let Some(run) = buf.as_mut() {
+            run.push(c);
+        }
+    }
+    segments.into_iter().rev().find(|s| !s.trim().is_empty())
 }
 
 /// Infer the date-component order from the export itself (WHA-020): scan header
@@ -320,6 +374,33 @@ mod tests {
         assert_eq!(p.events.len(), 2);
         assert_eq!(p.events[0].kind, ChatEventKind::GroupCreated);
         assert_eq!(p.events[1].kind, ChatEventKind::MemberJoinedOrAdded);
+    }
+
+    #[test]
+    fn auto_detects_group_name_from_creation_and_rename() {
+        // Creation names it; a later subject change renames it — the latest wins.
+        let p = parse(
+            "[01/01/2020, 08:00:00] Alice created group \"Team Alpha\"\n\
+             [01/01/2020, 08:05:00] Alice: hi\n\
+             [02/01/2020, 09:00:00] Bob changed the subject from \"Team Alpha\" to \"Team Beta\"",
+        );
+        assert_eq!(p.detected_chat_name.as_deref(), Some("Team Beta"));
+    }
+
+    #[test]
+    fn auto_detects_group_name_with_curly_quotes() {
+        // iOS exports use curly quotes.
+        let p = parse("[01/01/2020, 08:00:00] Alice created group \u{201c}Family\u{201d}");
+        assert_eq!(p.detected_chat_name.as_deref(), Some("Family"));
+    }
+
+    #[test]
+    fn no_group_name_for_a_one_to_one_chat() {
+        let p = parse(
+            "[01/01/2026, 09:00:00] Alice: hey\n\
+             [01/01/2026, 09:01:00] Bob: hi",
+        );
+        assert_eq!(p.detected_chat_name, None);
     }
 
     #[test]

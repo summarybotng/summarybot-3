@@ -113,6 +113,8 @@ export interface Budget {
 
 export interface WhatsappImport {
   chat_id: string
+  /** Whether chat_id was auto-detected from the export (no chat supplied). */
+  chat_auto_detected: boolean
   format: string
   messages: number
   stored: number

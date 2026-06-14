@@ -55,10 +55,12 @@ Updates stream live (SSE), so new summaries appear without refreshing.
 
 1. In WhatsApp, open the chat → ⋮ / contact name → **Export chat** → *Without
    media*.
-2. **WhatsApp** tab → choose the `.zip` (or `_chat.txt`), enter a **channel id**
-   (e.g. `family-group`), confirm the **timezone** (auto-detected from your
-   browser), and **Import**. Re-uploading is safe — duplicates are skipped, phone
-   numbers are anonymized.
+2. **WhatsApp** tab → choose the `.zip` (or `_chat.txt`), confirm the **timezone**
+   (auto-detected from your browser), and **Import**. The **channel id is
+   optional** — for a group export the group name is detected automatically (e.g.
+   "Weekend Hikers" → `#weekend-hikers`); supply one only to override it or for a
+   1:1 chat. Re-uploading is safe — duplicates are skipped, phone numbers are
+   anonymized.
 3. Below the import you'll see **Coverage & history gaps**: a covered-vs-gaps
    timeline, coverage %, and per-gap **Contributors**. For each fillable gap you
    can **Copy ask** (a ready-to-send message) or **Request export** (a tracked
