@@ -7,6 +7,7 @@
 
 mod budget;
 mod coherence;
+pub mod command;
 mod coverage;
 mod delivery;
 mod failure;
@@ -33,6 +34,9 @@ pub use delivery::{
     DeliveryReject, Destination,
 };
 pub use failure::FailureClass;
+pub use command::{
+    parse_command, parse_lookback, Command, CommandArgs, CommandError, CommandScope,
+};
 pub use identity::{
     decide_claim_route, resolve_link, ClaimRoute, ClaimStatus, DiscordProvider, EmailProvider,
     GoogleProvider, IdentityLink, IdentityProvider, LinkIntent, LinkOutcome, ProviderClaims,

@@ -8,6 +8,7 @@ use domain::WorkspaceId;
 use repository::{StoredSummary, SummaryRepository};
 
 pub mod auth;
+pub mod command;
 pub mod coverage;
 pub mod curator;
 pub mod delivery;
@@ -32,6 +33,7 @@ pub use coverage::{
     cancel_invitation, contributors_for, coverage_for, list_invitations, open_invitation,
     reconcile_invitations, workspace_coverage, ChatCoverage, Contribution,
 };
+pub use command::{execute_command, CommandReply};
 pub use curator::{CurationReport, CuratorService, DuplicateCluster, StaleUnit};
 pub use delivery::{
     build_deliverers, inject_platform_token, load_workspace_delivery, resolve_destination_config,
