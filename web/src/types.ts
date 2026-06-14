@@ -156,6 +156,39 @@ export interface CoverageGap {
   can_fill: boolean
 }
 
+/** One gap period in the workspace coverage view (ADR-133). */
+export interface WorkspaceCoverageGap {
+  start: number
+  end: number
+  /** `before_start` | `between` | `after_last`. */
+  kind: string
+}
+
+/** One channel's coverage row (ADR-133). */
+export interface ChannelCoverage {
+  channel_id: string
+  earliest_content: number
+  latest_content: number
+  message_count: number
+  summary_count: number
+  /** Covered seconds / content span, as a percent (can exceed 100 on overlap). */
+  coverage_percent: number
+  gap_count: number
+  gaps: WorkspaceCoverageGap[]
+}
+
+/** Server-wide + per-channel summary coverage (ADR-133). */
+export interface WorkspaceCoverage {
+  total_coverage_percent: number
+  total_gaps: number
+  total_channels: number
+  covered_channels: number
+  total_summaries: number
+  earliest_content: number | null
+  latest_content: number | null
+  channels: ChannelCoverage[]
+}
+
 /** Outcome of a retrospective by-week summarize run. */
 export interface RetrospectiveResult {
   produced: number

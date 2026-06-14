@@ -470,6 +470,9 @@ pub async fn summarize_weeks(
             tags: vec!["retrospective-weekly".to_string()],
             coherence_score: Some(outcome.coherence.score),
             usage: outcome.usage,
+            // The week this retrospective digest covers (ADR-133 coverage).
+            period_start: wk_start,
+            period_end: wk_end,
             summary: outcome.summary,
         };
         {

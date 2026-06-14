@@ -34,6 +34,11 @@ pub struct SummaryRecord {
     pub coherence_score: Option<f32>,
     /// Token + latency usage of the producing run (ADR-106 metadata).
     pub usage: SummaryUsage,
+    /// The message-time window this summary covers, in unix seconds (ADR-133
+    /// coverage). For scheduled/retrospective/rolling runs this is the real
+    /// lookback/period window; for ad-hoc pasted text it collapses to a point.
+    pub period_start: i64,
+    pub period_end: i64,
 }
 
 /// Filter + pagination for a summary listing (PRD §5.1: DSH-002/004/005). All
@@ -188,8 +193,9 @@ impl StructuredSummaryRepository for SqliteRepository {
             "INSERT INTO summary_records
                (id, workspace_id, channel_id, model, cost_micros, degraded, created_at,
                 text, key_points, technical_terms, participants, pinned, archived, tags,
-                coherence_score, input_tokens, output_tokens, latency_ms)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+                coherence_score, input_tokens, output_tokens, latency_ms,
+                period_start, period_end)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             params![
                 record.id,
                 workspace.as_str(),
@@ -209,6 +215,8 @@ impl StructuredSummaryRepository for SqliteRepository {
                 record.usage.input_tokens,
                 record.usage.output_tokens,
                 record.usage.latency_ms,
+                record.period_start,
+                record.period_end,
             ],
         )?;
         for (i, k) in record.summary.key_points.iter().enumerate() {
@@ -248,7 +256,8 @@ impl StructuredSummaryRepository for SqliteRepository {
             .query_row(
                 "SELECT channel_id, model, cost_micros, degraded, created_at,
                         text, key_points, technical_terms, participants, pinned, archived, tags,
-                        coherence_score, input_tokens, output_tokens, latency_ms
+                        coherence_score, input_tokens, output_tokens, latency_ms,
+                        period_start, period_end
                  FROM summary_records WHERE id = ?1 AND workspace_id = ?2",
                 params![id, workspace.as_str()],
                 |row| {
@@ -269,6 +278,8 @@ impl StructuredSummaryRepository for SqliteRepository {
                         row.get::<_, i64>(13)?,
                         row.get::<_, i64>(14)?,
                         row.get::<_, i64>(15)?,
+                        row.get::<_, i64>(16)?,
+                        row.get::<_, i64>(17)?,
                     ))
                 },
             )
@@ -290,6 +301,8 @@ impl StructuredSummaryRepository for SqliteRepository {
             input_tokens,
             output_tokens,
             latency_ms,
+            period_start,
+            period_end,
         )) = main
         else {
             return Ok(None);
@@ -380,6 +393,8 @@ impl StructuredSummaryRepository for SqliteRepository {
                 output_tokens,
                 latency_ms,
             },
+            period_start,
+            period_end,
         }))
     }
 
@@ -602,6 +617,8 @@ mod tests {
                 output_tokens: 500,
                 latency_ms: 1_234,
             },
+            period_start: 1_699_900_000,
+            period_end: 1_700_000_000,
         }
     }
 

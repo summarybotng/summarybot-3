@@ -8,6 +8,7 @@ use domain::{Summary, WorkspaceId};
 use rusqlite::Connection;
 
 mod budget;
+mod coverage_store;
 mod destination;
 mod identity;
 mod identity_claim;
@@ -29,6 +30,7 @@ mod wiki;
 mod workspace;
 mod workspace_settings;
 pub use budget::{BudgetRepository, BudgetRow};
+pub use coverage_store::{ChannelContent, CoverageRepository, SummarySpan};
 pub use destination::{DestinationRepository, StoredDestination};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use identity_claim::{IdentityClaim, IdentityClaimRepository};
@@ -608,6 +610,16 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0012_summary_latency_ms",
         "ALTER TABLE summary_records ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0",
+    ),
+    // Covered message-time window on summaries (ADR-133 coverage) — added via
+    // migration so fresh and existing DBs match.
+    (
+        "0013_summary_period_start",
+        "ALTER TABLE summary_records ADD COLUMN period_start INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "0014_summary_period_end",
+        "ALTER TABLE summary_records ADD COLUMN period_end INTEGER NOT NULL DEFAULT 0",
     ),
 ];
 

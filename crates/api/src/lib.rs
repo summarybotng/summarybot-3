@@ -18,6 +18,7 @@ mod destinations;
 mod error;
 mod events;
 mod identity_claims;
+mod coverage;
 mod jobs;
 mod knowledge;
 #[cfg(feature = "oauth")]
@@ -410,6 +411,7 @@ pub fn build_router(state: AppState) -> Router {
             get(knowledge::export_units),
         )
         .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
+        .route("/workspaces/:ws/coverage", get(coverage::coverage))
         .route(
             "/workspaces/:ws/wiki/synthesize",
             post(knowledge::synthesize),
@@ -830,6 +832,8 @@ mod tests {
             tags: vec![],
             coherence_score: None,
             usage: domain::summarize::SummaryUsage::default(),
+            period_start: 0,
+            period_end: 10,
             summary: ExtractedSummary {
                 text: "We shipped.".into(),
                 key_points: vec!["Launched".into()],

@@ -185,6 +185,119 @@ pub fn workspace_coverage<R: WhatsAppRepository>(
     Ok(out)
 }
 
+// ----- General content coverage (ADR-133) -------------------------------------
+//
+// Generalizes the WhatsApp picture to *any* source: how much of each channel's
+// stored history is covered by summaries. Reuses the pure `analyze_coverage`
+// gap algorithm, feeding it each channel's summary windows. A workspace-wide
+// summary (all-channels / category schedule, no single `channel_id`) covers
+// every channel, so its span is applied to each.
+
+/// One channel's coverage row for the dashboard (ADR-133).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelContentCoverage {
+    pub channel_id: String,
+    pub earliest_content: i64,
+    pub latest_content: i64,
+    pub message_count: i64,
+    pub summary_count: i64,
+    /// Covered seconds (after merging overlaps) / content span, as a percent.
+    /// Can exceed 100 when summary windows overlap (matches v2).
+    pub coverage_percent: f64,
+    pub gap_count: i64,
+    pub gaps: Vec<domain::CoverageGap>,
+}
+
+/// Workspace-wide content coverage rollup (ADR-133).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspaceContentCoverage {
+    pub total_coverage_percent: f64,
+    pub total_gaps: i64,
+    pub total_channels: i64,
+    pub covered_channels: i64,
+    pub total_summaries: i64,
+    pub earliest_content: Option<i64>,
+    pub latest_content: Option<i64>,
+    pub channels: Vec<ChannelContentCoverage>,
+}
+
+/// Compute coverage for every channel that has stored messages (ADR-133). Gaps
+/// for a channel are measured within its own content range (anchor = earliest
+/// message, horizon = latest message), so an idle channel isn't penalized for
+/// time after its last message.
+pub fn content_coverage<R: repository::CoverageRepository>(
+    repo: &R,
+    workspace: &WorkspaceId,
+) -> anyhow::Result<WorkspaceContentCoverage> {
+    use std::collections::HashMap;
+
+    let content = repo.channel_content(workspace)?;
+    let spans = repo.summary_spans(workspace)?;
+
+    let workspace_wide: Vec<Span> = spans
+        .iter()
+        .filter(|s| s.channel_id.is_none())
+        .map(|s| Span::new(s.start, s.end))
+        .collect();
+    let mut by_channel: HashMap<String, Vec<Span>> = HashMap::new();
+    for s in &spans {
+        if let Some(c) = &s.channel_id {
+            by_channel.entry(c.clone()).or_default().push(Span::new(s.start, s.end));
+        }
+    }
+
+    let mut channels = Vec::with_capacity(content.len());
+    let (mut sum_covered, mut sum_content, mut total_gaps, mut covered_channels) = (0i64, 0i64, 0i64, 0i64);
+    for c in &content {
+        let mut chan_spans = by_channel.get(&c.channel_id).cloned().unwrap_or_default();
+        chan_spans.extend(workspace_wide.iter().copied());
+        // Horizon = latest message; anchor = earliest message.
+        let report = analyze_coverage(&chan_spans, Some(c.earliest), c.latest, MIN_GAP_SECS);
+        let content_secs = (c.latest - c.earliest).max(1);
+        let pct = report.covered_secs as f64 / content_secs as f64 * 100.0;
+        let summary_count = chan_spans.len() as i64;
+        if summary_count > 0 {
+            covered_channels += 1;
+        }
+        sum_covered += report.covered_secs;
+        sum_content += content_secs;
+        total_gaps += report.gaps.len() as i64;
+        channels.push(ChannelContentCoverage {
+            channel_id: c.channel_id.clone(),
+            earliest_content: c.earliest,
+            latest_content: c.latest,
+            message_count: c.message_count,
+            summary_count,
+            coverage_percent: pct,
+            gap_count: report.gaps.len() as i64,
+            gaps: report.gaps,
+        });
+    }
+    // Most-covered first, then by id, for a stable, useful default order.
+    channels.sort_by(|a, b| {
+        b.coverage_percent
+            .partial_cmp(&a.coverage_percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.channel_id.cmp(&b.channel_id))
+    });
+
+    let total_pct = if sum_content > 0 {
+        sum_covered as f64 / sum_content as f64 * 100.0
+    } else {
+        0.0
+    };
+    Ok(WorkspaceContentCoverage {
+        total_coverage_percent: total_pct,
+        total_gaps,
+        total_channels: content.len() as i64,
+        covered_channels,
+        total_summaries: spans.len() as i64,
+        earliest_content: content.iter().map(|c| c.earliest).min(),
+        latest_content: content.iter().map(|c| c.latest).max(),
+        channels,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +441,72 @@ mod tests {
         // Cancel closes it.
         assert!(cancel_invitation(&repo, &ws, &id).unwrap());
         assert_eq!(repo.get_invitation(&ws, &id).unwrap().unwrap().status, "cancelled");
+    }
+
+    #[test]
+    fn content_coverage_measures_per_channel_gaps() {
+        use domain::summarize::{ExtractedSummary, SummaryUsage};
+        use domain::{NormalizedMessage, Platform};
+        use repository::{StructuredSummaryRepository, SummaryRecord};
+
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = ws();
+        let c = chat();
+        // Messages spanning days 0..10 in channel c1.
+        for (i, day) in [0i64, 5, 10].iter().enumerate() {
+            repo.save_message(
+                &ws,
+                &NormalizedMessage {
+                    id: domain::MessageId::parse(format!("m{i}")).unwrap(),
+                    platform: Platform::WhatsApp,
+                    channel_id: c.clone(),
+                    author_id: "a".into(),
+                    author_name: "Alice".into(),
+                    content: "we shipped the release and planned the roadmap".into(),
+                    timestamp: day * DAY,
+                    is_system: false,
+                    reply_to: None,
+                    attachments: vec![],
+                },
+            )
+            .unwrap();
+        }
+        // One summary covering only the first half [0, 5*DAY] → ~50% + a gap.
+        let rec = SummaryRecord {
+            id: "s1".into(),
+            channel_id: Some(c.clone()),
+            model: "demo".into(),
+            cost_micros: 0,
+            degraded: false,
+            created_at: 5 * DAY,
+            pinned: false,
+            archived: false,
+            tags: vec![],
+            coherence_score: None,
+            usage: SummaryUsage::default(),
+            period_start: 0,
+            period_end: 5 * DAY,
+            summary: ExtractedSummary {
+                text: "x".into(),
+                key_points: vec![],
+                action_items: vec![],
+                technical_terms: vec![],
+                participants: vec![],
+                citations: vec![],
+            },
+        };
+        repo.save_record(&ws, &rec).unwrap();
+
+        let cov = content_coverage(&repo, &ws).unwrap();
+        assert_eq!(cov.total_channels, 1);
+        assert_eq!(cov.covered_channels, 1);
+        assert_eq!(cov.channels.len(), 1);
+        let ch = &cov.channels[0];
+        assert_eq!(ch.channel_id, "c1");
+        // Covered 5 of 10 days → ~50%.
+        assert!((ch.coverage_percent - 50.0).abs() < 1.0, "got {}", ch.coverage_percent);
+        // The uncovered second half is a gap (after the last summary).
+        assert_eq!(ch.gap_count, 1);
     }
 
     #[test]

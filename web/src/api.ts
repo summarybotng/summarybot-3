@@ -16,6 +16,7 @@ import type {
   WhatsappImport,
   ChatCoverage,
   Coverage,
+  WorkspaceCoverage,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -371,6 +372,11 @@ export class Client {
   /** Background / long-running jobs with progress (ADR-040). */
   listJobs(limit = 50): Promise<Job[]> {
     return this.json<Job[]>(`/workspaces/${this.ws()}/jobs?limit=${limit}`)
+  }
+
+  /** Server-wide + per-channel summary coverage (ADR-133). */
+  workspaceCoverage(): Promise<WorkspaceCoverage> {
+    return this.json<WorkspaceCoverage>(`/workspaces/${this.ws()}/coverage`)
   }
 
   /** Raw knowledge units with provenance (ADR-063 raw-updates view). */

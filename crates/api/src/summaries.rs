@@ -284,6 +284,10 @@ pub async fn create_summary(
         tags: vec![],
         coherence_score: Some(outcome.coherence.score),
         usage: outcome.usage,
+        // The covered window = span of the input messages (ADR-133 coverage).
+        // On-demand pasted text is stamped `now`, so this collapses to a point.
+        period_start: messages.iter().map(|m| m.timestamp).min().unwrap_or(now),
+        period_end: messages.iter().map(|m| m.timestamp).max().unwrap_or(now),
         summary: outcome.summary,
     };
     {

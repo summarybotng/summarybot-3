@@ -15,6 +15,7 @@ import { Audit } from './views/Audit'
 import { Members } from './views/Members'
 import { Plugins } from './views/Plugins'
 import { Jobs } from './views/Jobs'
+import { Coverage } from './views/Coverage'
 
 type Tab =
   | 'create'
@@ -26,6 +27,7 @@ type Tab =
   | 'delivery'
   | 'plugins'
   | 'knowledge'
+  | 'coverage'
   | 'spend'
   | 'jobs'
   | 'members'
@@ -139,6 +141,7 @@ export default function App() {
         {tab === 'delivery' && <Delivery />}
         {tab === 'plugins' && <Plugins />}
         {tab === 'jobs' && <Jobs />}
+        {tab === 'coverage' && <Coverage />}
         {tab === 'knowledge' && <Knowledge />}
         {tab === 'spend' && <Spend />}
         {tab === 'members' && <Members />}
@@ -151,7 +154,7 @@ export default function App() {
 
 /// Left-nav groups (vertical sidebar). Grouping keeps 11 tabs scannable.
 const NAV: { section?: string; tabs: Tab[] }[] = [
-  { tabs: ['create', 'summaries', 'schedules', 'knowledge', 'spend', 'jobs'] },
+  { tabs: ['create', 'summaries', 'schedules', 'knowledge', 'coverage', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
   { section: 'Admin', tabs: ['delivery', 'plugins', 'members', 'audit', 'settings'] },
 ]

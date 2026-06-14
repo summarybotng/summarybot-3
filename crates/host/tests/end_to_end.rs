@@ -119,6 +119,8 @@ fn ingest_then_summarize_then_deliver() {
         tags: vec![],
         coherence_score: Some(outcome.coherence.score),
         usage: outcome.usage,
+        period_start: 1_699_900_000,
+        period_end: 1_700_000_000,
         summary: outcome.summary.clone(),
     };
     let report = DeliveryService::new(&repo)

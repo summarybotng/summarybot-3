@@ -30,8 +30,9 @@ pub mod whatsapp;
 pub mod wiki;
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use coverage::{
-    cancel_invitation, contributors_for, coverage_for, list_invitations, open_invitation,
-    reconcile_invitations, workspace_coverage, ChatCoverage, Contribution,
+    cancel_invitation, content_coverage, contributors_for, coverage_for, list_invitations,
+    open_invitation, reconcile_invitations, workspace_coverage, ChannelContentCoverage,
+    ChatCoverage, Contribution, WorkspaceContentCoverage,
 };
 pub use command::{execute_command, CommandReply};
 pub use curator::{CurationReport, CuratorService, DuplicateCluster, StaleUnit};

@@ -325,6 +325,9 @@ where
             tags,
             coherence_score: Some(outcome.coherence.score),
             usage: outcome.usage,
+            // The lookback window this scheduled run covered (ADR-133 coverage).
+            period_start: start,
+            period_end: now,
             summary: outcome.summary,
         };
         let delivered = self.deliver_record(ws, &stored.id, &record);
@@ -494,6 +497,8 @@ where
             tags: vec![format!("rolling-{}-intermediate", cfg.period)],
             coherence_score: None,
             usage: domain::summarize::SummaryUsage::default(),
+            period_start: now,
+            period_end: now,
             summary: ExtractedSummary {
                 text: format!("{header}{content_md}"),
                 key_points: vec![],
@@ -782,6 +787,8 @@ where
                         tags: vec![format!("rolling-{}", cfg.period)],
                         coherence_score: None,
                         usage: domain::summarize::SummaryUsage::default(),
+                        period_start: row.period_start,
+                        period_end: row.period_end,
                         summary,
                     };
                     self.deliver_record(ws, &stored.id, &record)?;
