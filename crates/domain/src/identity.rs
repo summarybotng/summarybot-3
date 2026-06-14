@@ -246,6 +246,61 @@ pub fn resolve_link(intent: &LinkIntent, existing: Option<&UserId>) -> LinkOutco
     }
 }
 
+/// Who must approve a contested identity claim (WSP-011..014; ADR-119). A
+/// [`LinkOutcome::Collision`] can't be auto-resolved (WSP-010); this decides the
+/// adjudication route.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimRoute {
+    /// The claimant proved control by completing the provider's own OAuth
+    /// (WSP-012) — auto-approve, no human needed.
+    SelfService,
+    /// Claimant + current owner share a tenant: the **tenant admin** adjudicates
+    /// (WSP-013), the obvious in-tenant authority.
+    TenantAdmin,
+    /// A **cross-tenant** collision: no tenant admin has authority over both, so
+    /// it escalates to a **platform operator** (WSP-013/ADR-119).
+    Operator,
+}
+
+/// Decide who must approve a contested claim (ADR-119). Self-verification wins
+/// outright (WSP-012); otherwise a shared tenant routes to its admin and a
+/// cross-tenant dispute routes to a platform operator.
+pub fn decide_claim_route(can_self_verify: bool, share_a_tenant: bool) -> ClaimRoute {
+    if can_self_verify {
+        ClaimRoute::SelfService
+    } else if share_a_tenant {
+        ClaimRoute::TenantAdmin
+    } else {
+        ClaimRoute::Operator
+    }
+}
+
+/// State of an identity claim's lifecycle (WSP-011..014).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimStatus {
+    Pending,
+    Approved,
+    Denied,
+}
+
+impl ClaimStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClaimStatus::Pending => "pending",
+            ClaimStatus::Approved => "approved",
+            ClaimStatus::Denied => "denied",
+        }
+    }
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "pending" => Some(ClaimStatus::Pending),
+            "approved" => Some(ClaimStatus::Approved),
+            "denied" => Some(ClaimStatus::Denied),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +310,16 @@ mod tests {
             subject: subject.to_string(),
             email: email.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn claim_route_self_verify_beats_everything_else() {
+        // WSP-012: completing the provider OAuth auto-approves regardless of tenancy.
+        assert_eq!(decide_claim_route(true, true), ClaimRoute::SelfService);
+        assert_eq!(decide_claim_route(true, false), ClaimRoute::SelfService);
+        // Same tenant → tenant admin; cross-tenant → platform operator (ADR-119).
+        assert_eq!(decide_claim_route(false, true), ClaimRoute::TenantAdmin);
+        assert_eq!(decide_claim_route(false, false), ClaimRoute::Operator);
     }
 
     #[test]

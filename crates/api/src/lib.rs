@@ -17,6 +17,7 @@ mod connections;
 mod destinations;
 mod error;
 mod events;
+mod identity_claims;
 mod jobs;
 mod knowledge;
 #[cfg(feature = "oauth")]
@@ -546,6 +547,15 @@ pub fn build_router(state: AppState) -> Router {
             put(plugins::set_plugin).delete(plugins::delete_plugin),
         )
         // Platform-operator per-tenant plugin veto (ADR-131; operator-only).
+        // Contested identity claim/transfer (WSP-011..014; ADR-119).
+        .route(
+            "/identity/claims",
+            post(identity_claims::open_claim).get(identity_claims::list_claims),
+        )
+        .route(
+            "/identity/claims/:id/resolve",
+            post(identity_claims::resolve_claim),
+        )
         .route("/operator/status", get(plugins::operator_status))
         .route(
             "/operator/tenants/:tenant/plugins",
@@ -725,6 +735,8 @@ async fn openapi() -> Json<serde_json::Value> {
                 "delete": { "summary": "Disable + clear a plugin's tenant config" }
             },
             "/tenants/{tenant}/plugins/{kind}/connect": { "post": { "summary": "Start an OAuth connect (Google Drive) — returns the consent URL (Admin+)" } },
+            "/identity/claims": { "post": { "summary": "Open a claim on a contested identity (WSP-011; ADR-119)" }, "get": { "summary": "Pending identity claims the caller can adjudicate" } },
+            "/identity/claims/{id}/resolve": { "post": { "summary": "Approve (rebind) or deny an identity claim (WSP-013; ADR-119)" } },
             "/operator/status": { "get": { "summary": "Whether the caller is a platform operator (ADR-131)" } },
             "/operator/tenants/{tenant}/plugins": { "get": { "summary": "List a tenant's plugins with operator-veto state (operator-only; ADR-131)" } },
             "/operator/tenants/{tenant}/plugins/{kind}": { "put": { "summary": "Set/clear the platform-operator veto for a tenant's plugin (operator-only; ADR-131)" } },

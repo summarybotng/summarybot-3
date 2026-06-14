@@ -34,8 +34,9 @@ pub use delivery::{
 };
 pub use failure::FailureClass;
 pub use identity::{
-    resolve_link, DiscordProvider, EmailProvider, GoogleProvider, IdentityLink, IdentityProvider,
-    LinkIntent, LinkOutcome, ProviderClaims, ProviderKind, Subject, VerifiedIdentity,
+    decide_claim_route, resolve_link, ClaimRoute, ClaimStatus, DiscordProvider, EmailProvider,
+    GoogleProvider, IdentityLink, IdentityProvider, LinkIntent, LinkOutcome, ProviderClaims,
+    ProviderKind, Subject, VerifiedIdentity,
 };
 pub use job::{InvalidTransition, Job, JobId, JobStatus, JobType};
 pub use knowledge::{

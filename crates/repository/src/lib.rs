@@ -10,6 +10,7 @@ use rusqlite::Connection;
 mod budget;
 mod destination;
 mod identity;
+mod identity_claim;
 mod job;
 mod knowledge;
 mod llm_config;
@@ -30,6 +31,7 @@ mod workspace_settings;
 pub use budget::{BudgetRepository, BudgetRow};
 pub use destination::{DestinationRepository, StoredDestination};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
+pub use identity_claim::{IdentityClaim, IdentityClaimRepository};
 pub use job::JobRepository;
 pub use knowledge::{KnowledgeRepository, StoredKnowledgeUnit};
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
@@ -166,6 +168,19 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_identity_links_user
                 ON identity_links(user_id);
+            -- Contested identity claims (WSP-011..014; ADR-119): a claimant asks
+            -- to take over an identity bound to someone else; an approver (tenant
+            -- admin same-tenant, platform operator cross-tenant) resolves it.
+            CREATE TABLE IF NOT EXISTS identity_claims (
+                id            TEXT PRIMARY KEY,
+                provider      TEXT NOT NULL,
+                subject       TEXT NOT NULL,
+                claimant      TEXT NOT NULL,
+                current_owner TEXT NOT NULL,
+                route         TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'pending',
+                created_at    INTEGER NOT NULL
+            );
             -- Append-only security ledger (WSP-014): every identity link, claim
             -- and transfer is recorded. `actor` is NULL for system/anonymous.
             CREATE TABLE IF NOT EXISTS audit_log (
