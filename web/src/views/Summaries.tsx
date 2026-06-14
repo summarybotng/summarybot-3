@@ -8,6 +8,17 @@ function when(ts: number): string {
   return new Date(ts * 1000).toLocaleString()
 }
 
+/// Human-readable scope of a summary for the metadata panel: an explicit channel,
+/// or the scope implied by its tags (all-channels / a Discord category), else
+/// workspace-wide.
+function scopeLabel(s: Summary): string {
+  if (s.channel_id) return `#${s.channel_id}`
+  const cat = s.tags.find((t) => t.startsWith('category:'))
+  if (cat) return `category ${cat.slice('category:'.length)}`
+  if (s.tags.includes('all-channels')) return 'all channels'
+  return 'workspace-wide'
+}
+
 export function Summaries() {
   const { client } = useAuth()
   const [items, setItems] = useState<Summary[]>([])
@@ -239,6 +250,53 @@ export function Summaries() {
                       {s.participants.join(', ')}
                     </p>
                   )}
+
+                  {/* Metadata panel (ADR-106): collapsed by default; surfaces the
+                      provenance/quality fields stored with the summary. */}
+                  <details className="text-xs text-slate-500">
+                    <summary className="cursor-pointer font-medium text-slate-600">Metadata</summary>
+                    <dl className="mt-1.5 grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1">
+                      <dt className="text-slate-400">Model</dt>
+                      <dd>
+                        {s.model}
+                        {s.degraded && <span className="text-amber-600"> · degraded (cheaper model used)</span>}
+                      </dd>
+                      <dt className="text-slate-400">Scope</dt>
+                      <dd>{scopeLabel(s)}</dd>
+                      <dt className="text-slate-400">Cost</dt>
+                      <dd>${(s.cost_micros / 1_000_000).toFixed(4)}</dd>
+                      {s.coherence_score != null && (
+                        <>
+                          <dt className="text-slate-400">Grounded</dt>
+                          <dd className={s.coherence_score < 0.5 ? 'text-red-500' : ''}>
+                            {(s.coherence_score * 100).toFixed(0)}% of claims found in sources
+                          </dd>
+                        </>
+                      )}
+                      <dt className="text-slate-400">Created</dt>
+                      <dd>{when(s.created_at)}</dd>
+                      <dt className="text-slate-400">Extracted</dt>
+                      <dd>
+                        {s.key_points.length} key point{s.key_points.length === 1 ? '' : 's'} ·{' '}
+                        {s.action_items.length} action{s.action_items.length === 1 ? '' : 's'} ·{' '}
+                        {s.citations.length} source{s.citations.length === 1 ? '' : 's'}
+                      </dd>
+                      {s.technical_terms.length > 0 && (
+                        <>
+                          <dt className="text-slate-400">Technical terms</dt>
+                          <dd>{s.technical_terms.join(', ')}</dd>
+                        </>
+                      )}
+                      {s.tags.length > 0 && (
+                        <>
+                          <dt className="text-slate-400">Tags</dt>
+                          <dd>{s.tags.join(', ')}</dd>
+                        </>
+                      )}
+                      <dt className="text-slate-400">ID</dt>
+                      <dd className="break-all font-mono">{s.id}</dd>
+                    </dl>
+                  </details>
                 </div>
               )}
             </li>
