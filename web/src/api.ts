@@ -553,6 +553,13 @@ export class Client {
     )
   }
 
+  /** OAuth setup info: the redirect URI to register + which kinds have creds. */
+  connectInfo(): Promise<{ connect_redirect_uri: string; configured_kinds: string[] }> {
+    return this.json<{ connect_redirect_uri: string; configured_kinds: string[] }>(
+      `/oauth/connect/info`,
+    )
+  }
+
   /** Start an OAuth connect for a plugin (e.g. Google Drive); returns the URL. */
   connectPlugin(tenant: string, kind: string): Promise<{ url: string }> {
     return this.json<{ url: string }>(

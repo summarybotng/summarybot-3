@@ -16,8 +16,19 @@ export function Plugins() {
   const [note, setNote] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [isOperator, setIsOperator] = useState(false)
+  const [connectInfo, setConnectInfo] = useState<{ uri: string; kinds: string[] } | null>(null)
   // Per-plugin draft of the tenant-scoped field values (secrets blank = keep).
   const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({})
+
+  // OAuth setup guidance (the exact redirect URI to register + which providers
+  // the server has client ids for).
+  useEffect(() => {
+    if (!client) return
+    client
+      .connectInfo()
+      .then((i) => setConnectInfo({ uri: i.connect_redirect_uri, kinds: i.configured_kinds }))
+      .catch(() => setConnectInfo(null))
+  }, [client])
 
   // Discover the operator capability once (ADR-131): operators load + veto plugins
   // for any tenant without being a member of it.
@@ -138,6 +149,33 @@ export function Plugins() {
         </div>
         {err && <p className="mt-3 text-sm text-red-600">{err}</p>}
         {note && <p className="mt-3 text-sm text-emerald-700">{note}</p>}
+
+        {/* OAuth setup guidance — the #1 cause of provider "can't identify the
+            app" errors is a missing client id or a redirect URI not registered. */}
+        {connectInfo && (
+          <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <p className="font-medium text-slate-700">Connecting via OAuth (Google Drive / Confluence)?</p>
+            <p className="mt-1">
+              On your OAuth app (Google Cloud console / Atlassian developer console), register this
+              exact <span className="font-medium">redirect URL</span>:
+            </p>
+            <code className="mt-1 block break-all rounded bg-white px-2 py-1 ring-1 ring-slate-200">
+              {connectInfo.uri}
+            </code>
+            <p className="mt-1">
+              Server OAuth apps configured:{' '}
+              {connectInfo.kinds.length ? (
+                <span className="text-slate-700">{connectInfo.kinds.join(', ')}</span>
+              ) : (
+                <span className="text-amber-600">
+                  none — set GOOGLE_CLIENT_ID/SECRET and/or ATLASSIAN_CLIENT_ID/SECRET on the server
+                </span>
+              )}
+              . A "couldn't identify the app" error means the client id is wrong/blank or this
+              redirect URL isn't on the app's allowed list.
+            </p>
+          </div>
+        )}
       </div>
 
       {plugins?.length === 0 && (

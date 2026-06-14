@@ -709,10 +709,12 @@ impl ConfluenceDeliverer {
 pub fn atlassian_oauth_app() -> Result<(domain::OAuthProvider, String), String> {
     let client_id = std::env::var("ATLASSIAN_CLIENT_ID")
         .ok()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "server has no ATLASSIAN_CLIENT_ID configured".to_string())?;
     let client_secret = std::env::var("ATLASSIAN_CLIENT_SECRET")
         .ok()
+        .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "server has no ATLASSIAN_CLIENT_SECRET configured".to_string())?;
     Ok((
@@ -955,10 +957,12 @@ impl Deliverer for GoogleDriveDeliverer {
         // Operator's Google OAuth app (shared with login).
         let client_id = std::env::var("GOOGLE_CLIENT_ID")
             .ok()
+            .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "server has no GOOGLE_CLIENT_ID configured".to_string())?;
         let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
             .ok()
+            .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "server has no GOOGLE_CLIENT_SECRET configured".to_string())?;
         let provider = domain::OAuthProvider {

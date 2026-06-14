@@ -594,7 +594,10 @@ pub fn build_router(state: AppState) -> Router {
                 "/tenants/:tenant/plugins/:kind/connect",
                 post(oauth::connect_plugin),
             )
-            .route("/oauth/connect/callback", get(oauth::connect_callback));
+            .route("/oauth/connect/callback", get(oauth::connect_callback))
+            // The exact redirect URIs to register on the OAuth apps + which
+            // providers the server has client ids for (setup guidance).
+            .route("/oauth/connect/info", get(oauth::connect_info));
     }
 
     router
@@ -721,6 +724,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/operator/tenants/{tenant}/plugins": { "get": { "summary": "List a tenant's plugins with operator-veto state (operator-only; ADR-131)" } },
             "/operator/tenants/{tenant}/plugins/{kind}": { "put": { "summary": "Set/clear the platform-operator veto for a tenant's plugin (operator-only; ADR-131)" } },
             "/oauth/connect/callback": { "get": { "summary": "OAuth connect callback — captures a refresh token into the tenant plugin config" } },
+            "/oauth/connect/info": { "get": { "summary": "OAuth setup guidance: the redirect URI to register + which plugin kinds have server client ids" } },
             "/tenants/{tenant}/budget": {
                 "get": { "summary": "Get the tenant's LLM budget + spend (ADR-125 Phase 3)" },
                 "put": { "summary": "Grant/update the tenant's budget (owner)" },

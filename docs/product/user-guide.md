@@ -132,6 +132,15 @@ each workspace picks the target on **Delivery**.
    token is captured for you (no pasting). Confluence Connect uses Atlassian OAuth
    and resolves your site automatically; an existing API-token setup keeps working.
 
+   **One-time OAuth app setup (operator):** Connect needs a server-registered
+   OAuth app per provider. Set `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` and/or
+   `ATLASSIAN_CLIENT_ID`/`ATLASSIAN_CLIENT_SECRET`, and on the provider's app
+   register the **exact redirect URL** the Plugins tab shows you
+   (`{OAUTH_REDIRECT_BASE}/oauth/connect/callback`). For Confluence, create an
+   **OAuth 2.0 (3LO)** app in the Atlassian developer console with the Confluence
+   write scope. A provider error like *"couldn't identify the app"* means the
+   client id is wrong/blank or that redirect URL isn't on the app's allowed list.
+
 **As a workspace user (Delivery tab):**
 3. Pick a **Type** (only the per-workspace **target** fields appear — channel id,
    Confluence space key, Drive folder, recipient, webhook URL) and **Add**.

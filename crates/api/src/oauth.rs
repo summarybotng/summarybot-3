@@ -67,11 +67,19 @@ fn provider_from_env(name: &str) -> Option<(OAuthProvider, String, String)> {
         ),
         _ => return None,
     };
-    provider.client_id = env::var(id_var).ok().filter(|s| !s.is_empty())?;
-    let client_secret = env::var(secret_var).ok().filter(|s| !s.is_empty())?;
+    provider.client_id = env_trimmed(id_var)?;
+    let client_secret = env_trimmed(secret_var)?;
     let base = env::var("OAUTH_REDIRECT_BASE").unwrap_or_else(|_| "http://localhost:8080".into());
     let redirect_uri = format!("{}/auth/oauth/{name}/callback", base.trim_end_matches('/'));
     Some((provider, client_secret, redirect_uri))
+}
+
+/// An env var's value with surrounding whitespace trimmed, or `None` if unset or
+/// blank. Trimming matters for OAuth client ids/secrets: a stray trailing newline
+/// (common when exporting from a file) makes the provider reject the app with a
+/// cryptic "couldn't identify the app" error.
+fn env_trimmed(var: &str) -> Option<String> {
+    env::var(var).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 #[derive(Deserialize)]
@@ -214,8 +222,8 @@ fn connect_app(kind: &str) -> Option<(OAuthProvider, String)> {
             Some((p, secret))
         }
         "confluence" => {
-            let client_id = env::var("ATLASSIAN_CLIENT_ID").ok().filter(|s| !s.is_empty())?;
-            let client_secret = env::var("ATLASSIAN_CLIENT_SECRET").ok().filter(|s| !s.is_empty())?;
+            let client_id = env_trimmed("ATLASSIAN_CLIENT_ID")?;
+            let client_secret = env_trimmed("ATLASSIAN_CLIENT_SECRET")?;
             let s = |x: &str| x.to_string();
             Some((
                 OAuthProvider {
@@ -272,6 +280,34 @@ fn connect_redirect_uri() -> String {
 pub struct ConnectUrl {
     /// The provider consent URL the SPA should navigate to.
     pub url: String,
+}
+
+/// OAuth setup guidance for the dashboard: the exact redirect URI the server
+/// uses (must be registered verbatim on the provider's OAuth app), and which
+/// plugin kinds currently have server client ids configured.
+#[derive(Serialize)]
+pub struct ConnectInfo {
+    /// Register this on each Connect-capable OAuth app's allowed callback list.
+    pub connect_redirect_uri: String,
+    /// Plugin kinds the server has an OAuth app configured for (e.g. gdrive).
+    pub configured_kinds: Vec<String>,
+}
+
+/// `GET /oauth/connect/info` — what an admin must register on their OAuth apps.
+/// Returns the fixed connect callback URL + which kinds have server creds, so the
+/// Plugins tab can show "register this redirect URL" instead of leaving the admin
+/// to guess (a redirect mismatch is a common cause of provider "can't identify
+/// the app" errors).
+pub async fn connect_info(_user: AuthUser) -> Json<ConnectInfo> {
+    let configured_kinds = ["gdrive", "confluence"]
+        .into_iter()
+        .filter(|k| connect_app(k).is_some())
+        .map(str::to_string)
+        .collect();
+    Json(ConnectInfo {
+        connect_redirect_uri: connect_redirect_uri(),
+        configured_kinds,
+    })
 }
 
 /// `POST /tenants/:tenant/plugins/:kind/connect` — admin starts the OAuth connect
