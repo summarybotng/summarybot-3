@@ -1,0 +1,602 @@
+# ADR-011: Unified Scope Selection for All Summary Types
+
+## Status
+Proposed
+
+## Date
+2026-02-21
+
+## Context
+
+Currently, the three summary generation features have inconsistent scope selection capabilities:
+
+| Feature | Channel | Category | Server/Guild |
+|---------|---------|----------|--------------|
+| **Real-Time Summaries** | ✅ | ✅ | ✅ |
+| **Scheduled Summaries** | ✅ | ❌ | ❌ |
+| **Retrospective/Archive** | ✅ | ❌ | ❌ |
+
+Real-time summaries use a `SummaryScope` enum with three options:
+- `CHANNEL` - Specific channel(s)
+- `CATEGORY` - All text channels in a category
+- `GUILD` - All enabled/accessible text channels in the server
+
+Scheduled summaries and retrospective generation only accept explicit `channel_ids` lists, requiring users to manually select each channel even when they want all channels in a category or the entire server.
+
+This creates friction for users who want to:
+- Schedule daily summaries for an entire category (e.g., "Engineering" channels)
+- Generate retrospective summaries for all server activity
+- Maintain consistency as channels are added/removed from categories
+
+## Decision
+
+Extend the `SummaryScope` model to scheduled summaries and retrospective generation, providing a unified scope selection experience across all summary types.
+
+### 1. Shared Scope Model
+
+Reuse the existing `SummaryScope` enum from `src/dashboard/models.py`:
+
+```python
+class SummaryScope(str, Enum):
+    CHANNEL = "channel"      # Specific channel(s)
+    CATEGORY = "category"    # All channels in a category
+    GUILD = "guild"          # All enabled channels in the guild
+```
+
+### 2. Updated Data Models
+
+#### Scheduled Summaries
+
+**Current:**
+```python
+class ScheduleCreateRequest(BaseModel):
+    channel_ids: List[str]  # Required, explicit list
+    # ...
+```
+
+**Proposed:**
+```python
+class ScheduleCreateRequest(BaseModel):
+    scope: SummaryScope = SummaryScope.CHANNEL
+    channel_ids: Optional[List[str]] = None   # Required for CHANNEL scope
+    category_id: Optional[str] = None         # Required for CATEGORY scope
+    # GUILD scope needs no additional fields
+    # ...
+```
+
+#### Retrospective/Archive Generation
+
+**Current:**
+```python
+class GenerateRequest(BaseModel):
+    channel_ids: Optional[List[str]] = None  # Optional, defaults to all
+    # ...
+```
+
+**Proposed:**
+```python
+class GenerateRequest(BaseModel):
+    scope: SummaryScope = SummaryScope.GUILD  # Default to guild for retrospective
+    channel_ids: Optional[List[str]] = None   # Required for CHANNEL scope
+    category_id: Optional[str] = None         # Required for CATEGORY scope
+    # ...
+```
+
+### 3. Scope Resolution Logic
+
+Create a shared utility function for scope resolution:
+
+```python
+# src/dashboard/utils/scope_resolver.py
+
+async def resolve_channels_for_scope(
+    guild: discord.Guild,
+    scope: SummaryScope,
+    channel_ids: Optional[List[str]] = None,
+    category_id: Optional[str] = None,
+    config: Optional[GuildConfig] = None,
+) -> List[discord.TextChannel]:
+    """
+    Resolve the list of channels based on scope.
+
+    Args:
+        guild: Discord guild object
+        scope: The scope type (channel, category, guild)
+        channel_ids: Explicit channel IDs (for CHANNEL scope)
+        category_id: Category ID (for CATEGORY scope)
+        config: Guild config for enabled channels (optional)
+
+    Returns:
+        List of text channels to summarize
+
+    Raises:
+        HTTPException: If required parameters are missing or invalid
+    """
+    if scope == SummaryScope.CHANNEL:
+        if not channel_ids:
+            raise HTTPException(400, "channel_ids required for CHANNEL scope")
+        return [guild.get_channel(int(cid)) for cid in channel_ids
+                if guild.get_channel(int(cid))]
+
+    elif scope == SummaryScope.CATEGORY:
+        if not category_id:
+            raise HTTPException(400, "category_id required for CATEGORY scope")
+        category = guild.get_channel(int(category_id))
+        if not category or not isinstance(category, discord.CategoryChannel):
+            raise HTTPException(404, f"Category not found: {category_id}")
+        return [ch for ch in category.text_channels
+                if ch.permissions_for(guild.me).read_message_history]
+
+    elif scope == SummaryScope.GUILD:
+        if config and config.enabled_channels:
+            return [guild.get_channel(int(cid)) for cid in config.enabled_channels
+                    if guild.get_channel(int(cid))]
+        return [ch for ch in guild.text_channels
+                if ch.permissions_for(guild.me).read_message_history]
+```
+
+### 4. Frontend Components
+
+#### Shared ScopeSelector Component
+
+Create a reusable component for scope selection:
+
+```typescript
+// src/frontend/src/components/common/ScopeSelector.tsx
+
+interface ScopeSelectorProps {
+  scope: "channel" | "category" | "guild";
+  onScopeChange: (scope: "channel" | "category" | "guild") => void;
+  selectedChannels: string[];
+  onChannelsChange: (channels: string[]) => void;
+  selectedCategory: string | null;
+  onCategoryChange: (category: string | null) => void;
+  channels: Channel[];
+  categories: Category[];
+}
+
+export function ScopeSelector({
+  scope,
+  onScopeChange,
+  selectedChannels,
+  onChannelsChange,
+  selectedCategory,
+  onCategoryChange,
+  channels,
+  categories,
+}: ScopeSelectorProps) {
+  return (
+    <div className="space-y-4">
+      {/* Scope Type Selection */}
+      <div className="space-y-2">
+        <Label>Summarize</Label>
+        <Select value={scope} onValueChange={onScopeChange}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="channel">Specific Channels</SelectItem>
+            <SelectItem value="category">Entire Category</SelectItem>
+            <SelectItem value="guild">Entire Server</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Channel Selection (for CHANNEL scope) */}
+      {scope === "channel" && (
+        <ChannelMultiSelect
+          channels={channels}
+          selected={selectedChannels}
+          onChange={onChannelsChange}
+        />
+      )}
+
+      {/* Category Selection (for CATEGORY scope) */}
+      {scope === "category" && (
+        <CategorySelect
+          categories={categories}
+          selected={selectedCategory}
+          onChange={onCategoryChange}
+        />
+      )}
+
+      {/* Guild scope shows info text */}
+      {scope === "guild" && (
+        <p className="text-sm text-muted-foreground">
+          All accessible text channels will be summarized
+        </p>
+      )}
+    </div>
+  );
+}
+```
+
+#### Integration Points
+
+1. **ScheduleForm.tsx**: Replace channel multi-select with ScopeSelector
+2. **Archive.tsx GenerateDialog**: Add ScopeSelector before date range
+3. **SummariesPage.tsx**: Already has scope selection (reference implementation)
+
+### 5. Database Schema Changes
+
+#### Schedules Table
+
+Add new columns:
+```sql
+ALTER TABLE scheduled_tasks ADD COLUMN scope VARCHAR(20) DEFAULT 'channel';
+ALTER TABLE scheduled_tasks ADD COLUMN category_id VARCHAR(20);
+```
+
+#### Migration Strategy
+
+- Existing schedules with `channel_ids` get `scope = 'channel'`
+- No data migration needed for archive (request-time resolution)
+
+### 6. Dynamic Resolution for Schedules
+
+For category and guild scopes, channels are resolved **at execution time**, not at creation time. This means:
+
+- New channels added to a category are automatically included
+- Removed channels are automatically excluded
+- Guild scope adapts to channel additions/removals
+
+```python
+# In schedule executor
+async def execute_scheduled_summary(task: ScheduledTask):
+    guild = bot.get_guild(int(task.guild_id))
+
+    # Resolve channels dynamically based on scope
+    channels = await resolve_channels_for_scope(
+        guild=guild,
+        scope=SummaryScope(task.scope),
+        channel_ids=task.channel_ids,
+        category_id=task.category_id,
+        config=await get_guild_config(task.guild_id),
+    )
+
+    # Continue with summary generation...
+```
+
+### 7. API Changes
+
+#### Schedule Endpoints
+
+**POST /api/v1/guilds/{guild_id}/schedules**
+```json
+{
+  "name": "Daily Engineering Summary",
+  "scope": "category",
+  "category_id": "123456789",
+  "schedule_type": "daily",
+  "schedule_time": "09:00",
+  "timezone": "America/New_York",
+  "destinations": [...]
+}
+```
+
+**GET /api/v1/guilds/{guild_id}/schedules**
+Response includes scope information:
+```json
+{
+  "id": "sched_123",
+  "name": "Daily Engineering Summary",
+  "scope": "category",
+  "category_id": "123456789",
+  "category_name": "Engineering",  // Resolved for display
+  "resolved_channels": ["ch1", "ch2", "ch3"],  // Current resolution
+  ...
+}
+```
+
+#### Archive Endpoints
+
+**POST /api/v1/archive/generate**
+```json
+{
+  "source_type": "discord",
+  "server_id": "123456789",
+  "scope": "category",
+  "category_id": "987654321",
+  "date_range": { "start": "2025-11-01", "end": "2025-11-08" },
+  "granularity": "daily"
+}
+```
+
+### 8. Archive File Structure and Naming
+
+This is a critical decision point: how do we organize summaries when multiple channels are involved?
+
+#### Current Structure
+
+```
+summarybot-archive/
+└── sources/
+    └── discord/
+        └── {server-name}_{server_id}/
+            ├── summaries/                           # Server-wide summaries
+            │   └── 2025/01/2025-01-15_daily.md
+            └── channels/
+                └── {channel-name}_{channel_id}/
+                    └── summaries/                   # Per-channel summaries
+                        └── 2025/01/2025-01-15_daily.md
+```
+
+#### Proposed Structure with Scope Support
+
+**Option A: Combined Summaries (Recommended)**
+
+For category/guild scopes, generate ONE combined summary that includes all channels:
+
+```
+summarybot-archive/
+└── sources/
+    └── discord/
+        └── {server-name}_{server_id}/
+            ├── summaries/                           # Guild-scope summaries
+            │   └── 2025/01/2025-01-15_daily.md
+            ├── categories/
+            │   └── {category-name}_{category_id}/
+            │       └── summaries/                   # Category-scope summaries
+            │           └── 2025/01/2025-01-15_daily.md
+            └── channels/
+                └── {channel-name}_{channel_id}/
+                    └── summaries/                   # Channel-scope summaries
+                        └── 2025/01/2025-01-15_daily.md
+```
+
+**Pros:**
+- Single file to share/sync to Google Drive
+- Holistic view of activity across channels
+- Cleaner folder structure
+
+**Cons:**
+- Larger summaries
+- Can't easily compare channels
+
+**Option B: Per-Channel with Aggregation**
+
+Generate individual summaries per channel, plus an aggregate:
+
+```
+summarybot-archive/
+└── sources/
+    └── discord/
+        └── {server-name}_{server_id}/
+            ├── summaries/                           # Guild aggregate
+            │   └── 2025/01/2025-01-15_daily.md
+            │   └── 2025/01/2025-01-15_daily_index.md  # Links to channels
+            ├── categories/
+            │   └── {category-name}_{category_id}/
+            │       └── summaries/
+            │           └── 2025/01/2025-01-15_daily.md      # Category aggregate
+            │           └── 2025/01/2025-01-15_daily_index.md
+            └── channels/
+                └── {channel-name}_{channel_id}/
+                    └── summaries/
+                        └── 2025/01/2025-01-15_daily.md
+```
+
+**Pros:**
+- Granular per-channel data preserved
+- Can drill down or roll up
+
+**Cons:**
+- More files to sync
+- Higher cost (multiple LLM calls)
+- More complex
+
+#### Recommended Approach: Option A with Metadata
+
+Use **Option A (Combined)** but include channel breakdown in metadata:
+
+```python
+@dataclass
+class ArchiveSource:
+    source_type: SourceType
+    server_id: str
+    server_name: str
+    # Existing fields
+    channel_id: Optional[str] = None
+    channel_name: Optional[str] = None
+    # New fields for scope
+    scope: SummaryScope = SummaryScope.CHANNEL
+    category_id: Optional[str] = None
+    category_name: Optional[str] = None
+    included_channels: Optional[List[str]] = None  # Channel IDs in this summary
+
+    def get_archive_path(self, archive_root: Path) -> Path:
+        """Generate full archive path based on scope."""
+        base = archive_root / "sources" / self.source_type.value / self.folder_name
+
+        if self.scope == SummaryScope.CHANNEL and self.channel_id:
+            return base / "channels" / self.channel_folder_name / "summaries"
+        elif self.scope == SummaryScope.CATEGORY and self.category_id:
+            return base / "categories" / self.category_folder_name / "summaries"
+        else:  # GUILD scope
+            return base / "summaries"
+
+    @property
+    def category_folder_name(self) -> Optional[str]:
+        """Generate safe folder name for category."""
+        if not self.category_id or not self.category_name:
+            return None
+        safe_name = re.sub(r'[^\w\-]', '-', self.category_name.lower())
+        return f"{safe_name}_{self.category_id}"
+```
+
+#### Metadata for Multi-Channel Summaries
+
+The `.meta.json` file includes source channels:
+
+```json
+{
+  "summary_id": "sum_abc123",
+  "source": {
+    "scope": "category",
+    "server_id": "123456789",
+    "server_name": "My Server",
+    "category_id": "987654321",
+    "category_name": "Engineering",
+    "included_channels": [
+      {"id": "111", "name": "backend"},
+      {"id": "222", "name": "frontend"},
+      {"id": "333", "name": "devops"}
+    ]
+  },
+  "statistics": {
+    "message_count": 150,
+    "participant_count": 12,
+    "channels_summarized": 3
+  }
+}
+```
+
+#### Google Drive Sync Implications
+
+**Folder Structure in Drive:**
+```
+SummaryBot Archives/
+└── My Server/
+    ├── Server Summaries/
+    │   └── 2025-01-15_daily.md
+    ├── Categories/
+    │   └── Engineering/
+    │       └── 2025-01-15_daily.md
+    └── Channels/
+        └── general/
+            └── 2025-01-15_daily.md
+```
+
+**File Naming Convention:**
+- `{date}_{granularity}.md` - e.g., `2025-01-15_daily.md`
+- `{date}_{granularity}_{scope}.md` - e.g., `2025-01-15_daily_engineering-category.md` (alternative)
+
+**Sync Service Updates:**
+- Detect scope from metadata when syncing
+- Create appropriate folder structure in Drive
+- Include scope info in sync state tracking
+
+### 9. Title Generation Rules
+
+Summary titles should reflect **channels with actual content**, not all channels in the requested scope. This distinction is important for:
+- Clarity about what's actually summarized
+- Shorter, more readable titles
+- Accurate representation of activity
+
+#### Title Generation Logic
+
+```python
+# Metadata stores both:
+summary.metadata = {
+    "scope_type": "guild",           # What was requested
+    "scope_channel_ids": [...],      # All channels in scope (55 channels)
+    "channels_with_content": [...]   # Channels with messages (3 channels)
+}
+
+# Title is built from channels_with_content, not scope_channel_ids
+```
+
+#### Title Format by Scope Type
+
+| Scope | Channels with Content | Title Format |
+|-------|----------------------|--------------|
+| Guild | 0 | "Server Summary — Mar 01, 23:59" |
+| Guild | 1-3 | "#channel1, #channel2 — Mar 01, 23:59" |
+| Guild | 4+ | "Server Summary (N channels) — Mar 01, 23:59" |
+| Category | 0 | "📁 CategoryName — Mar 01, 23:59" |
+| Category | 1-3 | "#channel1, #channel2 — Mar 01, 23:59" |
+| Category | 4+ | "📁 CategoryName (N channels) — Mar 01, 23:59" |
+| Channel | 1-5 | "#channel1, #channel2, ... — Mar 01, 23:59" |
+| Channel | 6+ | "#ch1, #ch2, #ch3 +N more — Mar 01, 23:59" |
+
+#### Implementation (2026-03-02)
+
+The `_deliver_to_dashboard` method in `src/scheduling/executor.py` now:
+1. Extracts `channels_with_content` from summary metadata
+2. Falls back to `scope_channel_ids` if not available
+3. Generates smart titles based on scope type and content count
+4. Stores original scope in `source_channel_ids` for reference
+
+### 10. UI/UX Considerations
+
+1. **Scope Badge**: Show scope type badge on schedule cards (e.g., "Category: Engineering")
+2. **Channel Count**: Display resolved channel count for category/guild scopes
+3. **Warning for Large Scopes**: Alert when selecting guild scope on servers with many channels
+4. **Category Preview**: Show which channels are in a category before selection
+
+### 9. Backward Compatibility
+
+- Existing schedules continue to work (default scope = "channel")
+- API accepts both old format (channel_ids only) and new format (scope + params)
+- Frontend gracefully handles schedules without scope field
+
+## Implementation Plan
+
+### Phase 1: Backend Foundation
+1. Create `scope_resolver.py` utility
+2. Update `ScheduleCreateRequest` and `GenerateRequest` models
+3. Add database migration for schedules table
+4. Update schedule creation/update endpoints
+
+### Phase 2: Schedule Integration
+1. Update `ScheduleForm.tsx` with ScopeSelector
+2. Update schedule executor for dynamic resolution
+3. Add scope display to schedule cards
+4. Update schedule API responses
+
+### Phase 3: Retrospective Integration
+1. Update `GenerateDialog` in Archive.tsx
+2. Update archive message fetcher for scope resolution
+3. Add scope to job status display
+
+### Phase 4: Polish
+1. Add channel count preview for category/guild scopes
+2. Add warnings for large channel counts
+3. Update documentation
+4. Add comprehensive tests
+
+## Files to Modify
+
+| File | Changes |
+|------|---------|
+| `src/dashboard/models.py` | Update ScheduleCreateRequest, add to GenerateRequest |
+| `src/dashboard/utils/scope_resolver.py` | New file - shared resolution logic |
+| `src/dashboard/routes/schedules.py` | Use scope resolver, update responses |
+| `src/dashboard/routes/archive.py` | Add scope to GenerateRequest, use resolver |
+| `src/scheduler/executor.py` | Dynamic channel resolution |
+| `src/archive/models.py` | Add scope, category_id, included_channels to ArchiveSource |
+| `src/archive/writer.py` | Handle category folder paths |
+| `src/archive/sync.py` | Update sync to respect scope-based folder structure |
+| `src/frontend/src/components/common/ScopeSelector.tsx` | New shared component |
+| `src/frontend/src/components/schedules/ScheduleForm.tsx` | Integrate ScopeSelector |
+| `src/frontend/src/pages/Archive.tsx` | Add scope to GenerateDialog |
+| `src/frontend/src/hooks/useSchedules.ts` | Update types |
+| `src/frontend/src/hooks/useArchive.ts` | Update GenerateRequest type |
+| `src/frontend/src/types/index.ts` | Add scope types |
+
+## Consequences
+
+### Positive
+- Consistent UX across all summary types
+- Dynamic resolution means schedules adapt to channel changes
+- Reduced friction for whole-category or whole-server summaries
+- Reusable components reduce code duplication
+- Clear archive organization by scope type
+- Google Drive sync maintains intuitive folder structure
+
+### Negative
+- Migration complexity for existing schedules
+- More complex validation logic
+- Category/guild scopes may generate larger summaries (cost consideration)
+- Archive structure changes may affect existing file organization
+
+### Risks
+- Large guild scopes could hit rate limits or timeouts
+- Category resolution depends on Discord API availability
+- Combined multi-channel summaries may exceed token limits
+- Google Drive folder reorganization during migration
+
+## Related ADRs
+- ADR-005: Scheduled Summary Delivery
+- ADR-006: Archive System
+- ADR-008: Unified Summary Experience

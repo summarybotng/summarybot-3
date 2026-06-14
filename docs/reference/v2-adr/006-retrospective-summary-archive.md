@@ -1,0 +1,2006 @@
+# ADR-006: Retrospective Summary Archive — Historical Backfill with Versioned Prompts
+
+**Status:** Proposed
+**Date:** 2026-02-14
+**Depends on:** ADR-001 (WhatsApp Reader Bot), ADR-002 (WhatsApp Integration), ADR-004 (Grounded References), ADR-005 (Delivery Destinations)
+**Requires:** OpenRouter API access (replaces direct Anthropic API)
+**Repository:** [summarybotng/summarybot-ng](https://github.com/summarybotng/summarybot-ng)
+
+---
+
+## 1. Problem Statement
+
+Current summarization is forward-looking only: summaries are generated for recent activity or on a schedule going forward. This creates several gaps:
+
+1. **No Historical Record** — Communities with months/years of chat history have no way to generate retrospective summaries for past periods.
+
+2. **Missing Summary Gaps** — If the bot was offline, a schedule failed, or summarization wasn't configured, those periods have no summaries and no easy way to fill them.
+
+3. **No Portable Archive** — Summaries exist only in platform messages or the database. There's no human-navigable, portable archive that can be stored externally (e.g., Google Drive) and browsed without the application.
+
+4. **Configuration Drift** — When prompt templates or summary configurations change, there's no way to know which summaries were generated with which settings, making regeneration decisions difficult.
+
+5. **Timezone Confusion** — Historical summaries need clear timezone labeling since "February 13, 2026" means different things in different timezones.
+
+6. **Multi-Platform Fragmentation** — Organizations using Discord, WhatsApp, and Slack have no unified archive strategy across platforms.
+
+7. **Cost Attribution** — When archiving multiple servers/groups, there's no way to track API costs per server for billing or budgeting purposes.
+
+---
+
+## 2. Decision
+
+Implement a **Retrospective Summary Archive** system that:
+
+1. **Generates summaries for arbitrary past time ranges** with configurable granularity (daily, weekly, monthly)
+2. **Supports multiple source platforms** — Discord, WhatsApp, Slack, Telegram
+3. **Stores summaries as Markdown files** in a structured, human-navigable folder hierarchy
+4. **Maintains manifest metadata** tracking generation status, configuration versions, and backfill potential
+5. **Supports flexible external sync** — servers can share a Google Drive or use separate drives
+6. **Tracks costs per server** for attribution and budgeting
+7. **Enables intelligent backfill** by identifying gaps and configuration changes
+
+### 2.1 Archive Folder Structure
+
+The archive uses a platform-agnostic structure that works for Discord servers, WhatsApp groups, Slack workspaces, etc.
+
+```
+summarybot-archive/
+├── manifest.json                           # Global manifest with schema version
+├── sources/
+│   ├── discord/
+│   │   └── {server_name}_{server_id}/
+│   │       ├── server-manifest.json        # Server config, prompt checksums, costs
+│   │       ├── channels/
+│   │       │   └── {channel_name}_{channel_id}/
+│   │       │       ├── channel-manifest.json
+│   │       │       └── summaries/
+│   │       │           └── {YYYY}/{MM}/
+│   │       │               ├── {YYYY-MM-DD}_daily.md
+│   │       │               └── {YYYY-MM-DD}_daily.meta.json
+│   │       └── cross-channel/
+│   │           └── {summary_name}/
+│   │               └── summaries/{YYYY}/{MM}/...
+│   ├── whatsapp/
+│   │   └── {group_name}_{group_id}/
+│   │       ├── group-manifest.json
+│   │       ├── imports/                    # WhatsApp export files
+│   │       │   └── import-manifest.json
+│   │       └── summaries/
+│   │           └── {YYYY}/{MM}/...
+│   ├── slack/
+│   │   └── {workspace_name}_{workspace_id}/
+│   │       ├── workspace-manifest.json
+│   │       └── channels/
+│   │           └── {channel_name}_{channel_id}/...
+│   └── telegram/
+│       └── {chat_name}_{chat_id}/...
+├── cost-ledger.json                        # Global cost tracking by source
+├── pricing-history.json                    # API pricing versions over time
+├── identity-mappings.json                  # Optional cross-platform identity linking
+├── .deleted/                               # Soft-deleted summaries awaiting purge
+└── .archive-config.json                    # User preferences, sync settings
+```
+
+### 2.2 Source Type Abstraction
+
+```python
+class SourceType(Enum):
+    """Supported chat platforms."""
+    DISCORD = "discord"
+    WHATSAPP = "whatsapp"
+    SLACK = "slack"
+    TELEGRAM = "telegram"
+
+@dataclass
+class ArchiveSource:
+    """Platform-agnostic source identifier."""
+    source_type: SourceType
+    server_id: str              # Guild ID, Group ID, Workspace ID, etc.
+    server_name: str
+    channel_id: Optional[str]   # None for single-channel sources (WhatsApp groups)
+    channel_name: Optional[str]
+
+    @property
+    def source_key(self) -> str:
+        """Unique key for this source (used in cost tracking, etc.)."""
+        return f"{self.source_type.value}:{self.server_id}"
+
+    @property
+    def folder_path(self) -> str:
+        """Generate archive folder path for this source."""
+        base = f"sources/{self.source_type.value}/{self.server_name}_{self.server_id}"
+        if self.channel_id:
+            return f"{base}/channels/{self.channel_name}_{self.channel_id}/summaries"
+        return f"{base}/summaries"
+```
+
+### 2.3 File Naming Convention
+
+| Granularity | Filename Pattern | Example |
+|-------------|-----------------|---------|
+| Daily | `{YYYY-MM-DD}_daily.md` | `2026-02-14_daily.md` |
+| Weekly | `{YYYY}-W{WW}_weekly.md` | `2026-W07_weekly.md` |
+| Monthly | `{YYYY-MM}_monthly.md` | `2026-02_monthly.md` |
+| Custom Range | `{YYYY-MM-DD}_to_{YYYY-MM-DD}.md` | `2026-02-01_to_2026-02-14.md` |
+
+All dates use **ISO 8601** format for universal sorting and clarity.
+
+### 2.4 Timezone Handling
+
+Each summary file includes explicit timezone information:
+
+```markdown
+# Daily Summary: Family Chat
+
+**Platform:** WhatsApp
+**Group:** Family Chat
+**Date:** 2026-02-14 (Friday)
+**Timezone:** America/New_York (UTC-5)
+**Period:** 2026-02-14 00:00 to 2026-02-14 23:59 (America/New_York)
+**Messages:** 47 from 8 participants
+
+---
+
+## Key Points
+...
+```
+
+The archive supports generating summaries in different timezones:
+- **Server/group timezone**: Default, based on server/group settings
+- **User timezone**: Override for personal archives
+- **UTC**: Canonical reference for cross-timezone consistency
+
+### 2.5 Timezone and DST Handling
+
+**Daily Summaries Use Wall-Clock Days:**
+- "2026-03-10" in America/New_York means midnight-to-midnight local time
+- On DST transition days, this may be 23 or 25 hours
+- This matches user expectations ("what happened on Monday")
+
+**Metadata Records Actual Duration:**
+```json
+{
+  "period": {
+    "start": "2026-03-10T00:00:00-05:00",
+    "end": "2026-03-10T23:59:59-04:00",
+    "timezone": "America/New_York",
+    "duration_hours": 23,
+    "dst_transition": "spring_forward"
+  },
+  "period_utc": {
+    "start": "2026-03-10T05:00:00Z",
+    "end": "2026-03-11T03:59:59Z"
+  }
+}
+```
+
+**DST Transition Values:**
+- `null` — Normal day (24 hours)
+- `"spring_forward"` — 23-hour day (clocks advance)
+- `"fall_back"` — 25-hour day (clocks go back)
+
+**Weekly/Monthly Use Calendar Boundaries:**
+- Week = Monday 00:00 to Sunday 23:59 (local time)
+- Month = 1st 00:00 to last-day 23:59 (local time)
+
+### 2.6 WhatsApp Import Workflow
+
+WhatsApp lacks an API for historical messages. Data can come from two sources:
+
+**Option A: Manual Chat Export (Basic)**
+- User exports chat from WhatsApp → Settings → Export Chat
+- Upload via dashboard: `POST /api/v1/archive/import/whatsapp`
+- Parser extracts messages with timestamps and participants
+- Limited: No message IDs, no media metadata, no reactions
+
+**Supported File Formats:**
+
+| Format | Extension | Handling |
+|--------|-----------|----------|
+| Plain text | `.txt` | Parsed directly using date format detection |
+| ZIP archive | `.zip` | Extracted automatically; contained `.txt` file is parsed |
+
+When a `.zip` file is uploaded:
+1. Extract the archive to a temporary directory
+2. Locate the `.txt` file inside (WhatsApp exports contain a single text file)
+3. Parse the extracted text file using standard processing
+4. Clean up temporary files after import
+
+This supports the native WhatsApp export format, which may be delivered as either a plain `.txt` file or a `.zip` archive depending on the device and export options selected.
+
+**Option B: Reader Bot Export (Recommended)**
+- Use ADR-001 WhatsApp Reader Bot to capture messages in real-time
+- Reader bot exports structured JSON with full metadata
+- Import via: `POST /api/v1/archive/import/whatsapp?format=reader_bot`
+- Full fidelity: Message IDs, media, reactions, read receipts
+
+**Supported Date/Time Formats:**
+
+WhatsApp exports vary by region and device locale. The parser supports:
+
+| Format | Example | Region |
+|--------|---------|--------|
+| `DD/MM/YYYY, HH:MM:SS` | `14/02/2026, 10:30:45` | UK, Europe, Asia |
+| `MM/DD/YYYY, HH:MM` | `02/14/2026, 10:30` | US |
+| `MM/DD/YY, HH:MM AM/PM` | `02/14/26, 10:30 AM` | US (short year) |
+| `YYYY-MM-DD, HH:MM a.m./p.m.` | `2026-02-14, 10:30 a.m.` | Canada (ISO-like) |
+| `[DD/MM/YYYY, HH:MM:SS]` | `[14/02/2026, 10:30:45]` | Bracketed variant |
+
+**Timezone Considerations:**
+
+WhatsApp exports contain **naive timestamps** (no timezone information). The timestamp reflects the exporter's local time at the moment of export:
+
+1. **No Timezone in Export:** WhatsApp `.txt` exports do not include timezone identifiers. A message timestamped `2026-02-14, 10:30` could be in any timezone.
+
+2. **Assumption:** The parser treats all timestamps as naive (timezone-unaware). When filtering messages by date range, comparisons are done in naive datetime space.
+
+3. **Global Users:** Users from different timezones will export chats with timestamps in their local timezone. A message sent at "10:00 UTC" will appear as:
+   - `10:00` in a UK export
+   - `05:00` in a US Eastern export
+   - `18:00` in a Singapore export
+
+4. **Practical Impact:** For daily summary generation, this means:
+   - Summaries are grouped by calendar date **as seen by the exporter**
+   - If multiple users export the same chat, their date boundaries may differ
+   - For most use cases (single user/org), this is acceptable
+
+5. **Future Enhancement:** Consider adding an optional `export_timezone` parameter to the import API that allows users to specify the timezone of their export, enabling accurate UTC conversion.
+
+**Import Manifest:**
+```json
+{
+  "imports": [
+    {
+      "import_id": "imp_abc123",
+      "filename": "WhatsApp Chat - Family.txt",
+      "format": "whatsapp_txt",
+      "imported_at": "2026-02-14T10:00:00Z",
+      "date_range": {
+        "start": "2025-06-01",
+        "end": "2026-02-14"
+      },
+      "message_count": 4521,
+      "participant_count": 8,
+      "gaps": []
+    },
+    {
+      "import_id": "imp_def456",
+      "filename": "family-chat-export.json",
+      "format": "reader_bot",
+      "imported_at": "2026-02-15T08:00:00Z",
+      "date_range": {
+        "start": "2026-02-14",
+        "end": "2026-02-15"
+      },
+      "message_count": 47
+    }
+  ],
+  "coverage": {
+    "earliest": "2025-06-01",
+    "latest": "2026-02-15",
+    "gaps": [
+      { "start": "2025-08-15", "end": "2025-08-20", "reason": "no_export_coverage" }
+    ]
+  }
+}
+```
+
+**Backfill Behavior:**
+When backfill is requested for dates not covered by any import:
+- Status = `EXPORT_UNAVAILABLE`
+- User message: "No WhatsApp export covers this date range. Export the chat from WhatsApp and import to enable backfill."
+
+---
+
+## 3. Data Models
+
+### 3.1 Archive Manifest (Global)
+
+```json
+{
+  "schema_version": "1.0.0",
+  "created_at": "2026-02-14T12:00:00Z",
+  "last_updated": "2026-02-14T15:30:00Z",
+  "generator": {
+    "name": "SummaryBot-NG",
+    "version": "2.1.0"
+  },
+  "sources": [
+    {
+      "source_type": "discord",
+      "server_id": "123456789",
+      "server_name": "My Community",
+      "folder": "discord/my-community_123456789",
+      "channel_count": 12,
+      "summary_count": 450,
+      "date_range": {
+        "earliest": "2025-06-01",
+        "latest": "2026-02-14"
+      }
+    },
+    {
+      "source_type": "whatsapp",
+      "server_id": "group_abc123",
+      "server_name": "Family Chat",
+      "folder": "whatsapp/family-chat_group_abc123",
+      "channel_count": 1,
+      "summary_count": 180,
+      "date_range": {
+        "earliest": "2025-09-01",
+        "latest": "2026-02-14"
+      }
+    },
+    {
+      "source_type": "slack",
+      "server_id": "T01ABC123",
+      "server_name": "Acme Corp",
+      "folder": "slack/acme-corp_T01ABC123",
+      "channel_count": 25,
+      "summary_count": 890,
+      "date_range": {
+        "earliest": "2024-01-01",
+        "latest": "2026-02-14"
+      }
+    }
+  ]
+}
+```
+
+### 3.2 Server/Group Manifest
+
+Platform-agnostic manifest for any source:
+
+```json
+{
+  "source_type": "whatsapp",
+  "server_id": "group_abc123",
+  "server_name": "Family Chat",
+  "default_timezone": "America/Chicago",
+  "default_granularity": "weekly",
+  "prompt_versions": {
+    "current": {
+      "version": "2.1.0",
+      "checksum": "sha256:a1b2c3d4e5f6...",
+      "updated_at": "2026-02-10T09:00:00Z"
+    },
+    "history": [
+      {
+        "version": "2.0.0",
+        "checksum": "sha256:9f8e7d6c5b4a...",
+        "active_from": "2026-01-01T00:00:00Z",
+        "active_until": "2026-02-10T08:59:59Z"
+      }
+    ]
+  },
+  "summary_options_default": {
+    "summary_length": "detailed",
+    "perspective": "general",
+    "include_action_items": true,
+    "include_technical_terms": false,
+    "include_participant_analysis": true
+  },
+  "cost_tracking": {
+    "enabled": true,
+    "budget_monthly_usd": 50.00,
+    "alert_threshold_percent": 80,
+    "priority": 2
+  },
+  "api_keys": {
+    "openrouter_key_ref": "vault:openrouter/family-chat",
+    "use_server_key": true,
+    "fallback_to_default": true
+  }
+}
+```
+
+### 3.3 Summary Metadata File
+
+Each summary `.md` file has a companion `.meta.json`:
+
+```json
+{
+  "summary_id": "sum_abc123",
+  "generated_at": "2026-02-14T16:30:00Z",
+  "period": {
+    "start": "2026-02-14T00:00:00-05:00",
+    "end": "2026-02-14T23:59:59-05:00",
+    "timezone": "America/New_York",
+    "duration_hours": 24,
+    "dst_transition": null
+  },
+  "period_utc": {
+    "start": "2026-02-14T05:00:00Z",
+    "end": "2026-02-15T04:59:59Z"
+  },
+  "source": {
+    "source_type": "whatsapp",
+    "server_id": "group_abc123",
+    "server_name": "Family Chat",
+    "channel_id": null,
+    "channel_name": null
+  },
+  "statistics": {
+    "message_count": 47,
+    "participant_count": 8,
+    "word_count": 1521,
+    "attachment_count": 5
+  },
+  "generation": {
+    "prompt_version": "2.1.0",
+    "prompt_checksum": "sha256:a1b2c3d4e5f6...",
+    "model": "anthropic/claude-sonnet-4-20250514",
+    "options": {
+      "summary_length": "detailed",
+      "perspective": "general",
+      "include_action_items": true
+    },
+    "duration_seconds": 2.1,
+    "tokens_used": {
+      "input": 3200,
+      "output": 850
+    },
+    "cost_usd": 0.0156,
+    "pricing_version": "2026-01-01",
+    "api_key_used": "server:group_abc123",
+    "provider": "openrouter"
+  },
+  "backfill": {
+    "is_backfill": true,
+    "original_generation_failed": false,
+    "backfilled_at": "2026-02-14T16:30:00Z",
+    "reason": "historical_archive"
+  },
+  "status": "complete",
+  "lock": null,
+  "integrity": {
+    "content_checksum": "sha256:x1y2z3...",
+    "references_validated": true
+  }
+}
+```
+
+### 3.4 Gap/Incomplete Marker
+
+When a summary cannot be generated (no messages, error, etc.), create a marker file:
+
+```json
+{
+  "summary_id": null,
+  "period": {
+    "start": "2026-02-13T00:00:00-05:00",
+    "end": "2026-02-13T23:59:59-05:00",
+    "timezone": "America/New_York"
+  },
+  "source": {
+    "source_type": "slack",
+    "server_id": "T01ABC123",
+    "channel_id": "C01XYZ789"
+  },
+  "status": "incomplete",
+  "incomplete_reason": {
+    "code": "NO_MESSAGES",
+    "message": "No messages found in this period",
+    "details": {
+      "messages_checked": 0,
+      "bot_messages_excluded": 2
+    }
+  },
+  "backfill_eligible": false,
+  "checked_at": "2026-02-14T08:00:00Z"
+}
+```
+
+**Status Codes for Incomplete Summaries:**
+
+| Code | Description | Backfill Eligible | User Action |
+|------|-------------|-------------------|-------------|
+| `NO_MESSAGES` | No messages in period | No | None (no data) |
+| `INSUFFICIENT_MESSAGES` | Below minimum threshold | Yes | Lower threshold or skip |
+| `API_ERROR` | Claude API failure | Yes | Retry |
+| `RATE_LIMITED` | Rate limit hit | Yes | Wait and retry |
+| `BOT_OFFLINE` | Bot was offline | Yes | Retry |
+| `SOURCE_INACCESSIBLE` | No permission at time | Maybe | Fix permissions |
+| `PROMPT_ERROR` | Prompt template error | Yes | Fix prompt and retry |
+| `EXPORT_UNAVAILABLE` | WhatsApp export not provided | Yes | Import chat export |
+| `BUDGET_EXCEEDED` | Cost limit reached | Yes | Increase budget |
+
+### 3.5 Participant Identity
+
+**Default: Source-Isolated Identities**
+
+Participants are identified by their platform-native handle:
+- Discord: `@john#1234` or display name
+- WhatsApp: Phone number or contact name from export
+- Slack: `@john.smith` or display name
+- Telegram: `@username` or display name
+
+**Optional: Identity Linking**
+
+For organizations wanting unified identity across platforms:
+
+```json
+// identity-mappings.json
+{
+  "schema_version": "1.0.0",
+  "enabled": false,
+  "people": [
+    {
+      "canonical_name": "John Smith",
+      "email": "john@example.com",
+      "identities": [
+        { "source_type": "discord", "server_id": "123456789", "identifier": "john#1234" },
+        { "source_type": "slack", "server_id": "T01ABC123", "identifier": "U01ABC123" },
+        { "source_type": "whatsapp", "server_id": "group_abc123", "identifier": "+1555123456" }
+      ]
+    },
+    {
+      "canonical_name": "Sarah Developer",
+      "identities": [
+        { "source_type": "discord", "server_id": "123456789", "identifier": "sarah.dev#5678" },
+        { "source_type": "slack", "server_id": "T01ABC123", "identifier": "U01DEF456" }
+      ]
+    }
+  ]
+}
+```
+
+**Identity Linking Behavior:**
+- When `enabled: true`, summaries display canonical names
+- Raw archives still preserve original platform identifiers for auditability
+- Participant analysis can aggregate across platforms for the same person
+- Linking is **display-only** — never modifies source data
+
+---
+
+## 4. Cost Attribution & Tracking
+
+### 4.1 Cost Ledger
+
+A global cost ledger tracks API costs per source for attribution:
+
+```json
+{
+  "schema_version": "1.0.0",
+  "currency": "USD",
+  "sources": {
+    "discord:123456789": {
+      "server_name": "My Community",
+      "total_cost_usd": 127.45,
+      "summary_count": 450,
+      "monthly": {
+        "2026-02": {
+          "cost_usd": 12.30,
+          "summaries": 45,
+          "tokens_input": 425000,
+          "tokens_output": 67000
+        },
+        "2026-01": {
+          "cost_usd": 14.20,
+          "summaries": 52,
+          "tokens_input": 490000,
+          "tokens_output": 78000
+        }
+      },
+      "last_updated": "2026-02-14T16:30:00Z"
+    },
+    "whatsapp:group_abc123": {
+      "server_name": "Family Chat",
+      "total_cost_usd": 28.90,
+      "summary_count": 180,
+      "monthly": {
+        "2026-02": {
+          "cost_usd": 3.45,
+          "summaries": 14,
+          "tokens_input": 112000,
+          "tokens_output": 18500
+        }
+      },
+      "last_updated": "2026-02-14T16:30:00Z"
+    },
+    "slack:T01ABC123": {
+      "server_name": "Acme Corp",
+      "total_cost_usd": 312.80,
+      "summary_count": 890,
+      "monthly": {
+        "2026-02": {
+          "cost_usd": 28.90,
+          "summaries": 98,
+          "tokens_input": 980000,
+          "tokens_output": 156000
+        }
+      },
+      "last_updated": "2026-02-14T16:30:00Z"
+    }
+  },
+  "total_cost_usd": 469.15,
+  "total_summaries": 1520
+}
+```
+
+### 4.2 Pricing History
+
+API pricing changes over time. The archive maintains a versioned pricing table (from OpenRouter):
+
+```json
+{
+  "schema_version": "1.0.0",
+  "pricing_source": "openrouter",
+  "versions": [
+    {
+      "effective_from": "2026-01-01",
+      "models": {
+        "anthropic/claude-sonnet-4-20250514": {
+          "input_per_1k_tokens": 0.003,
+          "output_per_1k_tokens": 0.015
+        },
+        "anthropic/claude-haiku-4-20250514": {
+          "input_per_1k_tokens": 0.00025,
+          "output_per_1k_tokens": 0.00125
+        },
+        "openai/gpt-4-turbo": {
+          "input_per_1k_tokens": 0.01,
+          "output_per_1k_tokens": 0.03
+        }
+      }
+    },
+    {
+      "effective_from": "2025-06-01",
+      "models": {
+        "anthropic/claude-sonnet-4-20250514": {
+          "input_per_1k_tokens": 0.004,
+          "output_per_1k_tokens": 0.018
+        }
+      }
+    }
+  ]
+}
+```
+
+**Cost Calculation:**
+- Costs are calculated using OpenRouter pricing effective at generation time
+- Each summary metadata records `pricing_version` for audit trail
+- When OpenRouter updates pricing, add a new version entry with `effective_from` date
+- Model IDs use OpenRouter format: `provider/model-name`
+
+**Dynamic Pricing:**
+```python
+class PricingConfig(BaseModel):
+    pricing_source: Literal["static", "openrouter_api"] = "openrouter_api"
+    # When "openrouter_api", fetch current pricing from OpenRouter's /api/v1/models endpoint
+```
+
+### 4.3 Cost Tracking Service
+
+```python
+@dataclass
+class CostEntry:
+    """Single cost entry for a summary generation."""
+    source_key: str              # e.g., "discord:123456789"
+    summary_id: str
+    timestamp: datetime
+    model: str
+    tokens_input: int
+    tokens_output: int
+    cost_usd: float
+    pricing_version: str
+
+class CostTracker:
+    """Tracks and attributes costs per source."""
+
+    def __init__(self, ledger_path: Path, pricing_path: Path):
+        self.ledger_path = ledger_path
+        self.pricing_path = pricing_path
+        self.ledger = self._load_ledger()
+        self.pricing = self._load_pricing()
+
+    def calculate_cost(self, model: str, tokens_input: int, tokens_output: int,
+                       timestamp: datetime = None) -> Tuple[float, str]:
+        """Calculate cost using pricing effective at timestamp."""
+        pricing_version = self._get_pricing_version(timestamp or datetime.utcnow())
+        rates = self.pricing[pricing_version]["models"][model]
+
+        cost = (tokens_input / 1000 * rates["input_per_1k_tokens"] +
+                tokens_output / 1000 * rates["output_per_1k_tokens"])
+
+        return cost, pricing_version
+
+    def record_cost(self, entry: CostEntry) -> None:
+        """Record a cost entry to the ledger."""
+        source = self.ledger["sources"].setdefault(entry.source_key, {
+            "server_name": "",
+            "total_cost_usd": 0,
+            "summary_count": 0,
+            "monthly": {}
+        })
+
+        month_key = entry.timestamp.strftime("%Y-%m")
+        month = source["monthly"].setdefault(month_key, {
+            "cost_usd": 0,
+            "summaries": 0,
+            "tokens_input": 0,
+            "tokens_output": 0
+        })
+
+        source["total_cost_usd"] += entry.cost_usd
+        source["summary_count"] += 1
+        month["cost_usd"] += entry.cost_usd
+        month["summaries"] += 1
+        month["tokens_input"] += entry.tokens_input
+        month["tokens_output"] += entry.tokens_output
+
+        self.ledger["total_cost_usd"] += entry.cost_usd
+        self.ledger["total_summaries"] += 1
+
+        self._save_ledger()
+
+    def estimate_cost(self, source_key: str, periods: int,
+                      avg_tokens_per_summary: int = 5000) -> CostEstimate:
+        """Estimate cost for a backfill job (dry run)."""
+        ...
+```
+
+### 4.4 Budget Hierarchy
+
+Budgets can be set at multiple levels with priority-based overflow handling:
+
+```json
+{
+  "cost_tracking": {
+    "global_budget_monthly_usd": 500.00,
+    "overflow_behavior": "pause_lowest_priority",
+    "alert_email": "admin@example.com",
+    "source_budgets": {
+      "slack:T01ABC123": {
+        "budget_monthly_usd": 200.00,
+        "priority": 1,
+        "alert_threshold_percent": 80
+      },
+      "discord:123456789": {
+        "budget_monthly_usd": 100.00,
+        "priority": 2,
+        "alert_threshold_percent": 80
+      },
+      "whatsapp:group_abc123": {
+        "budget_monthly_usd": 50.00,
+        "priority": 3,
+        "alert_threshold_percent": 90
+      }
+    }
+  }
+}
+```
+
+**Budget Behavior:**
+
+| Scenario | Action |
+|----------|--------|
+| Source hits its own budget | That source pauses; others continue |
+| Global budget hit | Depends on `overflow_behavior` |
+| Alert threshold reached | Send notification; continue generating |
+
+**Overflow Behaviors:**
+- `pause_lowest_priority`: Pause sources in reverse priority order until under budget
+- `pause_all`: Stop all generation immediately
+- `warn_only`: Log warning but continue (soft budget)
+
+**Priority System:**
+- Lower number = higher priority (1 is highest)
+- When pausing for budget, highest priority sources continue longest
+- Equal priority sources are paused together
+
+### 4.5 Cost Report UI
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Archive Cost Report                                              │
+│  ────────────────────────────────────────────────────────────────│
+│                                                                   │
+│  Period: February 2026                   Total: $44.65            │
+│  Global Budget: $500/mo                  Used: 8.9%               │
+│  ─────────────────────────────────────────────────────────────── │
+│                                                                   │
+│  By Source:                                                       │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  💬 Discord: My Community                     Priority: 2  │  │
+│  │     $12.30 (45 summaries, 492K tokens)                     │  │
+│  │     Budget: $100/mo — 12.3% used ██░░░░░░░░░░░░░░          │  │
+│  ├────────────────────────────────────────────────────────────┤  │
+│  │  📱 WhatsApp: Family Chat                     Priority: 3  │  │
+│  │     $3.45 (14 summaries, 130K tokens)                      │  │
+│  │     Budget: $50/mo — 6.9% used █░░░░░░░░░░░░░░░            │  │
+│  ├────────────────────────────────────────────────────────────┤  │
+│  │  💼 Slack: Acme Corp                          Priority: 1  │  │
+│  │     $28.90 (98 summaries, 1.1M tokens)                     │  │
+│  │     Budget: $200/mo — 14.5% used ███░░░░░░░░░░░░░          │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                                                                   │
+│  [Export CSV]  [Set Budgets]  [View History]                     │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 4.6 OpenRouter Integration (Exclusive Provider)
+
+**All summarization uses OpenRouter as the exclusive LLM provider.** This replaces direct Anthropic API usage for:
+
+- **Unified billing**: All API calls go through OpenRouter
+- **Model flexibility**: Access to Claude, GPT-4, Llama, and other models via single API
+- **Per-server keys**: Servers can provide their own OpenRouter API keys for direct billing
+- **Rate limit pooling**: Avoid per-model rate limits through OpenRouter's aggregation
+
+**Use Cases for Per-Server Keys:**
+- **Enterprise customers** want costs billed directly to their OpenRouter account
+- **Community servers** may have sponsors who pay for their API usage
+- **Cost isolation** ensures one server's usage doesn't affect another's quota
+
+**Migration Note:** This replaces the previous direct Anthropic API integration in `src/summarization/claude_client.py`. The `AsyncAnthropic` client will be replaced with an OpenRouter-compatible client.
+
+**Configuration Hierarchy:**
+
+```
+1. Server-specific key (if configured and enabled)
+     ↓ (fallback if not set or fails)
+2. Default installation key
+     ↓ (fallback if not set)
+3. Error: No API key available
+```
+
+**Server Manifest API Key Config:**
+
+```json
+{
+  "api_keys": {
+    "openrouter_key_ref": "vault:openrouter/acme-corp",
+    "use_server_key": true,
+    "fallback_to_default": true,
+    "key_added_at": "2026-01-15T10:00:00Z",
+    "key_last_validated": "2026-02-14T08:00:00Z",
+    "key_status": "valid"
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `openrouter_key_ref` | Reference to key in secure storage (never store raw keys!) |
+| `use_server_key` | Whether to use this server's key (can be disabled temporarily) |
+| `fallback_to_default` | If server key fails, fall back to default installation key |
+| `key_added_at` | When the key was configured |
+| `key_last_validated` | Last successful validation timestamp |
+| `key_status` | `valid`, `invalid`, `expired`, `rate_limited`, `unchecked` |
+
+**API Key Storage Options:**
+
+```python
+class ApiKeyStorageBackend(Enum):
+    ENV_VAR = "env"              # Environment variable (e.g., OPENROUTER_KEY_DISCORD_123)
+    VAULT = "vault"              # HashiCorp Vault or similar
+    ENCRYPTED_FILE = "file"      # Encrypted file with master key
+    DATABASE = "database"        # Encrypted column in database
+
+class ApiKeyConfig(BaseModel):
+    storage_backend: ApiKeyStorageBackend = ApiKeyStorageBackend.ENV_VAR
+    vault_address: Optional[str] = None
+    vault_path_prefix: str = "secret/summarybot/openrouter"
+    encryption_key_ref: Optional[str] = None  # For file/database backends
+```
+
+**Key Reference Formats:**
+
+| Backend | Reference Format | Example |
+|---------|-----------------|---------|
+| ENV_VAR | `env:VARIABLE_NAME` | `env:OPENROUTER_KEY_DISCORD_123` |
+| VAULT | `vault:path/to/secret` | `vault:openrouter/acme-corp` |
+| ENCRYPTED_FILE | `file:filename` | `file:keys/discord_123.enc` |
+| DATABASE | `db:source_key` | `db:discord:123456789` |
+
+**API Key Resolution:**
+
+```python
+class ApiKeyResolver:
+    """Resolves API keys for generation requests."""
+
+    def __init__(self, config: ApiKeyConfig, default_key: str):
+        self.config = config
+        self.default_key = default_key
+        self.key_cache: Dict[str, CachedKey] = {}
+
+    async def get_key_for_source(self, source_key: str,
+                                  server_manifest: dict) -> ResolvedKey:
+        """
+        Get the appropriate API key for a source.
+
+        Returns:
+            ResolvedKey with key value and metadata about which key was used
+        """
+        api_config = server_manifest.get("api_keys", {})
+
+        # Check if server has its own key and wants to use it
+        if api_config.get("use_server_key") and api_config.get("openrouter_key_ref"):
+            try:
+                key = await self._fetch_key(api_config["openrouter_key_ref"])
+                if await self._validate_key(key):
+                    return ResolvedKey(
+                        key=key,
+                        source="server",
+                        source_key=source_key,
+                        key_ref=api_config["openrouter_key_ref"]
+                    )
+            except KeyFetchError as e:
+                if not api_config.get("fallback_to_default", True):
+                    raise
+
+        # Fall back to default key
+        return ResolvedKey(
+            key=self.default_key,
+            source="default",
+            source_key=source_key,
+            key_ref="default"
+        )
+
+    async def _validate_key(self, key: str) -> bool:
+        """Validate key with OpenRouter API."""
+        # Call OpenRouter's key validation endpoint
+        ...
+
+@dataclass
+class ResolvedKey:
+    key: str
+    source: Literal["server", "default"]
+    source_key: str
+    key_ref: str
+```
+
+**Cost Ledger with Key Attribution:**
+
+```json
+{
+  "sources": {
+    "slack:T01ABC123": {
+      "server_name": "Acme Corp",
+      "total_cost_usd": 312.80,
+      "api_key_source": "server",
+      "api_key_ref": "vault:openrouter/acme-corp",
+      "monthly": {
+        "2026-02": {
+          "cost_usd": 28.90,
+          "summaries": 98,
+          "api_key_source": "server"
+        }
+      }
+    },
+    "discord:123456789": {
+      "server_name": "My Community",
+      "total_cost_usd": 127.45,
+      "api_key_source": "default",
+      "api_key_ref": "default",
+      "monthly": {
+        "2026-02": {
+          "cost_usd": 12.30,
+          "summaries": 45,
+          "api_key_source": "default"
+        }
+      }
+    }
+  }
+}
+```
+
+**Key Validation Endpoint:**
+
+```
+POST /api/v1/sources/{source_key}/api-key/validate
+
+Response:
+{
+  "valid": true,
+  "key_ref": "vault:openrouter/acme-corp",
+  "credits_remaining": 150.00,
+  "rate_limit": {
+    "requests_per_minute": 100,
+    "tokens_per_minute": 100000
+  },
+  "validated_at": "2026-02-14T16:00:00Z"
+}
+```
+
+**Dashboard UI for Key Management:**
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  API Key Settings: Acme Corp (Slack)                             │
+│  ────────────────────────────────────────────────────────────────│
+│                                                                   │
+│  ☑ Use server-specific OpenRouter API key                        │
+│                                                                   │
+│  Key Reference: [vault:openrouter/acme-corp___________]          │
+│  Status: ✅ Valid (checked 2 hours ago)                          │
+│  Credits Remaining: $150.00                                      │
+│                                                                   │
+│  ☑ Fall back to default key if server key fails                  │
+│                                                                   │
+│  [Validate Key]  [Remove Key]                                    │
+│                                                                   │
+│  ─────────────────────────────────────────────────────────────── │
+│  Key History:                                                     │
+│  • 2026-02-14 08:00 — Validation successful                      │
+│  • 2026-02-13 15:30 — Key updated                                │
+│  • 2026-01-15 10:00 — Key added                                  │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 5. Prompt Version Tracking
+
+### 5.1 Prompt Version Semantics
+
+Prompt changes are categorized by impact level using semantic versioning:
+
+```python
+@dataclass
+class PromptVersion:
+    major: int  # Breaking change: different output structure
+    minor: int  # Significant change: different extraction/emphasis
+    patch: int  # Trivial change: typo fix, wording tweak
+
+    def __str__(self) -> str:
+        return f"{self.major}.{self.minor}.{self.patch}"
+
+# Examples:
+# 1.0.0 → 2.0.0: Changed from bullet points to narrative format (major)
+# 1.0.0 → 1.1.0: Added sentiment analysis section (minor)
+# 1.0.0 → 1.0.1: Fixed typo in prompt (patch)
+```
+
+### 5.2 Prompt Checksum Generation
+
+```python
+import hashlib
+from typing import Dict, Any
+
+def compute_prompt_checksum(
+    prompt_config: Dict[str, Any],
+    include_parameters: bool = False
+) -> str:
+    """
+    Generate a deterministic checksum of the prompt configuration.
+
+    Args:
+        prompt_config: Prompt templates and settings
+        include_parameters: If True, include temperature/max_tokens in checksum
+
+    Always includes:
+    - System prompt template
+    - User prompt template
+    - Model name
+    - Extraction settings (action_items, technical_terms, etc.)
+
+    Optionally includes (if include_parameters=True):
+    - Temperature
+    - Max tokens
+    """
+    config_to_hash = {
+        "system_prompt": prompt_config["system_prompt"],
+        "user_prompt": prompt_config["user_prompt"],
+        "model": prompt_config["model"],
+        "extractions": prompt_config.get("extractions", {})
+    }
+
+    if include_parameters:
+        config_to_hash["temperature"] = prompt_config.get("temperature")
+        config_to_hash["max_tokens"] = prompt_config.get("max_tokens")
+
+    canonical = json.dumps(config_to_hash, sort_keys=True, separators=(',', ':'))
+    return f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()[:16]}"
+```
+
+### 5.3 Outdated Detection Configuration
+
+```json
+{
+  "prompt_tracking": {
+    "flag_outdated_on": "minor",
+    "auto_regenerate_on": null,
+    "include_parameters_in_checksum": false
+  }
+}
+```
+
+| Setting | Values | Description |
+|---------|--------|-------------|
+| `flag_outdated_on` | `"major"`, `"minor"`, `"patch"` | Minimum version change to flag as outdated |
+| `auto_regenerate_on` | `"major"`, `"minor"`, `"patch"`, `null` | Auto-regenerate on version change (null = never) |
+| `include_parameters_in_checksum` | `true`, `false` | Include temperature/max_tokens in checksum |
+
+**Default Behavior:**
+- Flag on minor changes (section additions, extraction changes)
+- Don't flag on patch changes (typo fixes)
+- Never auto-regenerate (user must explicitly request)
+
+### 5.4 Backfill Eligibility Detection
+
+```python
+class BackfillAnalyzer:
+    """Analyzes archive for backfill opportunities."""
+
+    def analyze_backfill_potential(
+        self,
+        archive_path: Path,
+        source_filter: Optional[ArchiveSource] = None,
+        current_prompt_version: PromptVersion = None
+    ) -> BackfillReport:
+        """
+        Scan archive and identify:
+        1. Missing summaries (gaps in date range)
+        2. Failed summaries eligible for retry
+        3. Summaries generated with outdated prompts
+        """
+        report = BackfillReport()
+        config = self._load_config(archive_path)
+        flag_threshold = config.prompt_tracking.flag_outdated_on
+
+        for meta_file in archive_path.glob("**/sources/**/*.meta.json"):
+            meta = json.loads(meta_file.read_text())
+
+            # Apply source filter if specified
+            if source_filter and not self._matches_source(meta, source_filter):
+                continue
+
+            # Check for incomplete/failed
+            if meta.get("status") == "incomplete":
+                if meta.get("backfill_eligible", True):
+                    report.add_gap(
+                        source=meta["source"],
+                        period=meta["period"],
+                        reason=meta["incomplete_reason"]["code"]
+                    )
+
+            # Check for outdated prompt (respecting threshold)
+            elif current_prompt_version:
+                old_version = PromptVersion.parse(meta["generation"]["prompt_version"])
+                if self._exceeds_threshold(old_version, current_prompt_version, flag_threshold):
+                    report.add_outdated(
+                        source=meta["source"],
+                        period=meta["period"],
+                        old_version=str(old_version),
+                        summary_file=meta_file.with_suffix(".md")
+                    )
+
+        return report
+
+    def _exceeds_threshold(self, old: PromptVersion, new: PromptVersion,
+                           threshold: str) -> bool:
+        """Check if version difference exceeds threshold."""
+        if threshold == "major":
+            return new.major > old.major
+        elif threshold == "minor":
+            return new.major > old.major or new.minor > old.minor
+        else:  # patch
+            return new != old
+```
+
+---
+
+## 6. Google Drive Sync — Flexible Sharing
+
+### 6.1 Sync Configuration Options
+
+Archives can be synced to Google Drive with flexible organization:
+
+**Option A: Shared Drive (All Sources Together)**
+```
+My Google Drive/
+└── SummaryBot Archives/           ← Single shared folder
+    ├── manifest.json
+    └── sources/
+        ├── discord/...
+        ├── whatsapp/...
+        └── slack/...
+```
+
+**Option B: Separate Drives Per Source**
+```
+Work Google Drive/
+└── Slack Archives/                ← Separate folder per workspace
+    └── acme-corp_T01ABC123/...
+
+Personal Google Drive/
+└── Family Archives/               ← Personal archives
+    ├── whatsapp/family-chat/...
+    └── discord/gaming-server/...
+```
+
+**Option C: Hybrid (Per-Organization)**
+```
+Acme Corp Shared Drive/
+└── Chat Archives/
+    ├── slack/acme-corp/...
+    └── discord/acme-team/...
+
+Personal Drive/
+└── Personal Archives/
+    └── whatsapp/family/...
+```
+
+### 6.2 Sync Configuration Model
+
+```python
+class GoogleDriveSyncConfig(BaseModel):
+    """Configuration for Google Drive sync per source."""
+
+    enabled: bool = False
+    folder_id: str                  # Google Drive folder ID
+    credentials_path: str           # Path to service account JSON
+
+    # Sync behavior
+    sync_frequency: Literal["realtime", "hourly", "daily"] = "hourly"
+    sync_deletes: bool = False      # Remove from Drive if deleted locally
+
+    # Conflict resolution
+    conflict_strategy: Literal["local_wins", "remote_wins", "newest"] = "local_wins"
+
+class ArchiveSyncSettings(BaseModel):
+    """Sync settings supporting multiple destinations."""
+
+    # Global default (optional)
+    default_google_drive: Optional[GoogleDriveSyncConfig] = None
+
+    # Per-source overrides (source_key -> config)
+    # If not specified, uses default; if default not set, no sync
+    source_overrides: Dict[str, GoogleDriveSyncConfig] = {}
+
+    def get_sync_config(self, source_key: str) -> Optional[GoogleDriveSyncConfig]:
+        """Get sync config for a source, falling back to default."""
+        if source_key in self.source_overrides:
+            return self.source_overrides[source_key]
+        return self.default_google_drive
+```
+
+### 6.3 Archive Config File
+
+```json
+{
+  "sync": {
+    "default_google_drive": {
+      "enabled": true,
+      "folder_id": "1ABC123_shared_archives",
+      "credentials_path": "/secure/gdrive-service-account.json",
+      "sync_frequency": "hourly",
+      "sync_deletes": false
+    },
+    "source_overrides": {
+      "slack:T01ABC123": {
+        "enabled": true,
+        "folder_id": "1XYZ789_acme_archives",
+        "credentials_path": "/secure/acme-gdrive.json",
+        "sync_frequency": "realtime"
+      },
+      "whatsapp:group_abc123": {
+        "enabled": true,
+        "folder_id": "1DEF456_personal_archives",
+        "credentials_path": "/secure/personal-gdrive.json",
+        "sync_frequency": "daily"
+      }
+    }
+  }
+}
+```
+
+### 6.4 Sync Status in Manifest
+
+```json
+{
+  "sync": {
+    "discord:123456789": {
+      "destination": "google_drive",
+      "folder_id": "1ABC123...",
+      "last_sync": "2026-02-14T16:00:00Z",
+      "last_sync_status": "success",
+      "files_synced": 450,
+      "files_failed": 0,
+      "next_scheduled_sync": "2026-02-14T17:00:00Z"
+    },
+    "slack:T01ABC123": {
+      "destination": "google_drive",
+      "folder_id": "1XYZ789...",
+      "last_sync": "2026-02-14T16:30:00Z",
+      "last_sync_status": "success",
+      "files_synced": 890
+    },
+    "whatsapp:group_abc123": {
+      "destination": "google_drive",
+      "folder_id": "1DEF456...",
+      "last_sync": "2026-02-14T00:00:00Z",
+      "last_sync_status": "success",
+      "files_synced": 180
+    }
+  }
+}
+```
+
+---
+
+## 7. Generation Locking
+
+### 7.1 Preventing Duplicate Generation
+
+To prevent concurrent generation of the same summary:
+
+```json
+{
+  "status": "generating",
+  "lock": {
+    "job_id": "job_xyz789",
+    "acquired_at": "2026-02-14T16:30:00Z",
+    "acquired_by": "worker-01",
+    "expires_at": "2026-02-14T16:35:00Z"
+  }
+}
+```
+
+**Status Values:**
+- `pending` — Not yet attempted
+- `generating` — Currently being generated (locked)
+- `complete` — Successfully generated
+- `incomplete` — Generation attempted but failed
+- `deleted` — Soft-deleted, awaiting purge
+
+### 7.2 Lock Behavior
+
+```python
+class GenerationLock:
+    """Manages locks for summary generation."""
+
+    LOCK_TTL_SECONDS = 300  # 5 minutes
+
+    async def acquire_lock(self, meta_path: Path, job_id: str,
+                           worker_id: str) -> bool:
+        """
+        Attempt to acquire lock for generation.
+
+        Returns True if lock acquired, False if already locked.
+        """
+        try:
+            if meta_path.exists():
+                meta = json.loads(meta_path.read_text())
+
+                # Already complete or generating
+                if meta.get("status") == "complete":
+                    return False
+
+                if meta.get("status") == "generating":
+                    lock = meta.get("lock", {})
+                    expires_at = datetime.fromisoformat(lock.get("expires_at", "2000-01-01"))
+
+                    # Lock still valid
+                    if datetime.utcnow() < expires_at:
+                        return False
+
+                    # Lock expired, we can take over
+                    logger.warning(f"Taking over expired lock from {lock.get('job_id')}")
+
+            # Acquire lock
+            meta = self._create_lock_meta(job_id, worker_id)
+            self._atomic_write(meta_path, meta)
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to acquire lock: {e}")
+            return False
+
+    async def release_lock(self, meta_path: Path, status: str,
+                           summary_data: Optional[dict] = None) -> None:
+        """Release lock and update status."""
+        meta = json.loads(meta_path.read_text())
+        meta["status"] = status
+        meta["lock"] = None
+
+        if summary_data:
+            meta.update(summary_data)
+
+        self._atomic_write(meta_path, meta)
+
+    def _atomic_write(self, path: Path, data: dict) -> None:
+        """Write atomically using rename."""
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(data, indent=2))
+        tmp_path.rename(path)  # Atomic on POSIX
+```
+
+### 7.3 Distributed Locking (Future)
+
+For multi-worker deployments, file-based locking is insufficient. Options:
+
+```python
+class LockBackend(Enum):
+    FILE = "file"           # Single-worker only
+    REDIS = "redis"         # Redis-based distributed lock
+    DATABASE = "database"   # PostgreSQL advisory locks
+
+class LockConfig(BaseModel):
+    backend: LockBackend = LockBackend.FILE
+    redis_url: Optional[str] = None
+    lock_ttl_seconds: int = 300
+```
+
+---
+
+## 8. Retention and Deletion
+
+### 8.1 Retention Configuration
+
+```python
+class RetentionConfig(BaseModel):
+    """Controls automatic cleanup of old summaries."""
+
+    retention_days: Optional[int] = None          # None = keep forever
+    soft_delete_grace_days: int = 30              # Days before permanent deletion
+    sync_deletes_to_drive: bool = False           # Also delete from Google Drive?
+    archive_before_delete: bool = True            # Create backup before purge
+    archive_format: Literal["zip", "tar.gz"] = "zip"
+```
+
+### 8.2 Deletion Flow
+
+```
+Day 0: Summary exceeds retention_days
+       └── Moved to .deleted/{source_key}/{date}/
+           └── Status updated to "deleted"
+           └── Manifest updated with deletion info
+
+Day 30: soft_delete_grace_days elapsed
+        └── If archive_before_delete: Create ZIP backup
+        └── Permanently delete from local filesystem
+        └── If sync_deletes_to_drive: Delete from Google Drive
+        └── Remove from manifest
+```
+
+### 8.3 Soft Delete Manifest
+
+```json
+{
+  "deleted": [
+    {
+      "summary_id": "sum_abc123",
+      "source_key": "discord:123456789",
+      "period": "2025-06-01",
+      "deleted_at": "2026-02-14T10:00:00Z",
+      "reason": "retention_policy",
+      "permanent_delete_at": "2026-03-16T10:00:00Z",
+      "backup_path": ".deleted/discord_123456789/2025-06-01_daily.zip",
+      "original_path": "sources/discord/my-community_123456789/channels/general_456/summaries/2025/06/2025-06-01_daily.md"
+    }
+  ]
+}
+```
+
+### 8.4 Recovery
+
+Soft-deleted summaries can be recovered before permanent deletion:
+
+```bash
+# API endpoint
+POST /api/v1/archive/recover/{summary_id}
+
+# Moves from .deleted/ back to original location
+# Removes deletion entry from manifest
+# Re-syncs to Google Drive if applicable
+```
+
+---
+
+## 9. Summary Markdown Format
+
+### 9.1 Standard Template (Platform-Aware)
+
+```markdown
+# Daily Summary: Family Chat
+
+**Platform:** WhatsApp
+**Group:** Family Chat
+**Date:** 2026-02-14 (Friday)
+**Timezone:** America/Chicago (UTC-6)
+**Period:** 00:00 — 23:59
+**Messages:** 47 from 8 participants
+
+---
+
+## Overview
+
+A brief 2-3 sentence overview of the day's activity.
+
+---
+
+## Key Points
+
+1. **Birthday Planning** — Mom's birthday party confirmed for Saturday at 3pm.
+   Dad will bring the cake. [ref:msg_12, msg_15]
+
+2. **Vacation Discussion** — Summer trip dates narrowed to July 15-22.
+   Sarah will check flight prices. [ref:msg_28, msg_31]
+
+---
+
+## Action Items
+
+- [ ] @Dad: Order birthday cake from Mario's Bakery [ref:msg_16]
+- [ ] @Sarah: Compare flight prices by Sunday [ref:msg_32]
+- [ ] @Everyone: RSVP for birthday party [ref:msg_20]
+
+---
+
+## Participant Highlights
+
+| Participant | Messages | Topics |
+|-------------|----------|--------|
+| Mom | 12 | Birthday planning, recipes |
+| Sarah | 10 | Vacation, travel |
+| Dad | 8 | Party logistics |
+
+---
+
+## Media Shared
+
+- 📷 Birthday cake options (3 photos) shared by Mom
+- 🔗 [Hotel deals link](https://example.com) shared by Sarah
+
+---
+
+*Generated by SummaryBot-NG v2.1.0 on 2026-02-14T16:30:00Z*
+*Prompt version: 2.1.0 (sha256:a1b2c3d4)*
+*Cost: $0.016*
+```
+
+### 9.2 Platform-Specific Headers
+
+| Platform | Header Format |
+|----------|--------------|
+| Discord | `**Server:** My Community` / `**Channel:** #general` |
+| WhatsApp | `**Group:** Family Chat` |
+| Slack | `**Workspace:** Acme Corp` / `**Channel:** #engineering` |
+| Telegram | `**Chat:** Project Discussion` |
+
+### 9.3 Per-Source Granularity
+
+Each source can have its own granularity setting:
+
+```json
+{
+  "source_type": "whatsapp",
+  "server_id": "group_abc123",
+  "overrides": {
+    "granularity": "weekly"
+  }
+}
+```
+
+**Rationale:** A busy Slack workspace may need daily summaries, while a quiet WhatsApp family group only needs weekly.
+
+**Cross-Source Reports:** Not supported in v1. If needed, weekly summaries can aggregate dailies within a source, but mixing granularities across sources requires future work.
+
+### 9.4 Perspective Variants
+
+| Perspective | Emphasized Sections |
+|-------------|---------------------|
+| `general` | Overview, Key Points, Action Items |
+| `developer` | Technical Discussions, Code References, Architecture Decisions |
+| `executive` | Strategic Decisions, Metrics, Blockers, Timeline Impacts |
+| `support` | User Issues, Bug Reports, Resolution Status |
+| `marketing` | Announcements, Community Sentiment, Feature Requests |
+| `family` | Events, Plans, Shared Media, Reminders |
+
+---
+
+## 10. Archive Generation API
+
+### 10.1 New Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/archive/generate` | POST | Generate retrospective summaries |
+| `/api/v1/archive/status/{job_id}` | GET | Check generation job status |
+| `/api/v1/archive/backfill-report` | POST | Analyze archive for backfill opportunities |
+| `/api/v1/archive/import/whatsapp` | POST | Import WhatsApp chat export |
+| `/api/v1/archive/sync` | POST | Sync archive to external storage |
+| `/api/v1/archive/download` | GET | Download archive as ZIP |
+| `/api/v1/archive/costs` | GET | Get cost report by source |
+| `/api/v1/archive/costs/{source_key}` | GET | Get cost details for specific source |
+| `/api/v1/archive/recover/{summary_id}` | POST | Recover soft-deleted summary |
+
+### 10.2 Generate Retrospective Request
+
+```python
+class RetrospectiveGenerateRequest(BaseModel):
+    """Request to generate retrospective summaries."""
+
+    # Source identification (platform-agnostic)
+    source_type: SourceType
+    server_id: str
+    channel_ids: Optional[List[str]] = None  # None = all channels/whole group
+
+    # Time range
+    date_range: DateRange
+    granularity: Literal["daily", "weekly", "monthly"] = "daily"
+    timezone: str = "UTC"
+
+    # Options
+    summary_options: SummaryOptionsRequest
+
+    # Backfill behavior
+    skip_existing: bool = True          # Don't regenerate existing
+    regenerate_outdated: bool = False   # Regenerate if prompt changed
+    regenerate_failed: bool = True      # Retry failed attempts
+
+    # Output
+    output_format: Literal["archive", "database", "both"] = "both"
+    archive_path: Optional[str] = None  # Custom path, or use default
+
+    # Cost controls
+    max_cost_usd: Optional[float] = None  # Stop if cost exceeds this
+    dry_run: bool = False                  # Estimate cost without generating
+
+class DateRange(BaseModel):
+    start: date  # Inclusive
+    end: date    # Inclusive
+```
+
+### 10.3 Generation Job Response
+
+```python
+class GenerationJobResponse(BaseModel):
+    job_id: str
+    source_key: str                     # e.g., "whatsapp:group_abc123"
+    status: Literal["queued", "running", "completed", "failed", "cancelled", "paused"]
+    progress: GenerationProgress
+    cost: CostProgress
+    created_at: datetime
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    pause_reason: Optional[str]         # e.g., "budget_exceeded"
+
+class GenerationProgress(BaseModel):
+    total_periods: int
+    completed: int
+    failed: int
+    skipped: int
+    current_period: Optional[str]
+    estimated_remaining_seconds: Optional[int]
+
+class CostProgress(BaseModel):
+    cost_usd: float
+    tokens_input: int
+    tokens_output: int
+    max_cost_usd: Optional[float]
+    budget_remaining_usd: Optional[float]
+    percent_of_max: Optional[float]
+```
+
+---
+
+## 11. Backfill Workflow
+
+### 11.1 User-Initiated Backfill (Multi-Source)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  Archive Manager                                                  │
+│  ────────────────────────────────────────────────────────────────│
+│                                                                   │
+│  Sources: [All ▼]  Filter by: [Platform ▼]                       │
+│  ─────────────────────────────────────────────────────────────── │
+│                                                                   │
+│  💬 Discord: My Community                         Priority: 2    │
+│     259 days | 245 ✓ | 8 ✗ | 6 ○ | 52 📋                        │
+│     Estimated backfill: $2.40 (14 summaries)                     │
+│     [Expand] [Backfill]                                          │
+│  ─────────────────────────────────────────────────────────────── │
+│  📱 WhatsApp: Family Chat                         Priority: 3    │
+│     180 days | 175 ✓ | 2 ✗ | 3 ○ | 0 📋                         │
+│     ⚠️ 5 days not covered by exports                             │
+│     Estimated backfill: $0.85 (5 summaries)                      │
+│     [Expand] [Backfill] [Import Export]                          │
+│  ─────────────────────────────────────────────────────────────── │
+│  💼 Slack: Acme Corp                              Priority: 1    │
+│     420 days | 890 ✓ | 12 ✗ | 8 ○ | 120 📋                      │
+│     Estimated backfill: $23.40 (140 summaries)                   │
+│     [Expand] [Backfill]                                          │
+│  ─────────────────────────────────────────────────────────────── │
+│                                                                   │
+│  Legend: ✓ complete  ✗ failed  ○ missing  📋 outdated prompt     │
+│                                                                   │
+│  [Backfill All Selected]              Total Est: $26.65          │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 12. Configuration Management
+
+### 12.1 Archive Settings
+
+```python
+class ArchiveConfig(BaseModel):
+    """User configuration for archive management."""
+
+    # Storage
+    archive_root: Path = Path("./summarybot-archive")
+
+    # Generation defaults
+    default_granularity: Literal["daily", "weekly", "monthly"] = "daily"
+    default_timezone: str = "UTC"
+
+    # Retention
+    retention: RetentionConfig = RetentionConfig()
+
+    # Naming
+    folder_name_format: str = "{server_name}_{server_id}"
+    summary_name_format: str = "{date}_{granularity}"
+
+    # Sync (flexible per-source configuration)
+    sync: ArchiveSyncSettings = ArchiveSyncSettings()
+
+    # Cost tracking
+    cost_tracking: CostTrackingConfig = CostTrackingConfig()
+
+    # Prompt tracking
+    prompt_tracking: PromptTrackingConfig = PromptTrackingConfig()
+
+    # Identity linking
+    identity_linking_enabled: bool = False
+
+    # Locking
+    lock_backend: LockBackend = LockBackend.FILE
+    lock_ttl_seconds: int = 300
+
+    # Performance
+    max_concurrent_generations: int = 3
+    rate_limit_per_minute: int = 10
+```
+
+---
+
+## 13. File-by-File Change Map
+
+| # | File | Action | Risk | Description |
+|---|------|--------|------|-------------|
+| 1 | `src/archive/models.py` | **N** | Low | Archive manifest, metadata, cost models |
+| 2 | `src/archive/sources.py` | **N** | Low | Platform-agnostic source abstraction |
+| 3 | `src/archive/generator.py` | **N** | Medium | Retrospective summary generation |
+| 4 | `src/archive/writer.py` | **N** | Low | Markdown file writer with templates |
+| 5 | `src/archive/scanner.py` | **N** | Low | Archive scanning and gap detection |
+| 6 | `src/archive/backfill.py` | **N** | Medium | Backfill analysis and execution |
+| 7 | `src/archive/cost_tracker.py` | **N** | Low | Per-source cost attribution |
+| 8 | `src/archive/pricing.py` | **N** | Low | Versioned pricing table |
+| 9 | `src/archive/locking.py` | **N** | Medium | Generation lock management |
+| 10 | `src/archive/retention.py` | **N** | Medium | Soft delete and purge logic |
+| 11 | `src/archive/identity.py` | **N** | Low | Cross-platform identity linking |
+| 12 | `src/archive/sync/base.py` | **N** | Low | Base sync provider interface |
+| 13 | `src/archive/sync/google_drive.py` | **N** | Medium | Google Drive sync (flexible sharing) |
+| 14 | `src/archive/prompt_tracker.py` | **N** | Low | Prompt versioning and checksums |
+| 15 | `src/archive/importers/whatsapp.py` | **N** | Medium | WhatsApp export import |
+| 16 | `src/dashboard/routes/archive.py` | **N** | Medium | Archive management API endpoints |
+| 17 | `src/dashboard/routes/costs.py` | **N** | Low | Cost reporting API endpoints |
+| 18 | `src/dashboard/models.py` | **M** | Low | Add archive/cost request/response models |
+| 19 | `src/frontend/src/pages/Archive.tsx` | **N** | Medium | Archive management UI |
+| 20 | `src/frontend/src/pages/Costs.tsx` | **N** | Low | Cost dashboard UI |
+| 21 | `src/frontend/src/components/archive/TimelineView.tsx` | **N** | Low | Visual timeline |
+| 22 | `src/frontend/src/components/archive/BackfillModal.tsx` | **N** | Low | Backfill configuration |
+| 23 | `src/frontend/src/components/archive/SourceSelector.tsx` | **N** | Low | Multi-source picker |
+| 24 | `src/frontend/src/components/archive/ImportModal.tsx` | **N** | Low | WhatsApp import UI |
+| 25 | `src/frontend/src/components/costs/CostChart.tsx` | **N** | Low | Cost visualization |
+| 26 | `src/archive/api_keys.py` | **N** | Medium | API key resolver and storage backends |
+| 27 | `src/archive/api_keys/vault.py` | **N** | Medium | HashiCorp Vault integration |
+| 28 | `src/archive/api_keys/encrypted_file.py` | **N** | Low | Encrypted file storage |
+| 29 | `src/dashboard/routes/api_keys.py` | **N** | Medium | API key management endpoints |
+| 30 | `src/frontend/src/components/settings/ApiKeyManager.tsx` | **N** | Medium | API key configuration UI |
+| 31 | `src/config/archive.py` | **N** | Low | Archive configuration schema |
+| 32 | `src/summarization/claude_client.py` | **M** | Low | Add per-server API key support via `ApiKeyResolver` |
+| 33 | `tests/unit/test_archive_*.py` | **N** | — | Unit tests |
+| 34 | `tests/unit/test_cost_tracker.py` | **N** | — | Cost tracking tests |
+| 35 | `tests/unit/test_locking.py` | **N** | — | Lock management tests |
+| 36 | `tests/unit/test_api_keys.py` | **N** | — | API key resolution tests |
+
+**Totals:** 2 files modified, 34 files created.
+
+---
+
+## 14. Edge Cases and Mitigations
+
+| Edge Case | Mitigation |
+|-----------|------------|
+| Source deleted, history inaccessible | Mark as `SOURCE_DELETED` in meta; not backfill eligible |
+| WhatsApp export not provided for period | Mark as `EXPORT_UNAVAILABLE`; prompt user to import |
+| Very long time range (years) | Paginate generation; show progress; allow pause/resume |
+| Rate limits during batch generation | Exponential backoff; queue remaining; report partial progress |
+| DST transition days | Record actual duration; store UTC canonical times |
+| Large channels (10k+ messages/day) | Chunk processing; cache intermediate results |
+| Prompt changes mid-backfill | Lock prompt version for job duration; note in manifest |
+| Google Drive quota exceeded | Fail gracefully; queue for retry; notify user |
+| Concurrent backfill jobs | Lock-based coordination; expired locks auto-release |
+| Cost budget exceeded mid-generation | Pause job; notify user; allow resume or cancel |
+| Different prompt versions per source | Track per-source prompt history independently |
+| Worker dies mid-generation | Lock expires after TTL; next worker can retry |
+| Soft-deleted summary needed | Recovery endpoint restores from `.deleted/` |
+| Pricing changes mid-month | Use pricing effective at generation time; track version |
+| Server API key invalid/expired | Fall back to default key if `fallback_to_default: true`; else pause |
+| Server API key rate limited | Back off and retry; optionally fall back to default |
+| API key storage backend unavailable | Fail fast with clear error; don't expose key details |
+| Key rotation mid-generation | Complete current job with old key; new jobs use new key |
+
+---
+
+## 15. Security Considerations
+
+1. **Message Access Permissions** — Retrospective generation requires historical message access. Verify access rights per platform.
+
+2. **Google Drive Credentials** — Service account keys stored securely; never in archive folder. Support multiple credentials for different drives.
+
+3. **Sensitive Content** — Same content filtering as real-time summaries applies to retrospective generation.
+
+4. **Archive Access Control** — Archive files may contain summarized private conversations. Protect archive folder with appropriate filesystem permissions.
+
+5. **API Key Usage** — Batch retrospective generation can consume significant API quota. Cost limits and confirmation required.
+
+6. **Cross-Org Data Separation** — When using separate drives per source, ensure no cross-contamination of credentials or data.
+
+7. **Identity Mapping Privacy** — Cross-platform identity linking may expose relationships. Keep `identity-mappings.json` secure.
+
+8. **OpenRouter API Key Security** — Per-server API keys require careful handling:
+   - **Never store raw keys** in manifests, config files, or version control
+   - Use secure storage backends (Vault, encrypted files, environment variables)
+   - Key references (not values) are stored in manifests
+   - Validate keys periodically to detect revocation
+   - Log key usage (which key, not the key value) for audit
+   - Support key rotation without service interruption
+
+9. **Key Isolation** — When servers provide their own API keys:
+   - Keys must not be accessible to other servers
+   - Failed key lookups must not expose key references
+   - Rate limiting on key validation endpoint to prevent enumeration
+   - Audit log of key access attempts
+
+---
+
+## 16. Implementation Phases
+
+### Phase 0 — OpenRouter Migration [COMPLETE]
+The codebase already uses OpenRouter exclusively:
+- [x] `OPENROUTER_API_KEY` environment variable required
+- [x] Base URL: `https://openrouter.ai/api`
+- [x] Model IDs use OpenRouter format (`anthropic/claude-3-haiku`, etc.)
+- [x] `ClaudeClient` in `src/summarization/claude_client.py` handles OpenRouter via `is_openrouter` detection
+- [x] Model name normalization handles legacy → OpenRouter format
+- [ ] *(Future)* Fetch dynamic pricing from OpenRouter `/api/v1/models` endpoint
+- [ ] *(Future)* Remove `anthropic` library dependency (currently used for API types)
+
+### Phase 1 — Core Archive Structure (3-4 days)
+- [ ] Define multi-source archive folder structure
+- [ ] Implement `ArchiveSource` abstraction
+- [ ] Create manifest schemas for all platforms
+- [ ] Implement `ArchiveWriter` for Markdown generation
+- [ ] Add DST-aware period handling
+
+### Phase 2 — Cost Tracking (2-3 days)
+- [ ] Implement `CostTracker` with per-source attribution
+- [ ] Create versioned pricing table
+- [ ] Add budget hierarchy with priorities
+- [ ] Build cost reporting endpoints
+
+### Phase 3 — API Key Management (2-3 days)
+- [ ] Implement `ApiKeyResolver` with storage backends
+- [ ] Add key validation with OpenRouter API
+- [ ] Create per-server key configuration UI
+- [ ] Add key usage tracking in cost ledger
+- [ ] Implement key rotation support
+- [ ] Add fallback logic (server key → default key)
+
+### Phase 4 — Locking and Concurrency (2 days)
+- [ ] Implement file-based locking
+- [ ] Add lock TTL and expiration
+- [ ] Create atomic write utilities
+- [ ] Document distributed locking options
+
+### Phase 5 — Retrospective Generation (3-4 days)
+- [ ] Implement `RetrospectiveGenerator` service
+- [ ] Add historical message fetching per platform
+- [ ] Create job queue with cost limits
+- [ ] Add progress tracking and pause/resume
+
+### Phase 6 — WhatsApp Import (2-3 days)
+- [ ] Implement `.txt` export parser
+- [ ] Implement reader bot JSON parser
+- [ ] Create import manifest tracking
+- [ ] Add coverage gap detection
+
+### Phase 7 — Backfill Analysis (2-3 days)
+- [ ] Implement `ArchiveScanner` for gap detection
+- [ ] Create `BackfillAnalyzer` with source filtering
+- [ ] Add prompt version comparison with thresholds
+- [ ] Generate backfill reports
+
+### Phase 8 — Retention Management (2 days)
+- [ ] Implement soft delete flow
+- [ ] Add grace period and purge logic
+- [ ] Create backup before delete
+- [ ] Add recovery endpoint
+
+### Phase 9 — Google Drive Sync (2-3 days)
+- [ ] Implement flexible sync configuration
+- [ ] Support multiple drives per installation
+- [ ] Add per-source sync status tracking
+- [ ] Handle conflicts and errors
+
+### Phase 10 — Frontend UI (4-5 days)
+- [ ] Create Archive page with source browser
+- [ ] Build Timeline visualization
+- [ ] Create Cost dashboard
+- [ ] Add Backfill configuration modal
+- [ ] Add WhatsApp import modal
+- [ ] Add API key management UI
+
+### Phase 11 — Testing & Polish (2-3 days)
+- [ ] Unit tests for all archive components
+- [ ] Integration tests for each platform
+- [ ] Cost tracking tests
+- [ ] API key resolution tests
+- [ ] Lock contention tests
+- [ ] Documentation and examples
+
+---
+
+## 17. Future Extensions
+
+| Extension | Description |
+|-----------|-------------|
+| **S3/Azure Blob Sync** | Additional cloud storage providers |
+| **Archive Search** | Full-text search across archived summaries |
+| **Cross-Platform Summaries** | Combined summaries from Discord + Slack for same team |
+| **Budget Alerts** | Email/webhook when approaching budget limits |
+| **Cost Optimization** | Suggest using Haiku for low-activity periods |
+| **Archive Analytics** | Trends, statistics, and insights across archive |
+| **Billing Integration** | Export cost data for invoicing/chargebacks |
+| **Redis/DB Locking** | Distributed locking for multi-worker deployments |
+| **Automatic Identity Linking** | Suggest mappings based on name/email similarity |
+
+---
+
+## 18. Consequences
+
+### Positive
+- **Multi-Platform Support**: Unified archive for Discord, WhatsApp, Slack, Telegram
+- **Flexible Storage**: Share or separate Google Drives as needed
+- **Cost Transparency**: Know exactly what each server/group costs
+- **Historical Coverage**: Communities can document their entire history
+- **Portable Archives**: Human-readable Markdown works everywhere
+- **Smart Backfill**: Intelligent gap detection with actionable reasons
+- **Safe Deletion**: Soft delete with recovery window
+
+### Negative
+- **Storage Requirements**: Full archives can grow large (~75-100KB/day/channel)
+- **API Costs**: Retrospective generation for long periods can be expensive
+- **Complexity**: More configuration options and workflows to learn
+- **Credential Management**: Multiple drives means multiple service accounts
+- **WhatsApp Friction**: Requires manual export/import workflow
+
+### Trade-offs
+- **Flexibility vs. Simplicity**: Per-source configuration adds complexity but enables enterprise use cases
+- **Markdown vs. Database**: Chose Markdown for portability, sacrificing query performance
+- **Cost Granularity**: Per-summary cost tracking adds overhead but enables accurate attribution
+- **File Locking vs. Distributed**: File locking is simple but limits to single-worker; DB locking is future work
+
+---
+
+## 19. References
+
+- [ADR-001: WhatsApp Conversation Reader Bot](./001-whatsapp-conversation-reader-bot.md) — Reader bot for structured export
+- [ADR-002: WhatsApp Data Source Integration](./002-whatsapp-datasource-integration-summarybotng.md) — Multi-source architecture
+- [ADR-004: Grounded Summary References](./004-grounded-summary-references.md) — Citation format
+- [ADR-005: Summary Delivery Destinations](./005-summary-delivery-destinations.md) — Storage model
+- [ISO 8601 Date Format](https://en.wikipedia.org/wiki/ISO_8601) — Date naming standard
+- [Google Drive API](https://developers.google.com/drive/api) — Sync integration
+- [OpenRouter Pricing](https://openrouter.ai/docs/models) — Cost calculation reference
+- [IANA Time Zone Database](https://www.iana.org/time-zones) — Timezone handling

@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-14 — Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-14 — v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix now flags the spec'd-but-unbuilt **retrospective / weekly-from-import** summary flow (ADR-088/089); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -74,6 +74,9 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Set per-workspace summary instructions | ✅ | Settings | |
 | Create / edit / pause / run a schedule | ✅ | Schedules | |
 | Configure a rolling digest (period + merge) | ✅ | Schedules | Append / Hybrid |
+| Weekly digest of an **imported WhatsApp** chat | 🟡 | Schedules | works only if you know to type the chat's channel id on Schedules + pick rolling weekly; nothing on the WhatsApp tab points here, and rolling is forward-only |
+| **Retrospective** summaries of a chat's history (by week) | ⛔ | — | spec'd in v2 (ADR-088/089 retrospective mode, ADR-101); not built — can't carve an imported history into per-week summaries |
+| Unified "create summary" wizard (now / schedule / retrospective) | ⛔ | — | spec'd (ADR-088/089); rewrite has separate paths, no retrospective |
 | Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
 | Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |
 | Enable + configure a tenant plugin | ✅ | Plugins | tenant credentials, once |
