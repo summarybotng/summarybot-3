@@ -185,6 +185,14 @@ pub trait WhatsAppRepository {
         start: i64,
         end: i64,
     ) -> Result<Vec<NormalizedMessage>>;
+    /// All of a workspace's messages in `[start, end]` across every channel,
+    /// oldest first — the workspace/all-channels summary scope (ADR-011).
+    fn list_messages_all(
+        &self,
+        workspace: &WorkspaceId,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<NormalizedMessage>>;
 }
 
 impl WhatsAppRepository for SqliteRepository {
@@ -564,6 +572,65 @@ impl WhatsAppRepository for SqliteRepository {
                 id: MessageId::parse(id).map_err(anyhow::Error::new)?,
                 platform: Platform::parse(&platform).map_err(anyhow::Error::new)?,
                 channel_id: channel.clone(),
+                author_id,
+                author_name,
+                content,
+                timestamp: ts,
+                is_system: sys,
+                reply_to: reply
+                    .map(MessageId::parse)
+                    .transpose()
+                    .map_err(anyhow::Error::new)?,
+                attachments,
+            });
+        }
+        Ok(out)
+    }
+
+    fn list_messages_all(
+        &self,
+        workspace: &WorkspaceId,
+        start: i64,
+        end: i64,
+    ) -> Result<Vec<NormalizedMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, platform, channel_id, author_id, author_name, content, timestamp,
+                    is_system, reply_to, attachment_kind, attachment_name
+             FROM messages
+             WHERE workspace_id = ?1 AND timestamp BETWEEN ?2 AND ?3
+             ORDER BY timestamp",
+        )?;
+        let rows = stmt.query_map(params![workspace.as_str(), start, end], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, platform, channel, author_id, author_name, content, ts, sys, reply, ak, an) =
+                row?;
+            let attachments = ak
+                .map(|k| {
+                    vec![Attachment {
+                        kind: parse_attachment_kind(&k),
+                        filename: an,
+                    }]
+                })
+                .unwrap_or_default();
+            out.push(NormalizedMessage {
+                id: MessageId::parse(id).map_err(anyhow::Error::new)?,
+                platform: Platform::parse(&platform).map_err(anyhow::Error::new)?,
+                channel_id: ChannelId::parse(channel).map_err(anyhow::Error::new)?,
                 author_id,
                 author_name,
                 content,

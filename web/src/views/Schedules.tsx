@@ -15,6 +15,7 @@ export function Schedules() {
   const [minute, setMinute] = useState(0)
   const [tz, setTz] = useState('UTC')
   const [channel, setChannel] = useState('')
+  const [allChannels, setAllChannels] = useState(false)
   const [platform, setPlatform] = useState('')
   const [sourceId, setSourceId] = useState('')
   const [rollingPeriod, setRollingPeriod] = useState('')
@@ -37,7 +38,8 @@ export function Schedules() {
       hour,
       minute,
       timezone: tz,
-      channel: channel.trim() || null,
+      // Scope (ADR-011): all of the workspace's channels, or one specific channel.
+      channel: allChannels ? '*' : channel.trim() || null,
       platform: platform || null,
       source_id: sourceId.trim() || null,
       rolling_period: rollingPeriod || null,
@@ -100,13 +102,22 @@ export function Schedules() {
             placeholder="UTC"
           />
         </div>
-        <div className="mt-2 flex gap-2">
+        <div className="mt-2 flex items-center gap-2">
           <input
-            value={channel}
+            value={allChannels ? '' : channel}
             onChange={(e) => setChannel(e.target.value)}
-            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            placeholder="channel id (optional)"
+            disabled={allChannels}
+            className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
+            placeholder={allChannels ? 'all channels in this workspace' : 'channel id (optional)'}
           />
+          <label className="flex shrink-0 items-center gap-1 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={allChannels}
+              onChange={(e) => setAllChannels(e.target.checked)}
+            />
+            all channels
+          </label>
           <button className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg">
             Create
           </button>
@@ -174,7 +185,11 @@ export function Schedules() {
                   </p>
                   <p className="mt-0.5 text-xs text-slate-400">
                     {s.enabled ? 'enabled' : 'paused'} · next {when(s.next_run)}
-                    {s.channel ? ` · #${s.channel}` : ' · (unscoped)'}
+                    {s.channel === '*'
+                      ? ' · all channels'
+                      : s.channel
+                        ? ` · #${s.channel}`
+                        : ' · (unscoped)'}
                     {s.platform && ` · ↻ ${s.platform}`}
                     {s.rolling_period && ` · 📅 rolling ${s.rolling_period}`}
                   </p>

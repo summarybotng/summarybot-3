@@ -81,7 +81,8 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | View summary detail (key points, action items) | ✅ | Summaries | expandable card |
 | Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
 | Choose delivery destinations *per schedule* | ⛔ | — | delivery is workspace-wide; no per-schedule destination picker (ADR-014) |
-| Schedule scope = category / all-channels | ⛔ | — | a schedule binds a single channel; no category/all-server scope picker (ADR-011) |
+| Schedule scope = all-channels (workspace) | ✅ | Schedules | "all channels" toggle → a workspace-wide digest across every channel (ADR-011) |
+| Schedule scope = Discord category | ⛔ | — | needs live channel resolution from a bound Discord source (ADR-011); all-channels + single-channel shipped |
 | Long-running job progress (e.g. a big retrospective) | ⛔ | — | runs synchronously; no jobs/progress view (ADR-040) |
 | Wiki page provenance / raw-updates tab | ⛔ | — | single synthesized page; no raw-provenance tab (ADR-063) |
 | Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |

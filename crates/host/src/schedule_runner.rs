@@ -24,6 +24,12 @@ use repository::{
     WorkspaceRepository, WorkspaceSettingsRepository,
 };
 
+/// Sentinel channel id meaning "all of the workspace's channels" (ADR-011
+/// workspace scope). A schedule with this scope reads the message store across
+/// every channel rather than one, and its summary is workspace-wide (no single
+/// channel). Chosen as a value no real platform channel id uses.
+pub const ALL_CHANNELS: &str = "*";
+
 /// Runs a scheduled summary end-to-end. Generic over the storage backend and the
 /// LLM client so it's testable with fakes.
 pub struct SummarizingScheduleRunner<'a, R, C: LlmClient> {
@@ -165,17 +171,25 @@ where
         }
 
         let start = now - stored.schedule.lookback_secs;
+        let all = channel.as_str() == ALL_CHANNELS;
 
         // If this schedule has a live source (ADR-128), pull fresh messages into
         // the store before reading the window. Best-effort: missing creds, an
         // uncompiled platform feature, or a network failure logs and falls back to
         // whatever was already stored — a scheduled summary never fails on sync.
-        self.live_sync(stored, &channel, start, now);
+        // (All-channels scope reads the store directly; there's no single channel
+        // to live-sync.)
+        if !all {
+            self.live_sync(stored, &channel, start, now);
+        }
 
-        let messages = self
-            .repo
-            .list_messages(ws, &channel, start, now)
-            .map_err(|e| e.to_string())?;
+        // Scope (ADR-011): a specific channel, or all of the workspace's channels.
+        let messages = if all {
+            self.repo.list_messages_all(ws, start, now)
+        } else {
+            self.repo.list_messages(ws, &channel, start, now)
+        }
+        .map_err(|e| e.to_string())?;
         // Nothing substantial in the window → skip quietly (no empty summaries).
         if !messages.iter().any(|m| m.is_substantial()) {
             return Ok(());
@@ -201,14 +215,15 @@ where
 
         let record = SummaryRecord {
             id: format!("sum_{}_{}", stored.id, now),
-            channel_id: Some(channel),
+            // All-channels scope is workspace-wide, so it has no single channel.
+            channel_id: if all { None } else { Some(channel) },
             model: outcome.model,
             cost_micros: outcome.cost_micros,
             degraded: outcome.degraded,
             created_at: now,
             pinned: false,
             archived: false,
-            tags: vec![],
+            tags: if all { vec!["all-channels".to_string()] } else { vec![] },
             coherence_score: Some(outcome.coherence.score),
             summary: outcome.summary,
         };
@@ -311,11 +326,16 @@ where
         until: i64,
     ) -> Result<Option<SummaryOutcome>, String> {
         let ws = &stored.schedule.workspace_id;
-        self.live_sync(stored, channel, since, until);
-        let messages = self
-            .repo
-            .list_messages(ws, channel, since, until)
-            .map_err(|e| e.to_string())?;
+        let all = channel.as_str() == ALL_CHANNELS;
+        if !all {
+            self.live_sync(stored, channel, since, until);
+        }
+        let messages = if all {
+            self.repo.list_messages_all(ws, since, until)
+        } else {
+            self.repo.list_messages(ws, channel, since, until)
+        }
+        .map_err(|e| e.to_string())?;
         if !messages.iter().any(|m| m.is_substantial()) {
             return Ok(None);
         }
@@ -642,6 +662,53 @@ mod tests {
             next_run,
             consecutive_failures: 0,
         }
+    }
+
+    #[test]
+    fn all_channels_scope_summarizes_across_every_channel() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        // Messages in two different channels within the window.
+        let m2 = |id: &str, ts: i64, content: &str| NormalizedMessage {
+            id: domain::MessageId::parse(id).unwrap(),
+            platform: Platform::WhatsApp,
+            channel_id: ChannelId::parse("c2").unwrap(),
+            author_id: "p2".into(),
+            author_name: "Bob".into(),
+            content: content.into(),
+            timestamp: ts,
+            is_system: false,
+            reply_to: None,
+            attachments: vec![],
+        };
+        repo.save_message(&ws, &msg("m0", 3_500, "we shipped the release in channel one"))
+            .unwrap();
+        repo.save_message(&ws, &m2("m1", 3_550, "and planned the roadmap in channel two"))
+            .unwrap();
+        // A schedule scoped to ALL channels (the "*" sentinel).
+        let schedule = Schedule::build(
+            ws.clone(), "hourly", 0, 0, &[], 1, "UTC", None, 0, true, Some(super::ALL_CHANNELS), 100_000,
+        )
+        .unwrap();
+        repo.create_schedule(&StoredSchedule {
+            id: "sch_all".into(),
+            schedule,
+            next_run: 3_600,
+            consecutive_failures: 0,
+        })
+        .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let runner = SummarizingScheduleRunner::new(&repo, &engine, &l);
+
+        SchedulerService::new(&repo).tick(&runner, 3_600).unwrap();
+        let stored = repo.list_records(&ws, false, 10).unwrap();
+        assert_eq!(stored.len(), 1);
+        // Workspace-wide → no single channel, tagged all-channels.
+        assert!(stored[0].channel_id.is_none());
+        assert!(stored[0].tags.iter().any(|t| t == "all-channels"));
     }
 
     #[test]
