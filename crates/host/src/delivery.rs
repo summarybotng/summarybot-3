@@ -185,8 +185,12 @@ pub fn sink_descriptors() -> Vec<SinkDescriptor> {
     out.push(GDRIVE_DESCRIPTOR);
     #[cfg(feature = "discord")]
     out.push(DISCORD_DESCRIPTOR);
+    #[cfg(feature = "discord")]
+    out.push(DISCORD_DM_DESCRIPTOR);
     #[cfg(feature = "slack")]
     out.push(SLACK_DESCRIPTOR);
+    #[cfg(feature = "slack")]
+    out.push(SLACK_DM_DESCRIPTOR);
     out
 }
 
@@ -205,8 +209,12 @@ pub fn build_deliverers() -> Vec<Box<dyn Deliverer>> {
     out.push(Box::new(GoogleDriveDeliverer::default()));
     #[cfg(feature = "discord")]
     out.push(Box::new(DiscordChannelDeliverer::default()));
+    #[cfg(feature = "discord")]
+    out.push(Box::new(DiscordDmDeliverer::default()));
     #[cfg(feature = "slack")]
     out.push(Box::new(SlackChannelDeliverer::default()));
+    #[cfg(feature = "slack")]
+    out.push(Box::new(SlackDmDeliverer::default()));
     out
 }
 
@@ -216,8 +224,8 @@ pub fn build_deliverers() -> Vec<Box<dyn Deliverer>> {
 /// platform credential key it needs, or `None` for sinks that carry their own.
 fn platform_token_kind(kind: &str) -> Option<&'static str> {
     match kind {
-        "discord" => Some("discord"),
-        "slack" => Some("slack"),
+        "discord" | "discord_dm" => Some("discord"),
+        "slack" | "slack_dm" => Some("slack"),
         _ => None,
     }
 }
@@ -1186,6 +1194,123 @@ impl Deliverer for SlackChannelDeliverer {
     }
 }
 
+// ---- Platform DM send-back sinks (ADR-126 PlatformDm) ----------------------
+
+/// Discord DM config: the recipient user id. The bot opens (or reuses) a DM
+/// channel with that user, then posts. Bot token injected like the channel sink.
+#[cfg(feature = "discord")]
+const DISCORD_DM_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "discord_dm",
+    display_name: "Discord DM",
+    fields: &[FieldSpec {
+        name: "user",
+        label: "User ID (right-click a user → Copy User ID)",
+        secret: false,
+        required: true,
+        hint: FieldHint::Full,
+        scope: FieldScope::Workspace,
+    }],
+};
+
+/// DM each summary to a Discord user (ADR-126 PlatformDm). Opens a DM channel via
+/// `POST /users/@me/channels` then posts to it — the bot must share a server with
+/// the recipient and DMs must be open. Reuses the workspace's bot token.
+#[cfg(feature = "discord")]
+#[derive(Default)]
+pub struct DiscordDmDeliverer {
+    channel: DiscordChannelDeliverer,
+}
+
+#[cfg(feature = "discord")]
+impl Deliverer for DiscordDmDeliverer {
+    fn id(&self) -> &str {
+        "discord_dm"
+    }
+
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+        let user = config
+            .get("user")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .ok_or_else(|| "discord DM destination has no user id".to_string())?;
+        let token = config
+            .get("token")
+            .and_then(Value::as_str)
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| {
+                "no Discord bot token set for this workspace (add it under the Discord source)"
+                    .to_string()
+            })?;
+        // Open (idempotent) a DM channel with the recipient.
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(self.channel.timeout_secs))
+            .build();
+        let dm: Value = match agent
+            .post("https://discord.com/api/v10/users/@me/channels")
+            .set("Authorization", &format!("Bot {token}"))
+            .send_json(serde_json::json!({ "recipient_id": user }))
+        {
+            Ok(r) => r.into_json().map_err(|e| format!("discord bad response: {e}"))?,
+            Err(ureq::Error::Status(code, _)) => return Err(format!("discord (open DM) http {code}")),
+            Err(ureq::Error::Transport(t)) => return Err(format!("discord transport error: {t}")),
+        };
+        let channel = dm
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "discord did not return a DM channel id".to_string())?;
+        // Reuse the channel sink to post (same content rules) — config carries the
+        // resolved channel id + the token.
+        let post_cfg = serde_json::json!({ "channel": channel, "token": token });
+        self.channel.deliver(&post_cfg, summary)
+    }
+}
+
+/// Slack DM config: the recipient user id. `chat.postMessage` to a user id opens
+/// the IM automatically — same call as the channel sink, just a user target.
+#[cfg(feature = "slack")]
+const SLACK_DM_DESCRIPTOR: SinkDescriptor = SinkDescriptor {
+    id: "slack_dm",
+    display_name: "Slack DM",
+    fields: &[FieldSpec {
+        name: "user",
+        label: "User ID (e.g. U0123ABCD)",
+        secret: false,
+        required: true,
+        hint: FieldHint::Full,
+        scope: FieldScope::Workspace,
+    }],
+};
+
+/// DM each summary to a Slack user (ADR-126 PlatformDm). Posting to a user id via
+/// `chat.postMessage` opens the IM; reuses the channel sink with the user as the
+/// target.
+#[cfg(feature = "slack")]
+#[derive(Default)]
+pub struct SlackDmDeliverer {
+    channel: SlackChannelDeliverer,
+}
+
+#[cfg(feature = "slack")]
+impl Deliverer for SlackDmDeliverer {
+    fn id(&self) -> &str {
+        "slack_dm"
+    }
+
+    fn deliver(&self, config: &Value, summary: &RenderedSummary) -> Result<(), String> {
+        let user = config
+            .get("user")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+            .ok_or_else(|| "slack DM destination has no user id".to_string())?;
+        let token = config.get("token").cloned().unwrap_or(Value::Null);
+        // Slack opens the IM when chat.postMessage targets a user id.
+        let post_cfg = serde_json::json!({ "channel": user, "token": token });
+        self.channel.deliver(&post_cfg, summary)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1267,6 +1392,25 @@ mod tests {
             not_connected.contains("connect") || not_connected.contains("api_token"),
             "expected a 'not connected' hint, got: {not_connected}"
         );
+    }
+
+    #[cfg(all(feature = "discord", feature = "slack"))]
+    #[test]
+    fn dm_sinks_are_registered_and_guard_their_config() {
+        // ADR-126 PlatformDm: discord_dm + slack_dm are compiled sinks.
+        let ids: Vec<&str> = sink_descriptors().iter().map(|d| d.id).collect();
+        assert!(ids.contains(&"discord_dm"));
+        assert!(ids.contains(&"slack_dm"));
+        let kinds: Vec<String> = build_deliverers().iter().map(|d| d.id().to_string()).collect();
+        assert!(kinds.iter().any(|k| k == "discord_dm"));
+        assert!(kinds.iter().any(|k| k == "slack_dm"));
+
+        // No user id → a clear error before any network call.
+        let r = RenderedSummary::new(&record().summary);
+        let dd = DiscordDmDeliverer::default();
+        assert!(dd.deliver(&serde_json::json!({ "token": "t" }), &r).unwrap_err().contains("user"));
+        let sd = SlackDmDeliverer::default();
+        assert!(sd.deliver(&serde_json::json!({ "token": "t" }), &r).unwrap_err().contains("user"));
     }
 
     #[test]
