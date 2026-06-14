@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { Markdown } from '../components/Markdown'
-import type { CurationReport, KnowledgeHit, WikiPage } from '../types'
+import type { CurationReport, KnowledgeHit, KnowledgeUnit, WikiPage } from '../types'
 
 // Knowledge subsystem (ADR-127). Two parts: a synthesized **Knowledge Base**
 // page (WIK-001..003 — the workspace's units organized by topic, regenerable on
@@ -17,6 +17,8 @@ export function Knowledge() {
   const [synthError, setSynthError] = useState<string | null>(null)
   const [report, setReport] = useState<CurationReport | null>(null)
   const [curateBusy, setCurateBusy] = useState(false)
+  const [units, setUnits] = useState<KnowledgeUnit[] | null>(null)
+  const [unitsBusy, setUnitsBusy] = useState(false)
 
   useEffect(() => {
     if (!client) return
@@ -61,6 +63,18 @@ export function Knowledge() {
       setReport(null)
     } finally {
       setCurateBusy(false)
+    }
+  }
+
+  async function loadUnits() {
+    if (!client) return
+    setUnitsBusy(true)
+    try {
+      setUnits(await client.listUnits())
+    } catch {
+      setUnits([])
+    } finally {
+      setUnitsBusy(false)
     }
   }
 
@@ -144,6 +158,45 @@ export function Knowledge() {
             )}
             {report.duplicate_clusters.length === 0 && report.stale.length === 0 && (
               <p className="mt-2 text-emerald-700">No duplicates or stale units — the knowledge base is healthy.</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Raw knowledge units with provenance (ADR-063) */}
+      <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-slate-800">Knowledge units (raw)</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              The individual facts behind the synthesized page, each with the source messages it
+              was grounded in.
+            </p>
+          </div>
+          <button
+            onClick={loadUnits}
+            disabled={unitsBusy}
+            className="shrink-0 rounded-lg border border-accent px-4 py-2 text-sm font-medium text-accent disabled:opacity-50"
+          >
+            {unitsBusy ? 'Loading…' : units ? 'Refresh' : 'Show units'}
+          </button>
+        </div>
+        {units && (
+          <div className="mt-4 border-t border-slate-100 pt-3">
+            {units.length === 0 ? (
+              <p className="text-sm text-slate-400">No knowledge units yet — summarize first.</p>
+            ) : (
+              <ul className="space-y-1.5">
+                {units.map((u) => (
+                  <li key={u.id} className="text-sm">
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">{u.kind}</span>{' '}
+                    <span className="text-slate-800">{u.text}</span>
+                    <span className="ml-1 text-xs text-slate-400">
+                      · {u.source_ids.length} source{u.source_ids.length === 1 ? '' : 's'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         )}

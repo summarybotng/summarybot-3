@@ -200,6 +200,16 @@ export interface WikiPage {
   updated_at: number
 }
 
+/** A raw knowledge unit with its source provenance (ADR-063). */
+export interface KnowledgeUnit {
+  id: string
+  kind: string
+  text: string
+  summary_id: string
+  source_ids: string[]
+  created_at: number
+}
+
 /** A near-identical group from the AI wiki curator (CUR-*). */
 export interface DuplicateCluster {
   canonical_id: string

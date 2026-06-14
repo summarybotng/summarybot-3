@@ -382,6 +382,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/workspaces/:ws/spend", get(summaries::spend))
         .route("/workspaces/:ws/wiki/search", get(knowledge::search))
         .route("/workspaces/:ws/wiki/pages", get(knowledge::list_pages))
+        .route("/workspaces/:ws/wiki/units", get(knowledge::list_units))
         .route(
             "/workspaces/:ws/wiki/synthesize",
             post(knowledge::synthesize),
@@ -630,6 +631,7 @@ async fn openapi() -> Json<serde_json::Value> {
             },
             "/workspaces/{ws}/wiki/search": { "get": { "summary": "Semantic search over knowledge units — ?q,k (KNO-005, ADR-127)" } },
             "/workspaces/{ws}/wiki/pages": { "get": { "summary": "List synthesized wiki pages (WIK-003)" } },
+            "/workspaces/{ws}/wiki/units": { "get": { "summary": "Raw knowledge units with source provenance — ?k (ADR-063)" } },
             "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
             "/workspaces/{ws}/wiki/curate": { "post": { "summary": "AI wiki curator: advisory health report — duplicate clusters + stale units — ?stale_days (CUR-*)" } },
             "/workspaces/{ws}/connections/{platform}": { "get": { "summary": "Live source status — token_set + supported (discord|slack, ADR-128)" } },
@@ -774,6 +776,43 @@ mod tests {
                 citations: vec![],
             },
         }
+    }
+
+    #[tokio::test]
+    async fn wiki_units_lists_raw_units_with_provenance() {
+        use repository::{KnowledgeRepository, StoredKnowledgeUnit};
+        let (state, token) = seeded_state();
+        {
+            let repo = state.repo.lock().unwrap();
+            repo.save_units(
+                &domain::WorkspaceId::parse("ws-1").unwrap(),
+                &[StoredKnowledgeUnit {
+                    id: "u1".into(),
+                    summary_id: "s1".into(),
+                    kind: "key_point".into(),
+                    text: "we shipped".into(),
+                    source_ids: vec!["m1".into(), "m2".into()],
+                    embedding: None,
+                    model: None,
+                    created_at: 5,
+                }],
+            )
+            .unwrap();
+        }
+        let resp = build_router(state)
+            .oneshot(
+                Request::get("/workspaces/ws-1/wiki/units")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j.as_array().unwrap().len(), 1);
+        assert_eq!(j[0]["kind"], "key_point");
+        assert_eq!(j[0]["source_ids"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

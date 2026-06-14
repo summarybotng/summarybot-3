@@ -19,6 +19,7 @@ import type {
   CoverageGap,
   ImportInvitation,
   WikiPage,
+  KnowledgeUnit,
   CurationReport,
   ConnectionStatus,
   SourceSync,
@@ -352,6 +353,11 @@ export class Client {
   /** (Re)generate the knowledge-base page from this workspace's units. */
   synthesizeWiki(): Promise<WikiPage> {
     return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
+  }
+
+  /** Raw knowledge units with provenance (ADR-063 raw-updates view). */
+  listUnits(k = 200): Promise<KnowledgeUnit[]> {
+    return this.json<KnowledgeUnit[]>(`/workspaces/${this.ws()}/wiki/units?k=${k}`)
   }
 
   /** AI wiki curator: advisory health report — duplicate clusters + stale units. */

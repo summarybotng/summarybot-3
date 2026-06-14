@@ -84,7 +84,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Schedule scope = all-channels (workspace) | ✅ | Schedules | "all channels" toggle → a workspace-wide digest across every channel (ADR-011) |
 | Schedule scope = Discord category | ⛔ | — | needs live channel resolution from a bound Discord source (ADR-011); all-channels + single-channel shipped |
 | Long-running job progress (e.g. a big retrospective) | ⛔ | — | runs synchronously; no jobs/progress view (ADR-040) |
-| Wiki page provenance / raw-updates tab | ⛔ | — | single synthesized page; no raw-provenance tab (ADR-063) |
+| Wiki raw units + provenance | ✅ | Knowledge | "Knowledge units (raw)" lists every fact with its source-message count (ADR-063) |
 | Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |
 | Enable + configure a tenant plugin | ✅ | Plugins | tenant credentials, once |
 | Connect Google Drive (OAuth) | 🟡 | Plugins | Connect button present; needs server `GOOGLE_CLIENT_ID/SECRET` |

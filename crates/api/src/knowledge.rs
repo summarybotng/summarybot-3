@@ -63,6 +63,53 @@ pub async fn search(
     ))
 }
 
+/// A raw knowledge unit with its provenance (ADR-063 raw-updates view).
+#[derive(Serialize)]
+pub struct UnitDto {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub summary_id: String,
+    /// Source message ids that ground this fact (COH-005); merged across re-statements.
+    pub source_ids: Vec<String>,
+    pub created_at: i64,
+}
+
+/// `GET /workspaces/:ws/wiki/units?limit=N` — the raw knowledge units behind the
+/// synthesized page, newest first, each with its source-message provenance
+/// (ADR-063 "raw updates" tab). Read-only.
+pub async fn list_units(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<Vec<UnitDto>>, ApiError> {
+    use repository::KnowledgeRepository;
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let limit = q.k.unwrap_or(200).min(500);
+    let repo = state.repo.lock().expect("repo mutex");
+    let mut units = repo
+        .list_units(&workspace)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    units.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+    units.truncate(limit);
+    Ok(Json(
+        units
+            .into_iter()
+            .map(|u| UnitDto {
+                id: u.id,
+                kind: u.kind,
+                text: u.text,
+                summary_id: u.summary_id,
+                source_ids: u.source_ids,
+                created_at: u.created_at,
+            })
+            .collect(),
+    ))
+}
+
 /// JSON shape of a synthesized wiki page (WIK-001..003).
 #[derive(Serialize)]
 pub struct WikiPageDto {
