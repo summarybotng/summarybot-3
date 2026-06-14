@@ -436,6 +436,10 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/whatsapp/chats/:chat/coverage",
             get(whatsapp::chat_coverage),
         )
+        .route(
+            "/workspaces/:ws/whatsapp/chats/:chat/summarize-weeks",
+            post(whatsapp::summarize_weeks),
+        )
         // Scoped import invitations: persisted, auto-fulfilled asks (WHA-019).
         .route(
             "/workspaces/:ws/whatsapp/chats/:chat/invitations",
@@ -641,6 +645,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/whatsapp/imports": { "post": { "summary": "Ingest a WhatsApp export (.zip or _chat.txt) — ?chat,tz,date_order (WHA-001)" } },
             "/workspaces/{ws}/whatsapp/chats": { "get": { "summary": "Per-chat WhatsApp coverage overview — import/message counts + classified gaps (WHA-017, ADR-121)" } },
             "/workspaces/{ws}/whatsapp/chats/{chat}/coverage": { "get": { "summary": "One chat's merged coverage: covered span + gaps + contributors + scoped invitations (WHA-016/018/019)" } },
+            "/workspaces/{ws}/whatsapp/chats/{chat}/summarize-weeks": { "post": { "summary": "Retrospective: one summary per week across the imported chat's history (ADR-088/089/101)" } },
             "/workspaces/{ws}/whatsapp/chats/{chat}/invitations": { "post": { "summary": "Open a scoped import invitation for a date range — {range_start,range_end,kind,note?} (WHA-019)" } },
             "/workspaces/{ws}/whatsapp/chats/{chat}/invitations/{id}/cancel": { "post": { "summary": "Withdraw a standing import invitation (WHA-019)" } },
             "/workspaces/{ws}/summaries/{id}/pin": { "post": { "summary": "Pin" } },
@@ -1802,6 +1807,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn whatsapp_summarize_weeks_produces_one_per_nonempty_week() {
+        use domain::{ChannelId, MessageId, NormalizedMessage, Platform};
+        use repository::{ImportRecord, WhatsAppRepository};
+        let (state, token) = seeded_state(); // token grants ws-1
+        let ws = domain::WorkspaceId::parse("ws-1").unwrap();
+        let chat = ChannelId::parse("family").unwrap();
+        const WEEK: i64 = 604_800;
+        // Anchor the history a few weeks before "now" so the buckets are in range.
+        let base = crate::auth::now_secs() - 4 * WEEK;
+        {
+            let repo = state.repo.lock().unwrap();
+            // An import record gives coverage_for its earliest/latest span.
+            repo.record_import(&ImportRecord {
+                id: "imp1",
+                workspace_id: &ws,
+                chat_id: &chat,
+                file_hash: "h1",
+                uploader: &domain::UserId::parse("u1").unwrap(),
+                imported_at: base,
+                format: "ios",
+                message_count: 3,
+                date_start: base,
+                date_end: base + 3 * WEEK,
+                group_created_at: None,
+            })
+            .unwrap();
+            // Substantial messages in week 0 and week 2; week 1 left empty.
+            let msg = |id: &str, ts: i64| NormalizedMessage {
+                id: MessageId::parse(id).unwrap(),
+                platform: Platform::WhatsApp,
+                channel_id: chat.clone(),
+                author_id: "p1".into(),
+                author_name: "Alice".into(),
+                content: "we shipped the release and planned next steps in detail".into(),
+                timestamp: ts,
+                is_system: false,
+                reply_to: None,
+                attachments: vec![],
+            };
+            repo.save_message(&ws, &msg("m0", base + 100)).unwrap();
+            repo.save_message(&ws, &msg("m1", base + 2 * WEEK + 100)).unwrap();
+        }
+        let resp = build_router(state)
+            .oneshot(
+                Request::post("/workspaces/ws-1/whatsapp/chats/family/summarize-weeks")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j["produced"], 2, "one summary per non-empty week");
+        assert!(j["weeks_empty"].as_i64().unwrap() >= 1, "the empty week was skipped");
+        assert_eq!(j["summary_ids"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

@@ -61,6 +61,10 @@ roadmap are listed at the end so the boundary is explicit.
   fields).
 - **Manual trigger + run history** — fire a schedule on demand; every fire / skip
   / failure is recorded.
+- **Retrospective weekly summaries** — "Summarize by week" walks an imported
+  chat's full history and produces one summary per week that has messages
+  (skipping empty weeks), each dated to the week it covers — the way to get weekly
+  digests out of a historical WhatsApp export.
 
 ## Delivery
 

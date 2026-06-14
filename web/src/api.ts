@@ -15,6 +15,7 @@ import type {
   WhatsappImport,
   ChatCoverage,
   Coverage,
+  RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
   WikiPage,
@@ -274,6 +275,14 @@ export class Client {
       method: 'POST',
       body: file,
     })
+  }
+
+  /** Retrospective: one summary per week across an imported chat's history. */
+  summarizeWeeks(chat: string): Promise<RetrospectiveResult> {
+    return this.json<RetrospectiveResult>(
+      `/workspaces/${this.ws()}/whatsapp/chats/${encodeURIComponent(chat)}/summarize-weeks`,
+      this.body('POST', {}),
+    )
   }
 
   /** Per-chat WhatsApp coverage overview — counts + classified gaps (WHA-017). */

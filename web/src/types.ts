@@ -123,6 +123,14 @@ export interface CoverageGap {
   can_fill: boolean
 }
 
+/** Outcome of a retrospective by-week summarize run. */
+export interface RetrospectiveResult {
+  produced: number
+  weeks_empty: number
+  summary_ids: string[]
+  truncated: boolean
+}
+
 /** One member's contribution to a chat (WHA-018). */
 export interface Contribution {
   uploader: string

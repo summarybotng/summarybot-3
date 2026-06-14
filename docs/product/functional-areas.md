@@ -89,6 +89,10 @@ Runs summarization on a cadence and accumulates rolling periods.
   with the one-active-period-per-schedule invariant; catch-up across missed days;
   idempotent finalize. Merge strategies: Append and Hybrid/Resummarize. *(ADR-101/130)*
 - **Live fetch on run** — optionally pull fresh source messages before each run.
+- **Retrospective (past dates)** — summarize a chat's *history* by week
+  (`POST .../whatsapp/chats/:chat/summarize-weeks`), one digest per non-empty week
+  over the imported range — the "Past dates" mode of the v2 create-summary wizard
+  (ADR-088/089), applied per week (ADR-101) and skipping empty weeks (ADR-048).
 
 Boundary: the runner composes ingestion + summarization + delivery; it owns no
 new policy beyond the rolling state machine (which lives in `domain`).

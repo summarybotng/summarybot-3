@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-14 — v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix now flags the spec'd-but-unbuilt **retrospective / weekly-from-import** summary flow (ADR-088/089); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-14 — **retrospective weekly summaries** of an imported chat ("Summarize by week", ADR-088/089/101); v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix audited against the ADRs (per-schedule destinations, schedule scope, jobs/progress, create-summary wizard called out); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -74,10 +74,16 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Set per-workspace summary instructions | ✅ | Settings | |
 | Create / edit / pause / run a schedule | ✅ | Schedules | |
 | Configure a rolling digest (period + merge) | ✅ | Schedules | Append / Hybrid |
-| Weekly digest of an **imported WhatsApp** chat | 🟡 | Schedules | works only if you know to type the chat's channel id on Schedules + pick rolling weekly; nothing on the WhatsApp tab points here, and rolling is forward-only |
-| **Retrospective** summaries of a chat's history (by week) | ⛔ | — | spec'd in v2 (ADR-088/089 retrospective mode, ADR-101); not built — can't carve an imported history into per-week summaries |
-| Unified "create summary" wizard (now / schedule / retrospective) | ⛔ | — | spec'd (ADR-088/089); rewrite has separate paths, no retrospective |
+| **Retrospective** weekly summaries of an imported chat | ✅ | WhatsApp | "Summarize by week" on the coverage card → one summary per non-empty week of history (ADR-088/089 retrospective, ADR-101/048) |
+| Forward weekly *rolling* digest of an imported chat | 🟡 | Schedules | works if you type the chat's channel id + pick rolling weekly; no link from the WhatsApp tab, and rolling is forward-only (re-import to add weeks) |
+| Generate-now with a time-range picker (4/8/24/48h) | 🟡 | Source / WhatsApp | a lookback-days field (Source) / fixed window (WhatsApp); no quick presets (ADR-089 Now) |
+| Unified "create summary" wizard (now / schedule / retrospective) | 🟡 | — | the three paths exist but as separate controls across tabs, not one wizard (ADR-088/089) |
+| View summary detail (key points, action items) | ✅ | Summaries | expandable card |
 | Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
+| Choose delivery destinations *per schedule* | ⛔ | — | delivery is workspace-wide; no per-schedule destination picker (ADR-014) |
+| Schedule scope = category / all-channels | ⛔ | — | a schedule binds a single channel; no category/all-server scope picker (ADR-011) |
+| Long-running job progress (e.g. a big retrospective) | ⛔ | — | runs synchronously; no jobs/progress view (ADR-040) |
+| Wiki page provenance / raw-updates tab | ⛔ | — | single synthesized page; no raw-provenance tab (ADR-063) |
 | Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |
 | Enable + configure a tenant plugin | ✅ | Plugins | tenant credentials, once |
 | Connect Google Drive (OAuth) | 🟡 | Plugins | Connect button present; needs server `GOOGLE_CLIENT_ID/SECRET` |
@@ -91,10 +97,18 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Audit log | ✅ | Audit | Admin+ |
 | Deploy / metrics / structured logs | ➖ | (ops) | Docker/compose/Fly; `/metrics`, JSON access logs |
 
-**Reading the gaps:** the remaining 🟡 rows are today's reachability debt — OAuth
-and Drive connect need server config; tenant provisioning and workspace discovery
-still lean on typed ids. A 🔌 row (none open right now) is the highest-signal
-warning: shipped backend with no way in.
+**Reading the gaps (audited against the v2 ADRs):** the 🟡 rows are reachability
+debt that works but is rough — OAuth/Drive connect need server config; tenant
+provisioning, workspace discovery, and the forward weekly rolling digest still
+lean on typed ids; "generate now" lacks the quick time presets; the three
+create-summary paths aren't unified into one wizard. The ⛔ rows are v2-spec'd
+flows the rewrite hasn't built: **per-schedule destinations** (ADR-014),
+**category/all-channel schedule scope** (ADR-011), a **jobs/progress** view for
+long runs (ADR-040), per-destination rolling delivery (ADR-108), the curator
+*apply* step, and the wiki raw-provenance tab (ADR-063). None are 🔌 (shipped
+backend, no UI) right now — the Discord browse case that prompted this matrix is
+closed. These ⛔/🟡 rows are the live UX backlog; close them against the spec, not
+by guessing.
 
 ---
 

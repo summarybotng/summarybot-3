@@ -63,6 +63,12 @@ Updates stream live (SSE), so new summaries appear without refreshing.
    timeline, coverage %, and per-gap **Contributors**. For each fillable gap you
    can **Copy ask** (a ready-to-send message) or **Request export** (a tracked
    invitation that auto-resolves when a covering import arrives).
+4. **Weekly digests of the history:** click **Summarize by week** on the chat's
+   coverage card. It walks the imported history and produces one summary per week
+   that has messages (empty weeks are skipped), each dated to the week it covers —
+   they appear on the **Summaries** tab. (For an *ongoing* weekly digest of a chat
+   you keep re-importing, set up a rolling weekly schedule on the Schedules tab
+   scoped to the chat's channel id.)
 
 ## 5. Connecting Discord / Slack
 

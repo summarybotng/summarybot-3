@@ -278,6 +278,159 @@ pub async fn chat_coverage(
     Ok(Json(dto))
 }
 
+/// Outcome of a retrospective by-week run (WHA / ADR-088/089 Retrospective).
+#[derive(Serialize)]
+pub struct RetrospectiveDto {
+    /// Weekly summaries produced (weeks with substantial content).
+    pub produced: usize,
+    /// Weeks in range that had no substantial messages (skipped, ADR-048).
+    pub weeks_empty: usize,
+    /// The produced summary ids (also visible on the Summaries tab).
+    pub summary_ids: Vec<String>,
+    /// True if the history exceeded the per-run week cap and only the most recent
+    /// weeks were summarized (no silent truncation — surfaced to the caller).
+    pub truncated: bool,
+}
+
+/// `POST /workspaces/:ws/whatsapp/chats/:chat/summarize-weeks` — retrospective
+/// weekly summaries of an imported chat (ADR-088/089 "Past dates" applied per
+/// week; ADR-101 weekly period; ADR-048 skip-empty). Walks the chat's covered
+/// range in 7-day buckets, summarizing each week that has substantial messages
+/// through the same per-tenant LLM + budget + delivery + knowledge pipeline as an
+/// on-demand summary. Each weekly summary is stored (tagged `retrospective-weekly`)
+/// dated to the week it covers, so they sort chronologically in the dashboard.
+pub async fn summarize_weeks(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, chat)): Path<(String, String)>,
+) -> Result<Json<RetrospectiveDto>, ApiError> {
+    use domain::summarize::SummaryLength;
+    use host::llm::{LlmProvider, RequestPriority, ResilientLlm};
+    use host::{SummarizationService, SummarizeRequest};
+    use repository::{SummaryRecord, WhatsAppRepository, WorkspaceSettingsRepository};
+
+    /// Seconds in a week, and a per-run cap so a multi-year import can't run away.
+    const WEEK: i64 = 604_800;
+    const MAX_WEEKS: usize = 53;
+
+    user.require_workspace(&ws)?;
+    let workspace = WorkspaceId::parse(&ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let channel = ChannelId::parse(&chat).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+
+    // The chat's covered span defines the range to walk (the import records'
+    // earliest start → latest end).
+    let (start, end) = {
+        let repo = state.repo.lock().expect("repo mutex");
+        let report = host::coverage_for(&*repo, &workspace, &channel, now).map_err(internal)?;
+        match (report.earliest, report.latest) {
+            (Some(s), Some(e)) => (s, e),
+            _ => return Err(ApiError::bad_request("no messages imported for this chat yet")),
+        }
+    };
+
+    // Resolve the per-tenant LLM + workspace instructions once; the engine is
+    // reused across weeks (the shared rate limiter still applies).
+    let (resolution, instructions) = {
+        let repo = state.repo.lock().expect("repo mutex");
+        let r = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
+        let instructions = repo
+            .get_settings(&workspace)
+            .map_err(internal)?
+            .summary_instructions;
+        (r, instructions)
+    };
+    let ladder = state.ladder_for(&resolution.model);
+    let engine = ResilientLlm::new(
+        state.client_for_base(resolution.base_url.clone(), resolution.api_key.clone()),
+        state.limiter.clone(),
+    );
+
+    // 7-day buckets across the range; cap to the most recent MAX_WEEKS.
+    let mut buckets: Vec<(i64, i64)> = Vec::new();
+    let mut s = start;
+    while s <= end {
+        buckets.push((s, (s + WEEK - 1).min(now)));
+        s += WEEK;
+    }
+    let truncated = buckets.len() > MAX_WEEKS;
+    if truncated {
+        buckets = buckets.split_off(buckets.len() - MAX_WEEKS);
+    }
+
+    let deliverers = state.deliverers();
+    let mut summary_ids = Vec::new();
+    let mut weeks_empty = 0usize;
+    for (wk_start, wk_end) in buckets {
+        // Re-gate the budget each week so a long run stops cleanly when exhausted
+        // (rather than failing the whole request or overspending silently).
+        let charge = {
+            let repo = state.repo.lock().expect("repo mutex");
+            match crate::budget_gate(&repo, &resolution, now) {
+                Ok(c) => c,
+                Err(_) => break,
+            }
+        };
+        let messages = {
+            let repo = state.repo.lock().expect("repo mutex");
+            repo.list_messages(&workspace, &channel, wk_start, wk_end)
+                .map_err(internal)?
+        };
+        if !messages.iter().any(|m| m.is_substantial()) {
+            weeks_empty += 1;
+            continue;
+        }
+        let outcome = SummarizationService::new(&engine, &ladder)
+            .summarize(&SummarizeRequest {
+                messages: &messages,
+                length: SummaryLength::Detailed,
+                provider: LlmProvider::OpenRouter,
+                priority: RequestPriority::Low,
+                cap_micros: i64::MAX,
+                instructions: instructions.as_deref(),
+            })
+            .map_err(|e| ApiError::bad_request(format!("{e:?}")))?;
+        let record = SummaryRecord {
+            id: format!("sum_retro_{}_{}", channel.as_str(), wk_start),
+            channel_id: Some(channel.clone()),
+            model: outcome.model,
+            cost_micros: outcome.cost_micros,
+            degraded: outcome.degraded,
+            // Date the summary to the week it covers (clamped to now), so the
+            // dashboard orders the retrospective digests chronologically.
+            created_at: wk_end.min(now),
+            pinned: false,
+            archived: false,
+            tags: vec!["retrospective-weekly".to_string()],
+            coherence_score: Some(outcome.coherence.score),
+            summary: outcome.summary,
+        };
+        {
+            let repo = state.repo.lock().expect("repo mutex");
+            let (destinations, caps) =
+                host::load_workspace_delivery(&*repo, &workspace, state.master_key())
+                    .map_err(internal)?;
+            host::DeliveryService::new(&*repo)
+                .with_deliverers(&deliverers)
+                .deliver(&workspace, &record, &destinations, &caps)
+                .map_err(internal)?;
+            if let Some((tenant, window)) = &charge {
+                crate::budget_charge(&repo, tenant, *window, record.cost_micros)?;
+            }
+            crate::knowledge::ingest_summary(&state, &repo, &workspace, &record.summary, &record.id, now);
+        }
+        state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
+        summary_ids.push(record.id);
+    }
+
+    Ok(Json(RetrospectiveDto {
+        produced: summary_ids.len(),
+        weeks_empty,
+        summary_ids,
+        truncated,
+    }))
+}
+
 /// Body for opening a scoped import invitation (WHA-019).
 #[derive(Deserialize)]
 pub struct NewInvitationBody {

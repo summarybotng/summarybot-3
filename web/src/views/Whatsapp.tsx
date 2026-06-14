@@ -266,6 +266,30 @@ function ChatCoverageCard({
   const coveragePct = Math.round((cov.covered_secs / span) * 100)
   const fillable = cov.gaps.filter((g) => g.can_fill)
   const openInvites = cov.invitations.filter((i) => i.status === 'open')
+  const [weekBusy, setWeekBusy] = useState(false)
+  const [weekNote, setWeekNote] = useState<string | null>(null)
+
+  // Retrospective: one summary per week across this chat's imported history.
+  async function summarizeByWeek() {
+    if (!client) return
+    setWeekBusy(true)
+    setWeekNote(null)
+    try {
+      const r = await client.summarizeWeeks(chat.chat_id)
+      setWeekNote(
+        r.produced === 0
+          ? 'No weeks had enough messages to summarize.'
+          : `Produced ${r.produced} weekly ${r.produced === 1 ? 'summary' : 'summaries'}` +
+              (r.weeks_empty ? ` (${r.weeks_empty} empty week${r.weeks_empty === 1 ? '' : 's'} skipped)` : '') +
+              (r.truncated ? ' · only the most recent year was covered' : '') +
+              ' — see the Summaries tab.',
+      )
+    } catch {
+      setWeekNote('Could not summarize by week.')
+    } finally {
+      setWeekBusy(false)
+    }
+  }
 
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -276,6 +300,19 @@ function ChatCoverageCard({
           {chat.message_count.toLocaleString()} messages
         </span>
       </div>
+
+      {/* Retrospective weekly digests over the imported history (ADR-088/089). */}
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={() => void summarizeByWeek()}
+          disabled={weekBusy}
+          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:opacity-50"
+        >
+          {weekBusy ? 'Summarizing weeks…' : 'Summarize by week'}
+        </button>
+        <span className="text-xs text-slate-400">one summary per week of history</span>
+      </div>
+      {weekNote && <p className="mt-2 text-xs text-slate-600">{weekNote}</p>}
 
       {/* Covered (green) timeline with red gap overlays. */}
       <div className="relative mt-3 h-4 w-full overflow-hidden rounded bg-emerald-400/70">
