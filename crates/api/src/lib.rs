@@ -498,7 +498,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Tenancy: provisioning (TEN-001), host→tenant resolution (TEN-006),
         // members + invites.
-        .route("/tenants", post(tenancy::provision_tenant))
+        .route(
+            "/tenants",
+            post(tenancy::provision_tenant).get(tenancy::list_my_tenants),
+        )
         .route("/tenants/:tenant", put(tenancy::update_tenant))
         .route(
             "/tenants/:tenant/llm-config",
@@ -671,7 +674,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/schedules/{id}/resume": { "post": { "summary": "Resume" } },
             "/workspaces/{ws}/schedules/{id}/run": { "post": { "summary": "Trigger immediately (SCM-007)" } },
             "/workspaces/{ws}/schedules/{id}/runs": { "get": { "summary": "Execution history (SCM-005)" } },
-            "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" } },
+            "/tenants": { "post": { "summary": "Provision a tenant; caller becomes Owner (TEN-001)" }, "get": { "summary": "List the caller's tenants with their role (TEN-001)" } },
             "/tenants/{tenant}": { "put": { "summary": "Update tenant settings (TEN-001/TEN-002)" } },
             "/tenants/{tenant}/llm-config": {
                 "get": { "summary": "Get the tenant's LLM override (ADR-125)" },

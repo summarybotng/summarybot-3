@@ -30,6 +30,10 @@ pub trait MembershipRepository {
     fn get_membership(&self, tenant: &TenantId, user: &UserId) -> Result<Option<Membership>>;
     /// All members of a tenant, ordered by user id for determinism.
     fn list_members(&self, tenant: &TenantId) -> Result<Vec<Membership>>;
+    /// All tenants `user` belongs to, paired with each tenant's display name,
+    /// ordered by name. Lets a user *discover* their tenants instead of having
+    /// to type a tenant id (TEN-001 self-serve).
+    fn list_tenants_for_user(&self, user: &UserId) -> Result<Vec<(Membership, String)>>;
     /// Remove a membership. Returns whether a row was removed.
     fn remove_membership(&self, tenant: &TenantId, user: &UserId) -> Result<bool>;
 
@@ -131,6 +135,34 @@ impl MembershipRepository for SqliteRepository {
                 tenant.clone(),
                 UserId::parse(user_raw).map_err(anyhow::Error::new)?,
                 role_from_row(&role_raw)?,
+            ));
+        }
+        Ok(out)
+    }
+
+    fn list_tenants_for_user(&self, user: &UserId) -> Result<Vec<(Membership, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.tenant_id, m.role, t.name
+             FROM memberships m JOIN tenants t ON t.id = m.tenant_id
+             WHERE m.user_id = ?1 ORDER BY t.name, m.tenant_id",
+        )?;
+        let rows = stmt.query_map(params![user.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (tenant_raw, role_raw, name) = row?;
+            out.push((
+                Membership::new(
+                    TenantId::parse(tenant_raw).map_err(anyhow::Error::new)?,
+                    user.clone(),
+                    role_from_row(&role_raw)?,
+                ),
+                name,
             ));
         }
         Ok(out)
@@ -290,6 +322,36 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(repo.list_members(&tenant("t2")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_tenants_for_user_returns_named_memberships() {
+        use crate::WorkspaceRepository;
+        let repo = repo();
+        // Two tenants the user belongs to, plus one they don't.
+        for (id, name) in [("t-b", "Beta"), ("t-a", "Alpha"), ("t-c", "Gamma")] {
+            repo.create_tenant(&domain::Tenant {
+                id: tenant(id),
+                name: name.into(),
+                subdomain: None,
+                custom_domain: None,
+            })
+            .unwrap();
+        }
+        repo.upsert_membership(&Membership::new(tenant("t-b"), user("u1"), Role::Owner))
+            .unwrap();
+        repo.upsert_membership(&Membership::new(tenant("t-a"), user("u1"), Role::Member))
+            .unwrap();
+        repo.upsert_membership(&Membership::new(tenant("t-c"), user("u2"), Role::Owner))
+            .unwrap();
+
+        let mine = repo.list_tenants_for_user(&user("u1")).unwrap();
+        // Ordered by tenant name: Alpha (t-a) then Beta (t-b); Gamma excluded.
+        assert_eq!(mine.len(), 2);
+        assert_eq!((mine[0].0.tenant_id.as_str(), mine[0].1.as_str()), ("t-a", "Alpha"));
+        assert_eq!(mine[0].0.role, Role::Member);
+        assert_eq!((mine[1].0.tenant_id.as_str(), mine[1].1.as_str()), ("t-b", "Beta"));
+        assert_eq!(mine[1].0.role, Role::Owner);
     }
 
     #[test]

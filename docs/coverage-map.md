@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-14 — **retrospective weekly summaries** of an imported chat ("Summarize by week", ADR-088/089/101); v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix audited against the ADRs (per-schedule destinations, schedule scope, jobs/progress, create-summary wizard called out); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-14 — **per-schedule delivery destinations** (ADR-014: a destination picker pins a schedule to a chosen subset; `schedule_destinations` + runner filter); **tenant discovery** ("Your tenants" picker via `GET /tenants` — no more typing a tenant id, TEN-001); **retrospective weekly summaries** of an imported chat ("Summarize by week", ADR-088/089/101); v2 ADRs brought in as first-class spec (`docs/reference/v2-adr/`); UX-reachability matrix audited against the ADRs (per-schedule destinations, schedule scope, jobs/progress, create-summary wizard called out); Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -61,7 +61,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Sign in (dev) | ✅ | Login | workspace name + Dev sign-in |
 | Sign in via Google/Discord OAuth | 🟡 | Login | needs `--features oauth` + provider keys; button present otherwise errors |
 | Discover / switch my workspaces | ✅ | nav | a workspace switcher in the sidebar over the session's granted set (membership-derived at login); dev sign-in accepts several comma-separated |
-| Provision a tenant | 🟡 | Settings | must type a tenant id; no guided create/list |
+| Provision a tenant | ✅ | Settings | a "Your tenants" picker lists the tenants you belong to with your role (`GET /tenants`); pick one to load it, or type an id to join/create (TEN-001) |
 | Manage members + invites | ✅ | Members | |
 | Import a WhatsApp chat + see coverage/gaps | ✅ | WhatsApp | timeline, contributors, classified gaps |
 | Request a scoped import to fill a gap | ✅ | WhatsApp | auto-fulfilling invitation |
@@ -99,9 +99,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Deploy / metrics / structured logs | ➖ | (ops) | Docker/compose/Fly; `/metrics`, JSON access logs |
 
 **Reading the gaps (audited against the v2 ADRs):** the 🟡 rows are reachability
-debt that works but is rough — OAuth/Drive connect need server config; tenant
-provisioning, workspace discovery, and the forward weekly rolling digest still
-lean on typed ids; "generate now" lacks the quick time presets; the three
+debt that works but is rough — OAuth/Drive connect need server config; the three
 create-summary paths aren't unified into one wizard. The remaining ⛔ rows are
 v2-spec'd flows the rewrite hasn't built: **Discord-category schedule scope**
 (ADR-011; all-channel + single-channel shipped) and **per-destination rolling

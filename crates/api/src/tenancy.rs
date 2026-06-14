@@ -475,6 +475,36 @@ pub async fn provision_tenant(
     Ok(Json(TenantDto::from(tenant)))
 }
 
+/// One of the caller's tenant memberships — the tenant identity plus the
+/// caller's role in it. Powers the "my tenants" picker (TEN-001 self-serve).
+#[derive(Serialize)]
+pub struct MyTenantDto {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+}
+
+/// `GET /tenants` — the tenants the authenticated caller belongs to, with their
+/// role in each. Lets the dashboard offer a tenant picker instead of making the
+/// user type a tenant id. Empty for a user with no memberships (e.g. a fresh dev
+/// sign-in) — the create form is then the path forward.
+pub async fn list_my_tenants(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<Vec<MyTenantDto>>, ApiError> {
+    let repo = state.repo.lock().expect("repo mutex");
+    let mine = repo.list_tenants_for_user(&user.0.sub)?;
+    Ok(Json(
+        mine.into_iter()
+            .map(|(m, name)| MyTenantDto {
+                id: m.tenant_id.as_str().to_string(),
+                name,
+                role: m.role.as_str().to_string(),
+            })
+            .collect(),
+    ))
+}
+
 /// Deserialize a field as a "double option" so a PATCH can distinguish three
 /// cases: **absent** (field missing → `None`, leave unchanged), **`null`**
 /// (`Some(None)`, clear it), and **a value** (`Some(Some(v))`, set it). Pair
@@ -1024,6 +1054,54 @@ mod tests {
         let lj = body_json(listed).await;
         assert_eq!(lj.as_array().unwrap().len(), 1);
         assert_eq!(lj[0]["role"], "owner");
+    }
+
+    #[tokio::test]
+    async fn list_my_tenants_returns_caller_memberships_with_role() {
+        let (state, token) = state_with_user("founder");
+        let app = build_router(state);
+        // No memberships yet → empty list (the create form is the path forward).
+        let empty = app
+            .clone()
+            .oneshot(
+                Request::get("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty.status(), StatusCode::OK);
+        assert_eq!(body_json(empty).await.as_array().unwrap().len(), 0);
+
+        // Provision a tenant → caller becomes its Owner.
+        app.clone()
+            .oneshot(
+                Request::post("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"acme","name":"Acme Inc"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Now the picker lists it with the caller's role — no typed id needed.
+        let listed = app
+            .oneshot(
+                Request::get("/tenants")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let j = body_json(listed).await;
+        assert_eq!(j.as_array().unwrap().len(), 1);
+        assert_eq!(j[0]["id"], "acme");
+        assert_eq!(j[0]["name"], "Acme Inc");
+        assert_eq!(j[0]["role"], "owner");
     }
 
     #[tokio::test]

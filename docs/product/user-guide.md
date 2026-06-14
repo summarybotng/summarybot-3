@@ -102,7 +102,10 @@ the Summaries tab to **search/filter, pin, archive, and tag**.
 2. For a **rolling** digest, choose a rolling period (weekly/biweekly/monthly) and
    a merge **strategy**: *Append* (dated sections) or *Hybrid* (a synthesized,
    coherent end-of-period digest).
-3. **Pause/Resume**, **Run now**, and review **run history** from the same tab.
+3. **Deliver to** — by default a schedule delivers to *all* of the workspace's
+   enabled destinations. To pin it to a subset, click the destination chips in the
+   New-schedule form; the list shows "→ N destinations" (or "→ all destinations").
+4. **Pause/Resume**, **Run now**, and review **run history** from the same tab.
 
 ## 8. Delivering summaries elsewhere
 
@@ -110,7 +113,9 @@ Delivery is **two-layer**: a tenant admin sets up credentials once on **Plugins*
 each workspace picks the target on **Delivery**.
 
 **As a tenant admin (Plugins tab):**
-1. Enter your **tenant id** (provision one first on Settings if needed).
+1. Enter your **tenant id**. The **Settings** tab shows a **"Your tenants"** picker
+   listing the tenants you belong to (with your role) so you can pick one instead of
+   typing its id; type an id there to join or create a new tenant (you become Owner).
 2. For each plugin (Confluence, Email, Google Drive, Discord, Slack, Webhook):
    **Enable** it and fill its **account credentials** (Confluence base/creds, SMTP
    creds…). For **Google Drive**, click **Connect Google Drive** to authorize via

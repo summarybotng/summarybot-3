@@ -110,6 +110,10 @@ Fans a produced summary out to its destinations.
   workspace target. *(ADR-126)*
 - **Gating** — the pure `resolve_delivery` policy decides allow/reject from
   workspace capabilities before any send. *(DEL-010/011)*
+- **Per-schedule destination selection** — a schedule may pin delivery to a chosen
+  subset of the workspace's destinations (`schedule_destinations`; empty = all).
+  The runner filters the workspace destinations by the selection before sending.
+  *(ADR-014)*
 
 Boundary: delivery is the only subsystem that talks to external sink services;
 the gating decision is pure and testable.
@@ -134,7 +138,9 @@ produced it.
 The security and organization spine.
 
 - **Tenancy** — tenants contain workspaces; host→tenant routing by subdomain /
-  custom domain; per-tenant LLM config and budgets. *(ADR-066, ADR-125)*
+  custom domain; per-tenant LLM config and budgets. Members discover the tenants
+  they belong to (`GET /tenants` → "Your tenants" picker) rather than typing a
+  tenant id. *(ADR-066, ADR-125; TEN-001)*
 - **Identity & sessions** — pluggable providers, JWT access + revocable refresh
   tokens, real OAuth (Google/Discord). Workspace grants are derived from
   membership entitlement. *(WSP-001/010)*

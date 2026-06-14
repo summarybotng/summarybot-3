@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { ApiError } from '../api'
-import type { Budget, LlmConfig } from '../types'
+import type { Budget, LlmConfig, MyTenant } from '../types'
 
 const usd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`
 
@@ -12,6 +12,7 @@ const usd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`
 export function Settings() {
   const { client } = useAuth()
   const [tenant, setTenant] = useState('acme')
+  const [myTenants, setMyTenants] = useState<MyTenant[]>([])
   const [loaded, setLoaded] = useState<LlmConfig | null>(null)
   const [needsClaim, setNeedsClaim] = useState(false)
   const [baseUrl, setBaseUrl] = useState('')
@@ -29,6 +30,22 @@ export function Settings() {
       .getWorkspaceSettings()
       .then((s) => setInstructions(s.summary_instructions ?? ''))
       .catch(() => {})
+  }, [client])
+
+  // The tenants I belong to (TEN-001): discover them instead of typing an id.
+  async function refreshMyTenants() {
+    if (!client) return
+    try {
+      const mine = await client.listMyTenants()
+      setMyTenants(mine)
+      if (mine.length > 0) setTenant((cur) => (mine.some((t) => t.id === cur) ? cur : mine[0].id))
+    } catch {
+      /* best-effort; the typed input + claim still work */
+    }
+  }
+  useEffect(() => {
+    void refreshMyTenants()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
 
   async function saveInstructions() {
@@ -84,6 +101,7 @@ export function Settings() {
     try {
       await client.provisionTenant(tenant.trim())
       setMsg(`Tenant "${tenant.trim()}" created — you are its owner.`)
+      await refreshMyTenants()
       await load()
     } catch (e) {
       setMsg(e instanceof ApiError && e.status === 409 ? 'Tenant exists and you are not a member.' : 'Provision failed.')
@@ -194,11 +212,39 @@ export function Settings() {
           Ollama/LM Studio). Leave blank to use the platform default.
         </p>
 
+        {/* Discover the tenants you belong to (TEN-001) — pick one instead of
+            typing an id. The typed input below stays for joining/creating a new one. */}
+        {myTenants.length > 0 && (
+          <div className="mt-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Your tenants</p>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {myTenants.map((t) => {
+                const on = t.id === tenant.trim()
+                return (
+                  <button
+                    key={t.id}
+                    onClick={() => {
+                      setTenant(t.id)
+                      void load()
+                    }}
+                    className={`rounded-full px-2.5 py-1 text-xs ring-1 ${
+                      on ? 'bg-accent text-accent-fg ring-accent' : 'bg-white text-slate-600 ring-slate-300'
+                    }`}
+                    title={`role: ${t.role}`}
+                  >
+                    {t.name} · {t.role}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="mt-4 flex gap-2">
           <input
             value={tenant}
             onChange={(e) => setTenant(e.target.value)}
-            placeholder="tenant id"
+            placeholder={myTenants.length ? 'or type another tenant id to join/create' : 'tenant id'}
             className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
           />
           <button

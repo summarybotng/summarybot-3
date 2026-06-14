@@ -11,6 +11,7 @@ import type {
   ScheduleRun,
   Summary,
   Tenant,
+  MyTenant,
   TokenResponse,
   WhatsappImport,
   ChatCoverage,
@@ -481,6 +482,11 @@ export class Client {
   /** Provision a tenant; the caller becomes its Owner. */
   provisionTenant(id: string): Promise<Tenant> {
     return this.json<Tenant>('/tenants', this.body('POST', { id, name: id }))
+  }
+
+  /** The tenants the signed-in user belongs to, with their role (TEN-001). */
+  listMyTenants(): Promise<MyTenant[]> {
+    return this.json<MyTenant[]>('/tenants')
   }
 
   getLlmConfig(tenant: string): Promise<LlmConfig> {

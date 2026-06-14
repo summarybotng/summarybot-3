@@ -15,6 +15,13 @@ export interface Tenant {
   custom_domain: string | null
 }
 
+/** A tenant the signed-in user belongs to, with their role in it (TEN-001). */
+export interface MyTenant {
+  id: string
+  name: string
+  role: string
+}
+
 export interface ActionItem {
   text: string
   assignee: string | null
