@@ -15,15 +15,29 @@ export function Plugins() {
   const [err, setErr] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [isOperator, setIsOperator] = useState(false)
   // Per-plugin draft of the tenant-scoped field values (secrets blank = keep).
   const [drafts, setDrafts] = useState<Record<string, Record<string, string>>>({})
+
+  // Discover the operator capability once (ADR-131): operators load + veto plugins
+  // for any tenant without being a member of it.
+  useEffect(() => {
+    if (!client) return
+    client.operatorStatus().then((s) => setIsOperator(s.is_operator)).catch(() => {})
+  }, [client])
 
   const load = useCallback(async () => {
     if (!client || !tenant.trim()) return
     setLoading(true)
     setErr(null)
     try {
-      setPlugins(await client.listTenantPlugins(tenant.trim()))
+      // Operators read via the operator endpoint (no tenant membership needed);
+      // tenant admins via the tenant endpoint.
+      setPlugins(
+        isOperator
+          ? await client.listOperatorPlugins(tenant.trim())
+          : await client.listTenantPlugins(tenant.trim()),
+      )
     } catch (e) {
       setPlugins(null)
       setErr(
@@ -36,7 +50,7 @@ export function Plugins() {
     } finally {
       setLoading(false)
     }
-  }, [client, tenant])
+  }, [client, tenant, isOperator])
 
   useEffect(() => {
     void load()
@@ -69,6 +83,23 @@ export function Plugins() {
       await load()
     } catch (e) {
       setErr(e instanceof ApiError ? `Save failed (${e.status}): ${e.message.slice(0, 160)}` : 'Save failed.')
+    }
+  }
+
+  async function operatorVeto(p: TenantPlugin, disabled: boolean) {
+    if (!client) return
+    setErr(null)
+    setNote(null)
+    try {
+      await client.setOperatorPlugin(tenant.trim(), p.kind, disabled)
+      setNote(
+        disabled
+          ? `Operator: disabled ${p.display_name} for "${tenant.trim()}".`
+          : `Operator: re-allowed ${p.display_name} for "${tenant.trim()}".`,
+      )
+      await load()
+    } catch (e) {
+      setErr(e instanceof ApiError ? `Operator action failed (${e.status}).` : 'Operator action failed.')
     }
   }
 
@@ -120,9 +151,11 @@ export function Plugins() {
           key={p.kind}
           plugin={p}
           draft={drafts[p.kind] ?? {}}
+          isOperator={isOperator}
           onField={(n, v) => setField(p.kind, n, v)}
           onSave={(enabled) => void save(p, enabled)}
           onConnect={() => void connect(p)}
+          onOperatorVeto={(disabled) => void operatorVeto(p, disabled)}
         />
       ))}
     </div>
@@ -141,21 +174,30 @@ function Badge({ on, label, tone }: { on: boolean; label: string; tone: 'green' 
 function PluginCard({
   plugin: p,
   draft,
+  isOperator,
   onField,
   onSave,
   onConnect,
+  onOperatorVeto,
 }: {
   plugin: TenantPlugin
   draft: Record<string, string>
+  isOperator: boolean
   onField: (name: string, value: string) => void
   onSave: (enabled: boolean) => void
   onConnect: () => void
+  onOperatorVeto: (disabled: boolean) => void
 }) {
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <div className="flex items-center justify-between">
         <h3 className="font-medium text-slate-800">{p.display_name}</h3>
         <div className="flex items-center gap-1.5">
+          {p.operator_disabled && (
+            <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700">
+              disabled by operator
+            </span>
+          )}
           <Badge on={p.enabled} label={p.enabled ? 'enabled' : 'disabled'} tone="slate" />
           {p.tenant_fields.length > 0 && (
             <Badge on={p.configured} label={p.configured ? 'configured' : 'not configured'} tone="green" />
@@ -163,6 +205,31 @@ function PluginCard({
           {p.supports_connect && <Badge on={p.connected} label={p.connected ? 'connected' : 'not connected'} tone="green" />}
         </div>
       </div>
+
+      {/* Tenant-admin advisory: the operator has turned this off for the tenant. */}
+      {p.operator_disabled && !isOperator && (
+        <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">
+          A platform operator has disabled this plugin for your tenant. It won't deliver until the
+          operator re-enables it; your enable/disable setting has no effect meanwhile.
+        </p>
+      )}
+
+      {/* Operator control (ADR-131): veto/allow this plugin for the tenant. */}
+      {isOperator && (
+        <div className="mt-2 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
+          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Operator</span>
+          <button
+            onClick={() => onOperatorVeto(!p.operator_disabled)}
+            className={`rounded px-2.5 py-1 text-xs font-medium ${
+              p.operator_disabled
+                ? 'bg-emerald-600 text-white'
+                : 'bg-red-600 text-white'
+            }`}
+          >
+            {p.operator_disabled ? 'Re-allow for this tenant' : 'Disable for this tenant'}
+          </button>
+        </div>
+      )}
 
       {p.hint && <p className="mt-1 text-xs text-slate-500">{p.hint}</p>}
 
@@ -200,7 +267,8 @@ function PluginCard({
       <div className="mt-3 flex items-center gap-2">
         <button
           onClick={() => onSave(true)}
-          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg"
+          disabled={p.operator_disabled && !isOperator}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-40"
         >
           {p.enabled ? 'Save' : 'Enable'}
         </button>

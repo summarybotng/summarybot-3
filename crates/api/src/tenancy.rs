@@ -1017,6 +1017,78 @@ mod tests {
         (AppState::new(repo, key), token)
     }
 
+    // Webhook (and thus a real plugin descriptor) only exists with http-llm.
+    #[cfg(feature = "http-llm")]
+    #[tokio::test]
+    async fn operator_vetoes_a_plugin_and_non_operators_cannot_see_the_route() {
+        use repository::TenantPluginRepository;
+        let repo = SqliteRepository::in_memory().unwrap();
+        let key = Secret::new(b"op-test-key".to_vec());
+        let login = |subject: &str| {
+            AuthService::new(&repo, &key)
+                .login(
+                    &DiscordProvider,
+                    &ProviderClaims { subject: subject.into(), email: None },
+                    vec![],
+                    now_secs(),
+                )
+                .unwrap()
+        };
+        let op = login("op-user");
+        let rando = login("rando");
+        let state = AppState::new(repo, key).with_operators([op.user_id.as_str().to_string()]);
+        let app = build_router(state.clone());
+
+        // A non-operator can't even see the operator route (404, not 403).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/operator/tenants/acme/plugins")
+                    .header("authorization", format!("Bearer {}", rando.access_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // /operator/status reflects the role.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/operator/status")
+                    .header("authorization", format!("Bearer {}", op.access_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(resp).await["is_operator"], true);
+
+        // The operator vetoes webhook for tenant "acme".
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::put("/operator/tenants/acme/plugins/webhook")
+                    .header("authorization", format!("Bearer {}", op.access_token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"disabled":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["operator_disabled"], true);
+
+        // The veto persisted on the (tenant, kind) row.
+        let repo = state.repo.lock().expect("repo");
+        let tp = repo
+            .get_tenant_plugin(&TenantId::parse("acme").unwrap(), "webhook")
+            .unwrap()
+            .unwrap();
+        assert!(tp.operator_disabled);
+    }
+
     #[tokio::test]
     async fn provision_tenant_makes_caller_owner() {
         let (state, token) = state_with_user("founder");

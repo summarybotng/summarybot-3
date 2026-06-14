@@ -364,4 +364,7 @@ export interface TenantPlugin {
   supports_connect: boolean
   /** Non-secret one-line summary of the configured credentials. */
   hint: string | null
+  /** ADR-131: a platform operator has disabled this plugin for the tenant
+   * (read-only for tenant admins; the operator toggles it). */
+  operator_disabled: boolean
 }

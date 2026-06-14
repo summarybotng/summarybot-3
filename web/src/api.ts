@@ -561,6 +561,26 @@ export class Client {
     )
   }
 
+  // --- platform-operator controls (ADR-131) ---
+
+  /** Whether the signed-in user is a configured platform operator. */
+  operatorStatus(): Promise<{ is_operator: boolean }> {
+    return this.json<{ is_operator: boolean }>(`/operator/status`)
+  }
+
+  /** Operator view of a tenant's plugins (works without tenant membership). */
+  listOperatorPlugins(tenant: string): Promise<TenantPlugin[]> {
+    return this.json<TenantPlugin[]>(`/operator/tenants/${encodeURIComponent(tenant)}/plugins`)
+  }
+
+  /** Operator: set/clear the per-tenant veto for a plugin (ADR-131). */
+  setOperatorPlugin(tenant: string, kind: string, disabled: boolean): Promise<TenantPlugin> {
+    return this.json<TenantPlugin>(
+      `/operator/tenants/${encodeURIComponent(tenant)}/plugins/${encodeURIComponent(kind)}`,
+      this.body('PUT', { disabled }),
+    )
+  }
+
   // --- tenant members + invites (RBAC admin) ---
 
   listMembers(tenant: string): Promise<Membership[]> {

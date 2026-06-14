@@ -86,6 +86,9 @@ pub struct AppState {
     /// Embedder for the knowledge subsystem (ADR-127): a local model over HTTP,
     /// or the deterministic demo embedder by default.
     pub embedder: Arc<dyn host::Embedder>,
+    /// Platform-operator user ids (ADR-119/131), from `PLATFORM_OPERATOR_IDS`.
+    /// Config-only; never grantable in-app. Empty by default (no operators).
+    pub operator_ids: Arc<[String]>,
 }
 
 /// Default summarization context window (tokens) — sized for hosted models;
@@ -127,6 +130,7 @@ impl AppState {
             price_micros_per_ktoken: 0,
             context_tokens: DEFAULT_CONTEXT_TOKENS,
             embedder: Arc::new(host::DemoEmbedder::default()),
+            operator_ids: Arc::from(Vec::<String>::new()),
         }
     }
 
@@ -168,6 +172,22 @@ impl AppState {
     pub fn with_embedder(mut self, embedder: Arc<dyn host::Embedder>) -> Self {
         self.embedder = embedder;
         self
+    }
+
+    /// Set the platform-operator ids (ADR-119/131). Blank entries are dropped.
+    pub fn with_operators(mut self, ids: impl IntoIterator<Item = String>) -> Self {
+        let ids: Vec<String> = ids
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.operator_ids = Arc::from(ids);
+        self
+    }
+
+    /// Whether `user` is a configured platform operator (ADR-119/131).
+    pub(crate) fn is_operator(&self, user: &domain::UserId) -> bool {
+        self.operator_ids.iter().any(|id| id == user.as_str())
     }
 
     /// The master key, if configured.
@@ -521,6 +541,16 @@ pub fn build_router(state: AppState) -> Router {
             "/tenants/:tenant/plugins/:kind",
             put(plugins::set_plugin).delete(plugins::delete_plugin),
         )
+        // Platform-operator per-tenant plugin veto (ADR-131; operator-only).
+        .route("/operator/status", get(plugins::operator_status))
+        .route(
+            "/operator/tenants/:tenant/plugins",
+            get(plugins::list_operator_plugins),
+        )
+        .route(
+            "/operator/tenants/:tenant/plugins/:kind",
+            put(plugins::set_operator_plugin),
+        )
         .route("/tenant", get(tenancy::resolve_tenant))
         // Workspace management under a tenant (WSP-009).
         .route(
@@ -687,6 +717,9 @@ async fn openapi() -> Json<serde_json::Value> {
                 "delete": { "summary": "Disable + clear a plugin's tenant config" }
             },
             "/tenants/{tenant}/plugins/{kind}/connect": { "post": { "summary": "Start an OAuth connect (Google Drive) — returns the consent URL (Admin+)" } },
+            "/operator/status": { "get": { "summary": "Whether the caller is a platform operator (ADR-131)" } },
+            "/operator/tenants/{tenant}/plugins": { "get": { "summary": "List a tenant's plugins with operator-veto state (operator-only; ADR-131)" } },
+            "/operator/tenants/{tenant}/plugins/{kind}": { "put": { "summary": "Set/clear the platform-operator veto for a tenant's plugin (operator-only; ADR-131)" } },
             "/oauth/connect/callback": { "get": { "summary": "OAuth connect callback — captures a refresh token into the tenant plugin config" } },
             "/tenants/{tenant}/budget": {
                 "get": { "summary": "Get the tenant's LLM budget + spend (ADR-125 Phase 3)" },

@@ -57,6 +57,9 @@ pub struct TenantPluginDto {
     pub supports_connect: bool,
     /// Non-secret one-line summary of the configured credentials.
     pub hint: Option<String>,
+    /// ADR-131: a platform operator has disabled this plugin for the tenant —
+    /// read-only for tenant admins (they can't override it); the operator toggle.
+    pub operator_disabled: bool,
 }
 
 /// Whether a plugin captures its credential via the OAuth connect flow.
@@ -106,6 +109,7 @@ fn to_dto(
         connected: row.map(|r| r.connected).unwrap_or(false),
         supports_connect: supports_connect(desc.id),
         hint,
+        operator_disabled: row.map(|r| r.operator_disabled).unwrap_or(false),
     }
 }
 
@@ -218,6 +222,8 @@ pub async fn set_plugin(
         config_enc,
         connected,
         updated_at: now_secs(),
+        // A tenant admin can't clear a platform operator's veto (ADR-131).
+        operator_disabled: current.as_ref().map(|r| r.operator_disabled).unwrap_or(false),
     };
     repo.upsert_tenant_plugin(&tenant, &row)?;
     audit(
@@ -239,7 +245,125 @@ pub async fn delete_plugin(
     let tenant = parse_tenant(tenant)?;
     let repo = state.repo.lock().expect("repo mutex");
     authorize(&repo, &user.0.sub, &tenant, Permission::ManageSettings)?;
-    repo.delete_tenant_plugin(&tenant, &kind)?;
+    // A standing operator veto (ADR-131) must survive a tenant-admin clear: keep a
+    // cleared, disabled row carrying the veto rather than deleting it outright.
+    if repo.get_tenant_plugin(&tenant, &kind)?.is_some_and(|p| p.operator_disabled) {
+        repo.upsert_tenant_plugin(
+            &tenant,
+            &TenantPlugin {
+                kind: kind.clone(),
+                enabled: false,
+                config_enc: None,
+                connected: false,
+                updated_at: now_secs(),
+                operator_disabled: true,
+            },
+        )?;
+    } else {
+        repo.delete_tenant_plugin(&tenant, &kind)?;
+    }
     audit(&repo, &user.0.sub, "tenant.plugin.clear", kind);
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- platform-operator controls (ADR-131) --------------------------------
+
+/// Whether the caller is a configured platform operator.
+#[derive(Serialize)]
+pub struct OperatorStatusDto {
+    pub is_operator: bool,
+}
+
+/// `GET /operator/status` — does the caller hold the operator capability? Lets
+/// the dashboard reveal operator-only controls. Always 200 (just a boolean).
+pub async fn operator_status(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<OperatorStatusDto>, ApiError> {
+    Ok(Json(OperatorStatusDto {
+        is_operator: state.is_operator(&user.0.sub),
+    }))
+}
+
+/// Reject non-operators with 404 — an operator endpoint is invisible to everyone
+/// else (don't confirm the route exists).
+fn require_operator(state: &AppState, user: &AuthUser) -> Result<(), ApiError> {
+    if state.is_operator(&user.0.sub) {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+/// `GET /operator/tenants/:tenant/plugins` — every compiled plugin with this
+/// tenant's `operator_disabled` state (operator-only).
+pub async fn list_operator_plugins(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(tenant): Path<String>,
+) -> Result<Json<Vec<TenantPluginDto>>, ApiError> {
+    require_operator(&state, &user)?;
+    let tenant = parse_tenant(tenant)?;
+    let master = state.master_key();
+    let repo = state.repo.lock().expect("repo mutex");
+    let rows = repo.list_tenant_plugins(&tenant)?;
+    let out = host::sink_descriptors()
+        .iter()
+        .map(|desc| {
+            let row = rows.iter().find(|r| r.kind == desc.id);
+            let config = row
+                .and_then(|r| r.config_enc.as_deref())
+                .and_then(|enc| decode_tenant_config(master, enc))
+                .unwrap_or_default();
+            to_dto(desc, row, &config)
+        })
+        .collect();
+    Ok(Json(out))
+}
+
+/// Body for an operator's per-tenant plugin veto.
+#[derive(Deserialize)]
+pub struct SetOperatorPluginRequest {
+    pub disabled: bool,
+}
+
+/// `PUT /operator/tenants/:tenant/plugins/:kind` `{ disabled }` — set/clear the
+/// platform-operator veto for one (tenant, kind), preserving the tenant's own
+/// enablement/config (operator-only; ADR-131). Audited under the operator.
+pub async fn set_operator_plugin(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((tenant, kind)): Path<(String, String)>,
+    Json(body): Json<SetOperatorPluginRequest>,
+) -> Result<Json<TenantPluginDto>, ApiError> {
+    require_operator(&state, &user)?;
+    let tenant = parse_tenant(tenant)?;
+    let Some(desc) = descriptor(&kind) else {
+        return Err(ApiError::bad_request(format!("unknown plugin kind: {kind}")));
+    };
+    let master = state.master_key();
+    let repo = state.repo.lock().expect("repo mutex");
+    // Read-modify-write so the tenant's enablement/credentials are untouched.
+    let current = repo.get_tenant_plugin(&tenant, &kind)?;
+    let row = TenantPlugin {
+        kind: kind.clone(),
+        enabled: current.as_ref().map(|r| r.enabled).unwrap_or(false),
+        config_enc: current.as_ref().and_then(|r| r.config_enc.clone()),
+        connected: current.as_ref().map(|r| r.connected).unwrap_or(false),
+        updated_at: now_secs(),
+        operator_disabled: body.disabled,
+    };
+    repo.upsert_tenant_plugin(&tenant, &row)?;
+    audit(
+        &repo,
+        &user.0.sub,
+        "operator.plugin.veto",
+        format!("{}/{} disabled={}", tenant.as_str(), kind, body.disabled),
+    );
+    let config = row
+        .config_enc
+        .as_deref()
+        .and_then(|enc| decode_tenant_config(master, enc))
+        .unwrap_or_default();
+    Ok(Json(to_dto(&desc, Some(&row), &config)))
 }

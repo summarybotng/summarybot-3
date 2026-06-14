@@ -107,8 +107,10 @@ roadmap are listed at the end so the boundary is explicit.
   under them; every stored row is workspace/tenant-scoped (no cross-tenant leak).
 - **Host → tenant routing** — a subdomain or custom domain resolves to a tenant.
 - **Roles (RBAC)** — Owner / Admin / Member / Guest, with a permission model
-  (e.g. `ManageSettings` is Admin+). A platform-operator role exists for
-  cross-tenant operations, assigned out-of-band.
+  (e.g. `ManageSettings` is Admin+). A platform-operator role (config-based ids,
+  assigned out-of-band) can, beyond cross-tenant operations, **disable a delivery
+  plugin per tenant** — a veto the tenant can't override; plugins default on
+  (ADR-131).
 - **Sessions** — JWT access tokens + revocable refresh tokens, rotation on
   refresh, logout.
 - **Real OAuth login** — Google / Discord authorization-code + PKCE flows

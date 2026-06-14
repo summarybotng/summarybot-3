@@ -153,6 +153,9 @@ The security and organization spine.
   membership entitlement. *(WSP-001/010)*
 - **RBAC** — Owner/Admin/Member/Guest + a platform-operator role; permission
   checks at the API boundary, isolation enforced at the repository. *(ADR-119; TEN-005/007)*
+- **Platform-operator plugin veto** — an operator (config-based ids, ADR-119) can
+  disable a delivery plugin for a specific tenant; the veto beats the tenant's own
+  enablement and the tenant can't override it. All plugins default ON. *(ADR-131)*
 - **Audit** — append-only ledger of security/admin events, surfaced to admins.
 
 Boundary: tenant isolation is enforced in the repository layer — every query is

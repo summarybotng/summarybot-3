@@ -300,6 +300,12 @@ pub async fn connect_callback(
     let config_enc = host::encrypt_secret(master, &blob).map_err(|e| ApiError::Internal(e.to_string()))?;
     {
         let repo = state.repo.lock().expect("repo mutex");
+        // Preserve a platform operator's veto (ADR-131) across a (re)connect — an
+        // OAuth reconnect must not silently re-enable a plugin the operator disabled.
+        let operator_disabled = repo
+            .get_tenant_plugin(&tenant, kind)?
+            .map(|p| p.operator_disabled)
+            .unwrap_or(false);
         repo.upsert_tenant_plugin(
             &tenant,
             &TenantPlugin {
@@ -308,6 +314,7 @@ pub async fn connect_callback(
                 config_enc: Some(config_enc),
                 connected: true,
                 updated_at: now_secs(),
+                operator_disabled,
             },
         )?;
         crate::tenancy::audit(&repo, &user_system(), "tenant.plugin.connected", kind.to_string());

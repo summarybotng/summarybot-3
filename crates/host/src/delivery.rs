@@ -270,6 +270,9 @@ fn apply_tenant_layer(
     };
     match repo.get_tenant_plugin(tenant, kind) {
         Ok(Some(tp)) => {
+            if tp.operator_disabled {
+                return None; // platform-operator veto (ADR-131) — beats the tenant toggle
+            }
             if !tp.enabled {
                 return None; // explicit tenant disable → skip this destination
             }
@@ -1356,6 +1359,7 @@ mod tests {
                     config_enc: Some(creds),
                     connected: false,
                     updated_at: 1,
+                    ..Default::default()
                 },
             )
             .unwrap();
@@ -1393,11 +1397,37 @@ mod tests {
                     config_enc: None,
                     connected: false,
                     updated_at: 2,
+                    ..Default::default()
                 },
             )
             .unwrap();
         let (dests, _) = load_workspace_delivery(&store, &ws(), Some(&master)).unwrap();
         assert!(dests.is_empty());
+    }
+
+    #[test]
+    fn operator_disabled_vetoes_a_plugin_even_when_the_tenant_enabled_it() {
+        // ADR-131: the operator veto beats the tenant's own enablement.
+        use repository::{TenantPlugin, TenantPluginRepository};
+        let store = SqliteRepository::in_memory().unwrap();
+        let tenant = domain::TenantId::parse("acme").unwrap();
+        store
+            .upsert_tenant_plugin(
+                &tenant,
+                &TenantPlugin {
+                    kind: "webhook".into(),
+                    enabled: true,          // tenant wants it on
+                    operator_disabled: true, // operator vetoes
+                    updated_at: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let cfg = serde_json::json!({ "url": "https://x" });
+        // Vetoed → skipped.
+        assert!(apply_tenant_layer(&store, Some(&tenant), "webhook", cfg.clone(), None).is_none());
+        // A different, un-vetoed kind with no row → default-on (passes through).
+        assert!(apply_tenant_layer(&store, Some(&tenant), "email", cfg, None).is_some());
     }
 
     #[test]

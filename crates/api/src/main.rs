@@ -70,6 +70,19 @@ async fn main() -> Result<()> {
         state = state.with_config_key(key);
         eprintln!("tenant API-key encryption: enabled");
     }
+    // Platform operators (ADR-119/131): a comma-separated list of user ids with
+    // the deployment-wide operator capability (e.g. per-tenant plugin disable).
+    // Config-only — never grantable in-app.
+    if let Some(raw) = env::var("PLATFORM_OPERATOR_IDS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        let ids: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
+        let n = ids.iter().filter(|s| !s.is_empty()).count();
+        state = state.with_operators(ids);
+        eprintln!("platform operators configured: {n}");
+    }
+
     // Knowledge embedder (ADR-127): a local model over HTTP when configured,
     // else the deterministic demo embedder.
     state = state.with_embedder(select_embedder());

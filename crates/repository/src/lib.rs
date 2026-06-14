@@ -393,6 +393,10 @@ impl SqliteRepository {
                 config_enc TEXT,
                 connected  INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL,
+                -- ADR-131: a platform operator's hard veto for this (tenant, kind),
+                -- distinct from the tenant's `enabled`. 1 = off regardless of the
+                -- tenant toggle; 0 (default) = ordinary ADR-126 enablement.
+                operator_disabled INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (tenant_id, kind)
             );
             -- Per-tenant LLM budget for operator-lent platform-key usage
@@ -534,6 +538,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0005_dest_rolling_intermediate",
         "ALTER TABLE workspace_destinations ADD COLUMN rolling_deliver_intermediate INTEGER NOT NULL DEFAULT 0",
+    ),
+    // Platform-operator per-tenant plugin veto (ADR-131) — baseline includes it;
+    // this brings pre-baseline DBs up to date.
+    (
+        "0006_tenant_plugin_operator_disabled",
+        "ALTER TABLE tenant_plugins ADD COLUMN operator_disabled INTEGER NOT NULL DEFAULT 0",
     ),
 ];
 

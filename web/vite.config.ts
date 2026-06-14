@@ -14,6 +14,7 @@ export default defineConfig({
       '/workspaces': target,
       '/tenants': target,
       '/tenant': target,
+      '/operator': target,
       '/invites': target,
       '/healthz': target,
       '/openapi.json': target,
