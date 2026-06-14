@@ -47,7 +47,9 @@ pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 pub use knowledge::HttpEmbedder;
 pub use knowledge::{DemoEmbedder, Embedder, KnowledgeService, SearchHit};
 pub use platform::make_platform_fetcher;
-pub use platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
+pub use platform::{
+    ChannelInfo, FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher,
+};
 pub use schedule_runner::SummarizingScheduleRunner;
 pub use scheduler::{ScheduleRunner, SchedulerService, TickReport};
 pub use secretbox::{decrypt_secret, encrypt_secret, parse_master_key};

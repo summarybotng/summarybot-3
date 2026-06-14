@@ -142,7 +142,9 @@ pub use live::SlackFetcher;
 #[cfg(feature = "slack")]
 mod live {
     use super::*;
-    use crate::platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
+    use crate::platform::{
+        ChannelInfo, FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher,
+    };
     use domain::Secret;
 
     const API_BASE: &str = "https://slack.com/api";
@@ -322,6 +324,48 @@ mod live {
                 server_name: "Slack".to_string(),
                 primary_channel_name,
             }
+        }
+
+        fn channel_directory(&self) -> Result<Vec<ChannelInfo>, String> {
+            // Slack has no categories — a flat list of channels with their names.
+            let mut out = Vec::new();
+            let mut cursor: Option<String> = None;
+            for _ in 0..MAX_PAGES {
+                let mut url = format!(
+                    "{API_BASE}/conversations.list?types=public_channel,private_channel&limit=200"
+                );
+                if let Some(c) = &cursor {
+                    url.push_str(&format!("&cursor={c}"));
+                }
+                let body = self.get(&url)?;
+                if let Some(chans) = body.get("channels").and_then(|c| c.as_array()) {
+                    for c in chans {
+                        if let Some(id) = c.get("id").and_then(|i| i.as_str()) {
+                            if let Ok(cid) = ChannelId::parse(id) {
+                                out.push(ChannelInfo {
+                                    id: cid,
+                                    name: c
+                                        .get("name")
+                                        .and_then(|n| n.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    category: None,
+                                });
+                            }
+                        }
+                    }
+                }
+                cursor = body
+                    .get("response_metadata")
+                    .and_then(|m| m.get("next_cursor"))
+                    .and_then(|c| c.as_str())
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_string);
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            Ok(out)
         }
     }
 }

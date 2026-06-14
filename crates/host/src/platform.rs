@@ -24,6 +24,17 @@ pub enum FetchScope {
     Workspace,
 }
 
+/// A browsable channel in a source's directory (WSP-006): its id, display name,
+/// and the category it sits under (Discord), so the dashboard can present the
+/// server's channels grouped by category for point-and-click selection. Slack and
+/// uncategorized channels carry `category: None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChannelInfo {
+    pub id: ChannelId,
+    pub name: String,
+    pub category: Option<String>,
+}
+
 /// Display context for summary headers (resolved names, never ids).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformContext {
@@ -69,6 +80,11 @@ pub trait PlatformFetcher {
 
     /// Resolved display context for a set of channels.
     fn context(&self, channels: &[ChannelId]) -> PlatformContext;
+
+    /// List the source's summarizable channels for browsing/selection (WSP-006),
+    /// grouped by category where the platform has them (Discord). A network call;
+    /// returns a directory the dashboard renders for point-and-click sync.
+    fn channel_directory(&self) -> Result<Vec<ChannelInfo>, String>;
 }
 
 /// Build the live fetcher for a platform from a bot token (ADR-128). `scope_id`
@@ -172,6 +188,20 @@ mod tests {
                 server_name: self.server.clone(),
                 primary_channel_name: "general".into(),
             }
+        }
+
+        fn channel_directory(&self) -> Result<Vec<ChannelInfo>, String> {
+            let mut chans: Vec<ChannelInfo> = self
+                .store
+                .iter()
+                .map(|(c, _)| ChannelInfo {
+                    id: c.clone(),
+                    name: c.as_str().to_string(),
+                    category: None,
+                })
+                .collect();
+            chans.dedup_by(|a, b| a.id == b.id);
+            Ok(chans)
         }
     }
 

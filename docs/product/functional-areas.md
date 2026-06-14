@@ -50,7 +50,10 @@ model, so the rest of the system is platform-agnostic.
   date-order inference) → anonymize phone numbers (HMAC) → fingerprint-dedup →
   store. Import spans are recorded for coverage analysis. *(ADR-121)*
 - **Discord & Slack (live fetch)** — `PlatformFetcher` adapters pull recent
-  history over REST; bot tokens are stored encrypted per workspace. *(ADR-128)*
+  history over REST; bot tokens are stored encrypted per workspace. A
+  **channel directory** (`channel_directory()` → `/connections/:platform/channels`)
+  lists the source's channels grouped by category for point-and-click selection.
+  *(ADR-128; WSP-006)*
 - **Coverage & contribution** — merges multi-contributor import spans into a
   coverage timeline with classified, fillable gaps; tracks who contributed what;
   persists auto-fulfilling import invitations. *(ADR-121; WHA-014..019)*

@@ -56,6 +56,44 @@ pub fn is_text_channel(channel: &serde_json::Value) -> bool {
     )
 }
 
+/// Parse a Discord `GET /guilds/{id}/channels` array into a browsable directory of
+/// text channels, each tagged with the name of its category (Discord category =
+/// channel `type` 4; a text channel's `parent_id` points at it). Non-text channels
+/// (voice, the category rows themselves) are excluded. Pure — unit-tested without
+/// a network.
+pub fn parse_channel_directory(channels: &serde_json::Value) -> Vec<crate::platform::ChannelInfo> {
+    use crate::platform::ChannelInfo;
+    use std::collections::HashMap;
+    let Some(arr) = channels.as_array() else {
+        return vec![];
+    };
+    // Category id → name (type 4 rows).
+    let categories: HashMap<&str, &str> = arr
+        .iter()
+        .filter(|c| c.get("type").and_then(|t| t.as_i64()) == Some(4))
+        .filter_map(|c| {
+            Some((
+                c.get("id")?.as_str()?,
+                c.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+            ))
+        })
+        .collect();
+    arr.iter()
+        .filter(|c| is_text_channel(c))
+        .filter_map(|c| {
+            Some(ChannelInfo {
+                id: ChannelId::parse(c.get("id")?.as_str()?).ok()?,
+                name: c.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                category: c
+                    .get("parent_id")
+                    .and_then(|p| p.as_str())
+                    .and_then(|pid| categories.get(pid))
+                    .map(|s| s.to_string()),
+            })
+        })
+        .collect()
+}
+
 /// Parse one Discord message object into a [`NormalizedMessage`]. Returns `None`
 /// if it lacks the identifiers we require (`id`, `channel_id`). Timestamp comes
 /// from the snowflake; the author's display name prefers `global_name`, then
@@ -134,7 +172,9 @@ pub use live::DiscordFetcher;
 #[cfg(feature = "discord")]
 mod live {
     use super::*;
-    use crate::platform::{FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher};
+    use crate::platform::{
+        ChannelInfo, FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher,
+    };
     use domain::Secret;
 
     const API_BASE: &str = "https://discord.com/api/v10";
@@ -331,6 +371,11 @@ mod live {
                 primary_channel_name,
             }
         }
+
+        fn channel_directory(&self) -> Result<Vec<ChannelInfo>, String> {
+            let url = format!("{API_BASE}/guilds/{}/channels", self.guild_id);
+            Ok(super::parse_channel_directory(&self.get(&url)?))
+        }
     }
 }
 
@@ -355,6 +400,30 @@ mod tests {
         assert!(is_text_channel(&json!({"type": 5}))); // announcement
         assert!(!is_text_channel(&json!({"type": 2}))); // voice
         assert!(!is_text_channel(&json!({"type": 4}))); // category
+    }
+
+    #[test]
+    fn channel_directory_groups_text_channels_under_categories() {
+        // A guild listing: two categories, text channels under each, a voice
+        // channel and an uncategorized text channel.
+        let listing = json!([
+            {"id": "100", "type": 4, "name": "Engineering"},
+            {"id": "200", "type": 4, "name": "Social"},
+            {"id": "1", "type": 0, "name": "general", "parent_id": "100"},
+            {"id": "2", "type": 5, "name": "announce", "parent_id": "100"},
+            {"id": "3", "type": 2, "name": "voice-chat", "parent_id": "200"}, // voice → excluded
+            {"id": "4", "type": 0, "name": "memes", "parent_id": "200"},
+            {"id": "5", "type": 0, "name": "lobby"}, // no category
+        ]);
+        let dir = parse_channel_directory(&listing);
+        // 4 text channels (voice + the category rows excluded).
+        assert_eq!(dir.len(), 4);
+        let by_name = |n: &str| dir.iter().find(|c| c.name == n).unwrap();
+        assert_eq!(by_name("general").category.as_deref(), Some("Engineering"));
+        assert_eq!(by_name("announce").category.as_deref(), Some("Engineering"));
+        assert_eq!(by_name("memes").category.as_deref(), Some("Social"));
+        assert_eq!(by_name("lobby").category, None);
+        assert!(!dir.iter().any(|c| c.name == "voice-chat"));
     }
 
     #[test]

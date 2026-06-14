@@ -268,6 +268,14 @@ export interface SourceSync {
   errors: { channel: string; message: string }[]
 }
 
+/** A browsable channel in a source's directory (WSP-006). */
+export interface SourceChannel {
+  id: string
+  name: string
+  /** Discord category; null for Slack / uncategorized. */
+  category: string | null
+}
+
 export interface PluginField {
   name: string
   label: string

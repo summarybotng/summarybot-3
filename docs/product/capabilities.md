@@ -25,6 +25,9 @@ roadmap are listed at the end so the boundary is explicit.
 - **Discord & Slack fetch** — connect a bot token and pull recent channel history
   into the message store over the platforms' REST APIs; a scheduled run can fetch
   fresh messages before summarizing.
+- **Channel browser** — list a connected source's channels (Discord grouped by
+  category, Slack flat) and pick them point-and-click, instead of typing channel
+  ids.
 
 ## AI summarization
 

@@ -239,3 +239,68 @@ pub async fn sync(
             .collect(),
     }))
 }
+
+/// `?scope_id=<guild>` — the Discord guild (server) id to browse; Slack ignores it.
+#[derive(Deserialize)]
+pub struct ChannelsQuery {
+    #[serde(default)]
+    pub scope_id: Option<String>,
+}
+
+/// One browsable channel, grouped by category where the platform has them.
+#[derive(Serialize)]
+pub struct ChannelDto {
+    pub id: String,
+    pub name: String,
+    /// Discord category name; `null` for Slack / uncategorized channels.
+    pub category: Option<String>,
+}
+
+/// `GET /workspaces/:ws/connections/:platform/channels?scope_id=<guild>` — the
+/// source's browsable channel directory (WSP-006): every summarizable channel
+/// with its category, so the dashboard can present the server's channels for
+/// point-and-click selection instead of typing ids.
+pub async fn channels(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, platform)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<ChannelsQuery>,
+) -> Result<Json<Vec<ChannelDto>>, ApiError> {
+    use repository::PlatformCredentialRepository;
+    user.require_workspace(&ws)?;
+    let platform = live_platform(&platform)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let token = {
+        let Some(master) = state.master_key() else {
+            return Err(ApiError::bad_request(
+                "server has no encryption key configured (set LLM_CONFIG_KEY)".to_string(),
+            ));
+        };
+        let repo = state.repo.lock().expect("repo mutex");
+        let enc = repo
+            .get_platform_token(&workspace, platform.as_str())
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "no {} bot token set for this workspace",
+                    platform.as_str()
+                ))
+            })?;
+        host::decrypt_secret(master, &enc).map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+
+    let fetcher = host::make_platform_fetcher(platform, token, q.scope_id.clone())
+        .map_err(ApiError::bad_request)?;
+    let dir = fetcher.channel_directory().map_err(ApiError::bad_request)?;
+    Ok(Json(
+        dir.into_iter()
+            .map(|c| ChannelDto {
+                id: c.id.as_str().to_string(),
+                name: c.name,
+                category: c.category,
+            })
+            .collect(),
+    ))
+}

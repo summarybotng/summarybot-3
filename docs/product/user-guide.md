@@ -67,9 +67,13 @@ Updates stream live (SSE), so new summaries appear without refreshing.
 ## 5. Connecting Discord / Slack
 
 1. **Discord** (or **Slack**) tab → paste the **bot token** (stored encrypted).
-2. **Sync** pulls recent channel history into the workspace. The bot must be a
-   member of the channels you want; Slack needs the channel id.
-3. You can also **summarize the most recent activity** directly from the tab.
+   For Discord, also enter the **guild (server) id**.
+2. **Browse channels** → **Load channels** lists the server's channels (Discord
+   grouped by **category**); tick the ones you want — your selection fills the
+   sync list. (You can still type channel ids manually instead.)
+3. **Sync** pulls recent history for the selected channels (or all of them if none
+   selected) into the workspace. The bot must be a member of the channels.
+4. You can then **summarize** any synced channel directly from the tab.
 
 ## 6. Creating a summary
 

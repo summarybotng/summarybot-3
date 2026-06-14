@@ -121,6 +121,17 @@ mod tests {
                 primary_channel_name: "general".into(),
             }
         }
+        fn channel_directory(&self) -> Result<Vec<crate::platform::ChannelInfo>, String> {
+            Ok(self
+                .store
+                .iter()
+                .map(|(c, _)| crate::platform::ChannelInfo {
+                    id: c.clone(),
+                    name: c.as_str().to_string(),
+                    category: None,
+                })
+                .collect())
+        }
     }
 
     fn ws() -> WorkspaceId {

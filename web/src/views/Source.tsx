@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { ApiError } from '../api'
-import type { ConnectionStatus, SourceSync, Summary } from '../types'
+import type { ConnectionStatus, SourceChannel, SourceSync, Summary } from '../types'
 
 type Platform = 'discord' | 'slack'
 
@@ -55,6 +55,9 @@ export function Source({ platform }: { platform: Platform }) {
 
   const [scopeId, setScopeId] = useState('')
   const [channels, setChannels] = useState('')
+  const [directory, setDirectory] = useState<SourceChannel[] | null>(null)
+  const [loadingDir, setLoadingDir] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lookbackDays, setLookbackDays] = useState(1)
   const [syncing, setSyncing] = useState(false)
   const [result, setResult] = useState<SourceSync | null>(null)
@@ -71,6 +74,8 @@ export function Source({ platform }: { platform: Platform }) {
     setSummary(null)
     setSummaryNote(null)
     setErr(null)
+    setDirectory(null)
+    setSelected(new Set())
     if (!client) return
     client
       .connectionStatus(platform)
@@ -122,6 +127,37 @@ export function Source({ platform }: { platform: Platform }) {
     } finally {
       setSyncing(false)
     }
+  }
+
+  async function loadDirectory() {
+    if (!client) return
+    setLoadingDir(true)
+    setErr(null)
+    try {
+      const dir = await client.sourceChannels(platform, scopeId.trim() || undefined)
+      setDirectory(dir)
+    } catch (e) {
+      setDirectory(null)
+      setErr(
+        e instanceof ApiError
+          ? `Couldn't load channels (${e.status}): ${e.message.slice(0, 200)}`
+          : 'Could not load channels.',
+      )
+    } finally {
+      setLoadingDir(false)
+    }
+  }
+
+  // Toggle a channel in the selection and mirror the selection into the
+  // comma-separated `channels` field the sync form already uses.
+  function toggleChannel(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      setChannels([...next].join(','))
+      return next
+    })
   }
 
   async function summarizeChannel(channel: string) {
@@ -205,10 +241,62 @@ export function Source({ platform }: { platform: Platform }) {
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
             />
           )}
+
+          {/* Browse channels (WSP-006): list the server's channels grouped by
+              category and pick them, instead of typing ids. */}
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-slate-700">Browse channels</span>
+              <button
+                type="button"
+                onClick={() => void loadDirectory()}
+                disabled={loadingDir || !tokenSet || (copy.needsScope && !scopeId.trim())}
+                className="rounded-lg border border-slate-300 px-3 py-1 text-xs disabled:opacity-50"
+              >
+                {loadingDir ? 'Loading…' : directory ? 'Refresh' : 'Load channels'}
+              </button>
+            </div>
+            {!tokenSet && <p className="mt-1 text-xs text-slate-400">set a bot token first</p>}
+            {copy.needsScope && tokenSet && !scopeId.trim() && (
+              <p className="mt-1 text-xs text-slate-400">enter the {copy.scopePlaceholder} above</p>
+            )}
+            {directory && directory.length === 0 && (
+              <p className="mt-2 text-xs text-slate-500">
+                No channels found — check the bot is in the server and can read them.
+              </p>
+            )}
+            {directory && directory.length > 0 && (
+              <div className="mt-2 max-h-72 space-y-3 overflow-y-auto">
+                {groupChannels(directory).map(([category, chans]) => (
+                  <div key={category}>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      {category}
+                    </p>
+                    <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                      {chans.map((c) => (
+                        <label key={c.id} className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(c.id)}
+                            onChange={() => toggleChannel(c.id)}
+                          />
+                          <span className="truncate">#{c.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                <p className="text-xs text-slate-400">
+                  {selected.size} selected · syncing with no selection fetches all channels.
+                </p>
+              </div>
+            )}
+          </div>
+
           <input
             value={channels}
             onChange={(e) => setChannels(e.target.value)}
-            placeholder="channel ids, comma-separated (blank = all channels)"
+            placeholder="or type channel ids, comma-separated (blank = all channels)"
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
           />
           <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -284,4 +372,23 @@ export function Source({ platform }: { platform: Platform }) {
       </div>
     </div>
   )
+}
+
+// Group a flat channel list by category (Discord), categories alphabetical with
+// "Uncategorized" last, channels by name within each group.
+function groupChannels(dir: SourceChannel[]): [string, SourceChannel[]][] {
+  const groups = new Map<string, SourceChannel[]>()
+  for (const c of dir) {
+    const key = c.category ?? 'Uncategorized'
+    const list = groups.get(key) ?? []
+    list.push(c)
+    groups.set(key, list)
+  }
+  return [...groups.entries()]
+    .sort(([a], [b]) => {
+      if (a === 'Uncategorized') return 1
+      if (b === 'Uncategorized') return -1
+      return a.localeCompare(b)
+    })
+    .map(([cat, chans]) => [cat, chans.sort((x, y) => x.name.localeCompare(y.name))])
 }

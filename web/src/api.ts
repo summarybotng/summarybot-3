@@ -21,6 +21,7 @@ import type {
   CurationReport,
   ConnectionStatus,
   SourceSync,
+  SourceChannel,
   Spend,
   AuditEntry,
   Membership,
@@ -371,6 +372,12 @@ export class Client {
       `/workspaces/${this.ws()}/connections/${platform}/sync`,
       this.body('POST', { scope_id: scopeId || null, lookback_secs: lookbackSecs, channels }),
     )
+  }
+
+  /** Browse a source's channels (grouped by category where it has them, WSP-006). */
+  sourceChannels(platform: string, scopeId?: string): Promise<SourceChannel[]> {
+    const p = scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : ''
+    return this.json<SourceChannel[]>(`/workspaces/${this.ws()}/connections/${platform}/channels${p}`)
   }
 
   // --- per-workspace summarization settings (SUM-007) ---
