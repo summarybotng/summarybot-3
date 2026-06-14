@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../auth'
 import { ApiError } from '../api'
-import type { ConnectionStatus, SourceChannel, SourceSync, Summary } from '../types'
+import type { ConnectionStatus, SourceChannel, SourceServer, SourceSync, Summary } from '../types'
 
 type Platform = 'discord' | 'slack'
 
@@ -54,6 +54,8 @@ export function Source({ platform }: { platform: Platform }) {
   const [savingToken, setSavingToken] = useState(false)
 
   const [scopeId, setScopeId] = useState('')
+  const [servers, setServers] = useState<SourceServer[] | null>(null)
+  const [loadingServers, setLoadingServers] = useState(false)
   const [channels, setChannels] = useState('')
   const [directory, setDirectory] = useState<SourceChannel[] | null>(null)
   const [loadingDir, setLoadingDir] = useState(false)
@@ -76,6 +78,7 @@ export function Source({ platform }: { platform: Platform }) {
     setErr(null)
     setDirectory(null)
     setSelected(new Set())
+    setServers(null)
     if (!client) return
     client
       .connectionStatus(platform)
@@ -127,6 +130,32 @@ export function Source({ platform }: { platform: Platform }) {
     } finally {
       setSyncing(false)
     }
+  }
+
+  async function loadServers() {
+    if (!client) return
+    setLoadingServers(true)
+    setErr(null)
+    try {
+      setServers(await client.sourceServers(platform))
+    } catch (e) {
+      setServers(null)
+      setErr(
+        e instanceof ApiError
+          ? `Couldn't load servers (${e.status}): ${e.message.slice(0, 200)}`
+          : 'Could not load servers.',
+      )
+    } finally {
+      setLoadingServers(false)
+    }
+  }
+
+  // Switching servers invalidates the loaded channel directory + selection.
+  function pickServer(id: string) {
+    setScopeId(id)
+    setDirectory(null)
+    setSelected(new Set())
+    setChannels('')
   }
 
   async function loadDirectory() {
@@ -234,12 +263,45 @@ export function Source({ platform }: { platform: Platform }) {
         </p>
         <form onSubmit={sync} className="mt-4 space-y-3">
           {copy.needsScope && (
-            <input
-              value={scopeId}
-              onChange={(e) => setScopeId(e.target.value)}
-              placeholder={copy.scopePlaceholder}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
-            />
+            <div className="space-y-2">
+              {/* Server picker (WSP-006): pick the bot's server instead of pasting
+                  a guild id. */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void loadServers()}
+                  disabled={loadingServers || !tokenSet}
+                  className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-50"
+                >
+                  {loadingServers ? 'Loading…' : servers ? 'Refresh servers' : 'Load servers'}
+                </button>
+                {servers && (
+                  <select
+                    value={scopeId}
+                    onChange={(e) => pickServer(e.target.value)}
+                    className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+                  >
+                    <option value="">— pick a server —</option>
+                    {servers.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name || s.id}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {servers && servers.length === 0 && (
+                <p className="text-xs text-slate-500">
+                  No servers — invite the bot to a server, then refresh.
+                </p>
+              )}
+              <input
+                value={scopeId}
+                onChange={(e) => setScopeId(e.target.value)}
+                placeholder={`or type the ${copy.scopePlaceholder}`}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+              />
+            </div>
           )}
 
           {/* Browse channels (WSP-006): list the server's channels grouped by

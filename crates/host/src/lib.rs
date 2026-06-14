@@ -46,9 +46,9 @@ pub use invite::{InviteService, IssuedInvite, DEFAULT_INVITE_TTL_SECS};
 #[cfg(feature = "http-llm")]
 pub use knowledge::HttpEmbedder;
 pub use knowledge::{DemoEmbedder, Embedder, KnowledgeService, SearchHit};
-pub use platform::make_platform_fetcher;
+pub use platform::{list_servers, make_platform_fetcher};
 pub use platform::{
-    ChannelInfo, FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher,
+    ChannelInfo, FetchError, FetchResult, FetchScope, PlatformContext, PlatformFetcher, ServerInfo,
 };
 pub use schedule_runner::SummarizingScheduleRunner;
 pub use scheduler::{ScheduleRunner, SchedulerService, TickReport};

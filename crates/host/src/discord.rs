@@ -56,6 +56,23 @@ pub fn is_text_channel(channel: &serde_json::Value) -> bool {
     )
 }
 
+/// Parse a Discord `GET /users/@me/guilds` array into the servers the bot is in.
+/// Pure — unit-tested without a network.
+pub fn parse_guilds(guilds: &serde_json::Value) -> Vec<crate::platform::ServerInfo> {
+    use crate::platform::ServerInfo;
+    let Some(arr) = guilds.as_array() else {
+        return vec![];
+    };
+    arr.iter()
+        .filter_map(|g| {
+            Some(ServerInfo {
+                id: g.get("id")?.as_str()?.to_string(),
+                name: g.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Parse a Discord `GET /guilds/{id}/channels` array into a browsable directory of
 /// text channels, each tagged with the name of its category (Discord category =
 /// channel `type` 4; a text channel's `parent_id` points at it). Non-text channels
@@ -167,7 +184,7 @@ pub fn parse_message(v: &serde_json::Value) -> Option<NormalizedMessage> {
 }
 
 #[cfg(feature = "discord")]
-pub use live::DiscordFetcher;
+pub use live::{list_guilds, DiscordFetcher};
 
 #[cfg(feature = "discord")]
 mod live {
@@ -377,6 +394,15 @@ mod live {
             Ok(super::parse_channel_directory(&self.get(&url)?))
         }
     }
+
+    /// List the guilds (servers) a bot token is a member of (WSP-006). Token-only
+    /// — `GET /users/@me/guilds` doesn't take a guild — so it builds a fetcher with
+    /// an empty guild just to reuse the authenticated `get` (with its 429 backoff).
+    pub fn list_guilds(token: &str) -> Result<Vec<crate::platform::ServerInfo>, String> {
+        let fetcher = DiscordFetcher::new(token.to_string(), String::new());
+        let json = fetcher.get(&format!("{API_BASE}/users/@me/guilds"))?;
+        Ok(super::parse_guilds(&json))
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +426,20 @@ mod tests {
         assert!(is_text_channel(&json!({"type": 5}))); // announcement
         assert!(!is_text_channel(&json!({"type": 2}))); // voice
         assert!(!is_text_channel(&json!({"type": 4}))); // category
+    }
+
+    #[test]
+    fn parse_guilds_reads_id_and_name() {
+        let listing = json!([
+            {"id": "111", "name": "Acme HQ", "owner": true},
+            {"id": "222", "name": "Side Project"},
+            {"name": "no id — dropped"}
+        ]);
+        let guilds = parse_guilds(&listing);
+        assert_eq!(guilds.len(), 2);
+        assert_eq!(guilds[0].id, "111");
+        assert_eq!(guilds[0].name, "Acme HQ");
+        assert_eq!(guilds[1].id, "222");
     }
 
     #[test]

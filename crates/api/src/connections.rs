@@ -240,6 +240,56 @@ pub async fn sync(
     }))
 }
 
+/// A server (Discord guild) the bot can reach.
+#[derive(Serialize)]
+pub struct ServerDto {
+    pub id: String,
+    pub name: String,
+}
+
+/// `GET /workspaces/:ws/connections/:platform/servers` — the servers the stored
+/// bot token can reach (WSP-006), so the dashboard offers a picker instead of a
+/// pasted guild id. Discord → the bot's guilds; Slack → empty (token is
+/// workspace-scoped).
+pub async fn servers(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, platform)): Path<(String, String)>,
+) -> Result<Json<Vec<ServerDto>>, ApiError> {
+    use repository::PlatformCredentialRepository;
+    user.require_workspace(&ws)?;
+    let platform = live_platform(&platform)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    let token = {
+        let Some(master) = state.master_key() else {
+            return Err(ApiError::bad_request(
+                "server has no encryption key configured (set LLM_CONFIG_KEY)".to_string(),
+            ));
+        };
+        let repo = state.repo.lock().expect("repo mutex");
+        let enc = repo
+            .get_platform_token(&workspace, platform.as_str())
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "no {} bot token set for this workspace",
+                    platform.as_str()
+                ))
+            })?;
+        host::decrypt_secret(master, &enc).map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+
+    let servers = host::list_servers(platform, token).map_err(ApiError::bad_request)?;
+    Ok(Json(
+        servers
+            .into_iter()
+            .map(|s| ServerDto { id: s.id, name: s.name })
+            .collect(),
+    ))
+}
+
 /// `?scope_id=<guild>` — the Discord guild (server) id to browse; Slack ignores it.
 #[derive(Deserialize)]
 pub struct ChannelsQuery {

@@ -24,6 +24,35 @@ pub enum FetchScope {
     Workspace,
 }
 
+/// A source the bot can reach (WSP-006): a Discord guild (server) the bot is a
+/// member of. Lets the dashboard offer a server picker instead of making the user
+/// paste a guild id. Slack tokens are workspace-scoped, so Slack has no picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerInfo {
+    pub id: String,
+    pub name: String,
+}
+
+/// List the servers a bot token can reach (WSP-006). Discord → the guilds the bot
+/// is in (`GET /users/@me/guilds`); Slack → empty (its token already scopes to one
+/// workspace, so channels are listed directly). Errors if the platform's feature
+/// isn't compiled in.
+#[allow(unused_variables)]
+pub fn list_servers(platform: Platform, token: String) -> Result<Vec<ServerInfo>, String> {
+    match platform {
+        Platform::Discord => {
+            #[cfg(feature = "discord")]
+            {
+                crate::discord::list_guilds(&token)
+            }
+            #[cfg(not(feature = "discord"))]
+            Err("Discord ingestion not compiled in (build with --features discord)".to_string())
+        }
+        Platform::Slack => Ok(Vec::new()),
+        Platform::WhatsApp => Err("WhatsApp is upload-only, not a live source".to_string()),
+    }
+}
+
 /// A browsable channel in a source's directory (WSP-006): its id, display name,
 /// and the category it sits under (Discord), so the dashboard can present the
 /// server's channels grouped by category for point-and-click selection. Slack and

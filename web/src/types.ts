@@ -268,6 +268,12 @@ export interface SourceSync {
   errors: { channel: string; message: string }[]
 }
 
+/** A server (Discord guild) the bot token can reach (WSP-006). */
+export interface SourceServer {
+  id: string
+  name: string
+}
+
 /** A browsable channel in a source's directory (WSP-006). */
 export interface SourceChannel {
   id: string

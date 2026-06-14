@@ -22,6 +22,7 @@ import type {
   ConnectionStatus,
   SourceSync,
   SourceChannel,
+  SourceServer,
   Spend,
   AuditEntry,
   Membership,
@@ -372,6 +373,11 @@ export class Client {
       `/workspaces/${this.ws()}/connections/${platform}/sync`,
       this.body('POST', { scope_id: scopeId || null, lookback_secs: lookbackSecs, channels }),
     )
+  }
+
+  /** List the servers (Discord guilds) the bot token can reach (WSP-006). */
+  sourceServers(platform: string): Promise<SourceServer[]> {
+    return this.json<SourceServer[]>(`/workspaces/${this.ws()}/connections/${platform}/servers`)
   }
 
   /** Browse a source's channels (grouped by category where it has them, WSP-006). */

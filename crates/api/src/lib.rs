@@ -400,6 +400,10 @@ pub fn build_router(state: AppState) -> Router {
             post(connections::sync),
         )
         .route(
+            "/workspaces/:ws/connections/:platform/servers",
+            get(connections::servers),
+        )
+        .route(
             "/workspaces/:ws/connections/:platform/channels",
             get(connections::channels),
         )
@@ -630,6 +634,7 @@ async fn openapi() -> Json<serde_json::Value> {
                 "delete": { "summary": "Clear the platform bot token" }
             },
             "/workspaces/{ws}/connections/{platform}/sync": { "post": { "summary": "Fetch a source's recent messages into the store — {scope_id?, channels?, lookback_secs} (WSP-006)" } },
+            "/workspaces/{ws}/connections/{platform}/servers": { "get": { "summary": "List the servers the bot token can reach — Discord guilds; Slack empty (WSP-006)" } },
             "/workspaces/{ws}/connections/{platform}/channels": { "get": { "summary": "Browse the source's channels grouped by category — ?scope_id=<guild> (WSP-006)" } },
             "/workspaces/{ws}/spend": { "get": { "summary": "Summarization cost analytics — ?days (ADR-125)" } },
             "/workspaces/{ws}/events": { "get": { "summary": "Live updates (Server-Sent Events)" } },

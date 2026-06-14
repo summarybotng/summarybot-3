@@ -51,8 +51,10 @@ model, so the rest of the system is platform-agnostic.
   store. Import spans are recorded for coverage analysis. *(ADR-121)*
 - **Discord & Slack (live fetch)** — `PlatformFetcher` adapters pull recent
   history over REST; bot tokens are stored encrypted per workspace. A
-  **channel directory** (`channel_directory()` → `/connections/:platform/channels`)
-  lists the source's channels grouped by category for point-and-click selection.
+  **server + channel browser** (`list_servers` → `/connections/:platform/servers`
+  for the bot's Discord guilds, then `channel_directory()` →
+  `/connections/:platform/channels` for that guild's channels grouped by category)
+  lets the dashboard offer point-and-click selection instead of pasted ids.
   *(ADR-128; WSP-006)*
 - **Coverage & contribution** — merges multi-contributor import spans into a
   coverage timeline with classified, fillable gaps; tracks who contributed what;
