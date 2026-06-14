@@ -60,7 +60,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 |---|---|---|---|
 | Sign in (dev) | ✅ | Login | workspace name + Dev sign-in |
 | Sign in via Google/Discord OAuth | 🟡 | Login | needs `--features oauth` + provider keys; button present otherwise errors |
-| Discover / switch my workspaces | 🟡 | Login | you type a workspace name at sign-in; no list or switcher yet |
+| Discover / switch my workspaces | ✅ | nav | a workspace switcher in the sidebar over the session's granted set (membership-derived at login); dev sign-in accepts several comma-separated |
 | Provision a tenant | 🟡 | Settings | must type a tenant id; no guided create/list |
 | Manage members + invites | ✅ | Members | |
 | Import a WhatsApp chat + see coverage/gaps | ✅ | WhatsApp | timeline, contributors, classified gaps |

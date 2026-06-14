@@ -32,6 +32,12 @@ export default function App() {
   const { client, signOut } = useAuth()
   const [tab, setTab] = useState<Tab>('summaries')
   const [brand, setBrand] = useState<string>('SummaryBot')
+  // Active workspace (one of the session's granted set). Switching it remounts
+  // the content so every tab refetches for the new workspace.
+  const [activeWs, setActiveWs] = useState('')
+  useEffect(() => {
+    if (client) setActiveWs(client.ws())
+  }, [client])
 
   // Resolve the tenant for branding (name + derived accent). In local dev the
   // Host won't match a tenant, so this quietly falls back to defaults.
@@ -60,9 +66,27 @@ export default function App() {
       <aside className="flex w-52 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-4">
           <span className="h-3 w-3 shrink-0 rounded-full bg-accent" />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="truncate font-semibold text-slate-800">{brand}</div>
-            <div className="truncate text-xs text-slate-400">{client.ws()}</div>
+            {client.workspaces().length > 1 ? (
+              <select
+                value={activeWs}
+                onChange={(e) => {
+                  client.setActiveWorkspace(e.target.value)
+                  setActiveWs(e.target.value)
+                }}
+                title="Switch workspace"
+                className="mt-0.5 w-full truncate bg-transparent text-xs text-slate-500 outline-none"
+              >
+                {client.workspaces().map((w) => (
+                  <option key={w} value={w}>
+                    {w}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="truncate text-xs text-slate-400">{client.ws()}</div>
+            )}
           </div>
         </div>
 
@@ -101,7 +125,7 @@ export default function App() {
         </button>
       </aside>
 
-      <main className="flex-1 overflow-y-auto px-4 py-6">
+      <main key={activeWs} className="flex-1 overflow-y-auto px-4 py-6">
         {tab === 'summaries' && <Summaries />}
         {tab === 'schedules' && <Schedules />}
         {tab === 'whatsapp' && <Whatsapp />}

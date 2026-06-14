@@ -56,9 +56,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   )
 
   async function signIn(workspace: string) {
-    const ws = workspace.trim() || 'ws-demo'
+    // Accept one or several comma-separated workspaces (the extras populate the
+    // in-nav workspace switcher); the subject is derived from the first.
+    const list = workspace
+      .split(',')
+      .map((w) => w.trim())
+      .filter(Boolean)
+    const wss = list.length ? list : ['ws-demo']
     // Dev sign-in: email provider, a derived subject. Real OAuth is a later seam.
-    const s = await apiLogin('email', `demo-${ws}`, 'demo@example.com', [ws])
+    const s = await apiLogin('email', `demo-${wss[0]}`, 'demo@example.com', wss)
     setSession(s)
   }
 

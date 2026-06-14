@@ -34,8 +34,11 @@ export function Login() {
           value={workspace}
           onChange={(e) => setWorkspace(e.target.value)}
           className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 outline-none focus:border-accent"
-          placeholder="ws-demo"
+          placeholder="ws-demo (or several: ws-a, ws-b)"
         />
+        <p className="mt-1 text-xs text-slate-400">
+          Tip: list several (comma-separated) to populate the workspace switcher.
+        </p>
 
         {err && <p className="mt-3 text-sm text-red-600">{err}</p>}
 

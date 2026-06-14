@@ -38,6 +38,8 @@ export interface Session {
   refreshToken: string
   userId: string
   workspaces: string[]
+  /** The workspace the dashboard is currently acting on (one of `workspaces`). */
+  active?: string
 }
 
 export class ApiError extends Error {
@@ -113,7 +115,22 @@ export class Client {
   }
 
   ws(): string {
+    const a = this.session.active
+    if (a && this.session.workspaces.includes(a)) return a
     return this.session.workspaces[0] ?? ''
+  }
+
+  /** The workspaces this session can act on (granted at login, entitlement-filtered). */
+  workspaces(): string[] {
+    return this.session.workspaces
+  }
+
+  /** Switch the active workspace (must be one of the granted set); persists it. */
+  setActiveWorkspace(id: string) {
+    if (this.session.workspaces.includes(id)) {
+      this.session = { ...this.session, active: id }
+      persist(this.session)
+    }
   }
 
   token(): string {
