@@ -105,6 +105,7 @@ impl ScheduleRunner for TenantAwareRunner<'_> {
                 &ws,
                 &rec.summary,
                 &rec.id,
+                rec.channel_id.as_ref().map(|c| c.as_str()),
                 now,
             );
             if let Some((tenant, window)) = charge {

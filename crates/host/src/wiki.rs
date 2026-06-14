@@ -215,6 +215,9 @@ mod tests {
             embedding: None,
             model: None,
             created_at: 1,
+            source_channel: None,
+            source_date: 1,
+            confidence: 1.0,
         }
     }
 

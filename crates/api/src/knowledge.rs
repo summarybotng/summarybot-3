@@ -177,9 +177,9 @@ pub async fn export_units(
                     "kind": u.kind,
                     "content": u.text,
                     "source_id": u.source_ids.first().cloned().unwrap_or_default(),
-                    "source_channel": "",
-                    "source_date": u.created_at / 86_400,
-                    "confidence": 1.0,
+                    "source_channel": u.source_channel.clone().unwrap_or_default(),
+                    "source_date": u.source_date / 86_400,
+                    "confidence": u.confidence,
                     "embedding": if include_embeddings { serde_json::json!(u.embedding) } else { serde_json::Value::Null },
                 })
             })
@@ -214,9 +214,9 @@ pub async fn export_units(
             id: u.id,
             content: u.text,
             source_id: u.source_ids.into_iter().next().unwrap_or_default(),
-            source_channel: String::new(),
-            source_date_days: (u.created_at / 86_400).max(0) as u32,
-            confidence: 1.0,
+            source_channel: u.source_channel.unwrap_or_default(),
+            source_date_days: (u.source_date / 86_400).max(0) as u32,
+            confidence: u.confidence,
             embedding: if include_embeddings { u.embedding } else { None },
         })
         .collect();
@@ -467,10 +467,11 @@ pub(crate) fn ingest_summary(
     workspace: &domain::WorkspaceId,
     summary: &ExtractedSummary,
     summary_id: &str,
+    source_channel: Option<&str>,
     now: i64,
 ) {
-    if let Err(e) =
-        KnowledgeService::new(repo, &*state.embedder).ingest(workspace, summary, summary_id, now)
+    if let Err(e) = KnowledgeService::new(repo, &*state.embedder)
+        .ingest(workspace, summary, summary_id, source_channel, now)
     {
         eprintln!("knowledge ingest failed for {summary_id}: {e}");
     }

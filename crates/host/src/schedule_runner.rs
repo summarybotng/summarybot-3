@@ -369,7 +369,7 @@ where
         };
         let sid = format!("roll_{schedule_id}_{until}");
         if let Err(e) =
-            KnowledgeService::new(self.repo, embedder).ingest(workspace, summary, &sid, now)
+            KnowledgeService::new(self.repo, embedder).ingest(workspace, summary, &sid, None, now)
         {
             eprintln!("rolling knowledge ingest failed for {schedule_id}: {e}");
         }

@@ -483,7 +483,15 @@ pub async fn summarize_weeks(
             if let Some((tenant, window)) = &charge {
                 crate::budget_charge(&repo, tenant, *window, record.cost_micros)?;
             }
-            crate::knowledge::ingest_summary(&state, &repo, &workspace, &record.summary, &record.id, now);
+            crate::knowledge::ingest_summary(
+                &state,
+                &repo,
+                &workspace,
+                &record.summary,
+                &record.id,
+                record.channel_id.as_ref().map(|c| c.as_str()),
+                now,
+            );
         }
         state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
         total_cost += record.cost_micros;

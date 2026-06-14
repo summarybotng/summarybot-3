@@ -874,6 +874,9 @@ mod tests {
                 embedding: Some(vec![0.0, 0.0, 1.0, 0.0]), // identical → duplicates
                 model: Some("fixed".into()),
                 created_at: created,
+                source_channel: None,
+                source_date: created,
+                confidence: 1.0,
             };
             repo.save_units(
                 &domain::WorkspaceId::parse("ws-1").unwrap(),
@@ -924,6 +927,9 @@ mod tests {
                     embedding: None,
                     model: None,
                     created_at: 5,
+                    source_channel: None,
+                    source_date: 5,
+                    confidence: 1.0,
                 }],
             )
             .unwrap();
@@ -959,6 +965,9 @@ mod tests {
                 embedding: Some(emb),
                 model: Some("fixed".into()),
                 created_at: created,
+                source_channel: None,
+                source_date: created,
+                confidence: 1.0,
             };
             repo.save_units(
                 &domain::WorkspaceId::parse("ws-1").unwrap(),

@@ -212,6 +212,9 @@ mod tests {
             embedding: Some(emb),
             model: Some("fixed".into()),
             created_at: created,
+            source_channel: None,
+            source_date: created,
+            confidence: 1.0,
         }
     }
 

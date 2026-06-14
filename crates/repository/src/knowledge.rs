@@ -25,6 +25,13 @@ pub struct StoredKnowledgeUnit {
     /// Embedding model id (pinned; Q#8) — `None` when unembedded.
     pub model: Option<String>,
     pub created_at: i64,
+    /// The channel/scope the source summary covered (ADR-127/129); `None` for a
+    /// workspace-wide or unscoped summary.
+    pub source_channel: Option<String>,
+    /// When the cited activity happened (unix seconds) — ADR-117/129.
+    pub source_date: i64,
+    /// Grounding confidence in `[0,1]` (ADR-004); 1.0 when not individually scored.
+    pub confidence: f32,
 }
 
 /// Storage boundary for knowledge units.
@@ -37,6 +44,10 @@ pub trait KnowledgeRepository {
     fn count_units(&self, workspace: &WorkspaceId) -> Result<i64>;
     /// Remove a unit by id (workspace-scoped). Returns whether a row was removed.
     fn delete_unit(&self, workspace: &WorkspaceId, id: &str) -> Result<bool>;
+    /// Remove all units extracted from one summary (ADR-129 replace-set): a
+    /// re-ingest of an edited summary clears the prior units before re-inserting,
+    /// so stale facts don't linger. Returns how many rows were removed.
+    fn delete_units_for_summary(&self, workspace: &WorkspaceId, summary_id: &str) -> Result<usize>;
 }
 
 /// Encode an f32 vector as little-endian bytes for the `embedding` blob.
@@ -62,13 +73,17 @@ impl KnowledgeRepository for SqliteRepository {
         for u in units {
             tx.execute(
                 "INSERT INTO knowledge_units
-                     (id, workspace_id, summary_id, kind, text, source_ids, embedding, model, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     (id, workspace_id, summary_id, kind, text, source_ids, embedding, model,
+                      created_at, source_channel, source_date, confidence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(id) DO UPDATE SET
                      text = excluded.text,
                      source_ids = excluded.source_ids,
                      embedding = excluded.embedding,
-                     model = excluded.model",
+                     model = excluded.model,
+                     source_channel = excluded.source_channel,
+                     source_date = excluded.source_date,
+                     confidence = excluded.confidence",
                 params![
                     u.id,
                     workspace.as_str(),
@@ -79,6 +94,9 @@ impl KnowledgeRepository for SqliteRepository {
                     u.embedding.as_deref().map(encode_embedding),
                     u.model,
                     u.created_at,
+                    u.source_channel,
+                    u.source_date,
+                    u.confidence,
                 ],
             )?;
         }
@@ -88,7 +106,8 @@ impl KnowledgeRepository for SqliteRepository {
 
     fn list_units(&self, workspace: &WorkspaceId) -> Result<Vec<StoredKnowledgeUnit>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, summary_id, kind, text, source_ids, embedding, model, created_at
+            "SELECT id, summary_id, kind, text, source_ids, embedding, model, created_at,
+                    source_channel, source_date, confidence
              FROM knowledge_units WHERE workspace_id = ?1
              ORDER BY created_at, id",
         )?;
@@ -108,6 +127,9 @@ impl KnowledgeRepository for SqliteRepository {
                 embedding: embedding.map(|b| decode_embedding(&b)),
                 model: row.get(6)?,
                 created_at: row.get(7)?,
+                source_channel: row.get(8)?,
+                source_date: row.get(9)?,
+                confidence: row.get(10)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -128,6 +150,14 @@ impl KnowledgeRepository for SqliteRepository {
             params![workspace.as_str(), id],
         )?;
         Ok(n > 0)
+    }
+
+    fn delete_units_for_summary(&self, workspace: &WorkspaceId, summary_id: &str) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM knowledge_units WHERE workspace_id = ?1 AND summary_id = ?2",
+            params![workspace.as_str(), summary_id],
+        )?;
+        Ok(n)
     }
 }
 
@@ -154,6 +184,9 @@ mod tests {
             embedding: Some(vec![0.1, -0.2, 0.3]),
             model: Some("nomic-embed-text".into()),
             created_at: 100,
+            source_channel: Some("c1".into()),
+            source_date: 90,
+            confidence: 0.8,
         };
         repo.save_units(&ws("w1"), std::slice::from_ref(&unit))
             .unwrap();

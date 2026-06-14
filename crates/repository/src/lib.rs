@@ -457,10 +457,18 @@ impl SqliteRepository {
                 source_ids   TEXT    NOT NULL DEFAULT '',
                 embedding    BLOB,
                 model        TEXT,
-                created_at   INTEGER NOT NULL
+                created_at   INTEGER NOT NULL,
+                -- ADR-127/129/117 grounding metadata: the scope channel, the
+                -- cited activity's date, and the claim's confidence.
+                source_channel TEXT,
+                source_date    INTEGER NOT NULL DEFAULT 0,
+                confidence     REAL    NOT NULL DEFAULT 1.0
             );
             CREATE INDEX IF NOT EXISTS idx_knowledge_workspace
                 ON knowledge_units(workspace_id);
+            -- Re-ingest replace-set (ADR-129): clear a summary's prior units fast.
+            CREATE INDEX IF NOT EXISTS idx_knowledge_summary
+                ON knowledge_units(workspace_id, summary_id);
             -- Synthesized wiki pages (WIK-001..003; ADR-127): emergent topic
             -- pages built from a workspace's knowledge units. Keyed by slug.
             CREATE TABLE IF NOT EXISTS wiki_pages (
@@ -557,6 +565,20 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0006_tenant_plugin_operator_disabled",
         "ALTER TABLE tenant_plugins ADD COLUMN operator_disabled INTEGER NOT NULL DEFAULT 0",
+    ),
+    // Per-unit grounding metadata (ADR-127/129/117) — added via migration so
+    // fresh and existing DBs match.
+    (
+        "0007_knowledge_unit_source_channel",
+        "ALTER TABLE knowledge_units ADD COLUMN source_channel TEXT",
+    ),
+    (
+        "0008_knowledge_unit_source_date",
+        "ALTER TABLE knowledge_units ADD COLUMN source_date INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "0009_knowledge_unit_confidence",
+        "ALTER TABLE knowledge_units ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
     ),
 ];
 

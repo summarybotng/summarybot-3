@@ -30,16 +30,26 @@ impl UnitKind {
     }
 }
 
-/// A single extracted knowledge unit, with provenance.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A single extracted knowledge unit, with provenance + grounding metadata
+/// (ADR-127/129; ADR-117 carries these into RVF export).
+#[derive(Debug, Clone, PartialEq)]
 pub struct KnowledgeUnit {
     /// The summary this unit was extracted from.
     pub summary_id: String,
     pub kind: UnitKind,
     pub text: String,
-    /// Source messages grounding this unit (from the summary's citations) — every
-    /// unit traces back to source segments (COH-005).
+    /// Source messages grounding this unit — for a key point, its own per-claim
+    /// references (ADR-004); otherwise the summary's citation union (COH-005).
     pub source_message_ids: Vec<MessageId>,
+    /// The channel/scope the summary covered (`None` for a workspace-wide or
+    /// unscoped summary).
+    pub source_channel: Option<String>,
+    /// When the cited activity happened (unix seconds): the earliest reference
+    /// timestamp for a grounded claim, else the summary's creation time.
+    pub source_date: i64,
+    /// Confidence the claim is supported by its sources (ADR-004). 1.0 for the
+    /// headline and action items (not individually scored by the model).
+    pub confidence: f32,
 }
 
 /// Max units kept per summary (PRD §12.8: ≤20/summary) — keeps the index lean.
@@ -48,33 +58,51 @@ pub const MAX_UNITS_PER_SUMMARY: usize = 20;
 /// Extract knowledge units from a produced summary (KNO-001). Units inherit the
 /// summary's grounded source messages as provenance. Capped at
 /// [`MAX_UNITS_PER_SUMMARY`]; trivial/empty texts are skipped.
-pub fn extract_units(summary: &ExtractedSummary, summary_id: &str) -> Vec<KnowledgeUnit> {
-    let sources: Vec<MessageId> = summary
+pub fn extract_units(
+    summary: &ExtractedSummary,
+    summary_id: &str,
+    source_channel: Option<&str>,
+    created_at: i64,
+) -> Vec<KnowledgeUnit> {
+    let union: Vec<MessageId> = summary
         .citations
         .iter()
         .map(|c| c.message_id.clone())
         .collect();
+    let channel = source_channel.map(str::to_string);
     let mut units = Vec::new();
-    let mut push = |kind: UnitKind, text: String| {
+    let mut push = |kind: UnitKind, text: String, sources: Vec<MessageId>, date: i64, confidence: f32| {
         if !text.trim().is_empty() {
             units.push(KnowledgeUnit {
                 summary_id: summary_id.to_string(),
                 kind,
                 text: text.trim().to_string(),
-                source_message_ids: sources.clone(),
+                source_message_ids: sources,
+                source_channel: channel.clone(),
+                source_date: date,
+                confidence,
             });
         }
     };
-    push(UnitKind::Headline, summary.text.clone());
+    push(UnitKind::Headline, summary.text.clone(), union.clone(), created_at, 1.0);
     for kp in &summary.key_points {
-        push(UnitKind::KeyPoint, kp.text.clone());
+        // A key point carries its own grounding (ADR-004): cite its references
+        // and date it to the earliest cited message; fall back to the summary.
+        let (sources, date) = if kp.references.is_empty() {
+            (union.clone(), created_at)
+        } else {
+            let ids = kp.references.iter().map(|r| r.message_id.clone()).collect();
+            let earliest = kp.references.iter().map(|r| r.timestamp).min().unwrap_or(created_at);
+            (ids, earliest)
+        };
+        push(UnitKind::KeyPoint, kp.text.clone(), sources, date, kp.confidence);
     }
     for ai in &summary.action_items {
         let text = match &ai.assignee {
             Some(who) => format!("{} (owner: {who})", ai.text),
             None => ai.text.clone(),
         };
-        push(UnitKind::ActionItem, text);
+        push(UnitKind::ActionItem, text, union.clone(), created_at, 1.0);
     }
     units.truncate(MAX_UNITS_PER_SUMMARY);
     units
@@ -146,7 +174,7 @@ mod tests {
 
     #[test]
     fn extracts_units_with_provenance_and_skips_blanks() {
-        let units = extract_units(&summary(), "sum_1");
+        let units = extract_units(&summary(), "sum_1", Some("c1"), 5000);
         // headline + 1 real key point (blank skipped) + 2 action items = 4
         assert_eq!(units.len(), 4);
         assert_eq!(units[0].kind, UnitKind::Headline);
@@ -165,7 +193,7 @@ mod tests {
     fn units_are_capped() {
         let mut s = summary();
         s.key_points = (0..50).map(|i| format!("point {i}").into()).collect();
-        assert_eq!(extract_units(&s, "x").len(), MAX_UNITS_PER_SUMMARY);
+        assert_eq!(extract_units(&s, "x", None, 0).len(), MAX_UNITS_PER_SUMMARY);
     }
 
     #[test]

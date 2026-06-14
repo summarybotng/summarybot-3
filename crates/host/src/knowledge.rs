@@ -150,9 +150,14 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
         workspace: &domain::WorkspaceId,
         summary: &ExtractedSummary,
         summary_id: &str,
+        source_channel: Option<&str>,
         now: i64,
     ) -> anyhow::Result<usize> {
-        let units = domain::extract_units(summary, summary_id);
+        let units = domain::extract_units(summary, summary_id, source_channel, now);
+        // Replace-set (ADR-129): re-ingesting a summary id clears its prior units
+        // first, so an edited/regenerated summary doesn't leave stale facts behind.
+        // (Cross-summary dedup/merge below still works against other summaries.)
+        self.repo.delete_units_for_summary(workspace, summary_id)?;
         if units.is_empty() {
             return Ok(0);
         }
@@ -178,6 +183,9 @@ impl<'a, R: KnowledgeRepository> KnowledgeService<'a, R> {
                 embedding: embeddings.as_ref().and_then(|e| e.get(i).cloned()),
                 model: embeddings.as_ref().map(|_| model.to_string()),
                 created_at: now,
+                source_channel: u.source_channel.clone(),
+                source_date: u.source_date,
+                confidence: u.confidence,
             })
             .filter(|u| seen.insert(u.id.clone()))
             .collect();
@@ -410,6 +418,7 @@ mod tests {
                     ],
                 ),
                 "sum_1",
+                None,
                 100,
             )
             .unwrap();
@@ -433,11 +442,11 @@ mod tests {
             "Launch plan",
             &["Ship the pricing page Friday", "Run the migration first"],
         );
-        assert_eq!(svc.ingest(&ws(), &s, "sum_1", 100).unwrap(), 3); // headline + 2
+        assert_eq!(svc.ingest(&ws(), &s, "sum_1", None, 100).unwrap(), 3); // headline + 2
 
         // Re-ingesting the SAME content under a different summary id stores nothing
         // new — content-addressed ids collapse the repeats (ADR-129 Layer 1).
-        svc.ingest(&ws(), &s, "sum_2", 200).unwrap();
+        svc.ingest(&ws(), &s, "sum_2", None, 200).unwrap();
         assert_eq!(repo.count_units(&ws()).unwrap(), 3);
 
         // A new summary sharing one key point adds only the genuinely-new units:
@@ -446,8 +455,44 @@ mod tests {
             "Different topic",
             &["Run the migration first", "Brand new decision was made"],
         );
-        svc.ingest(&ws(), &s2, "sum_3", 300).unwrap();
+        svc.ingest(&ws(), &s2, "sum_3", None, 300).unwrap();
         assert_eq!(repo.count_units(&ws()).unwrap(), 5);
+    }
+
+    #[test]
+    fn reingesting_an_edited_summary_replaces_its_units() {
+        use repository::KnowledgeRepository;
+        let repo = SqliteRepository::in_memory().unwrap();
+        let embedder = DemoEmbedder::default();
+        let svc = KnowledgeService::new(&repo, &embedder);
+
+        // First ingest of sum_1: headline + 2 key points.
+        let v1 = summary("Launch plan", &["Ship Friday", "Migrate first"]);
+        assert_eq!(svc.ingest(&ws(), &v1, "sum_1", None, 100).unwrap(), 3);
+        assert_eq!(repo.count_units(&ws()).unwrap(), 3);
+
+        // The summary is edited and re-ingested under the SAME id (ADR-129
+        // replace-set): the old key points are gone, only the new set remains.
+        let v2 = summary("Launch plan", &["Ship Monday instead"]);
+        svc.ingest(&ws(), &v2, "sum_1", None, 200).unwrap();
+        let units = repo.list_units(&ws()).unwrap();
+        assert_eq!(units.len(), 2, "headline + 1 new key point; stale ones cleared");
+        assert!(units.iter().any(|u| u.text == "Ship Monday instead"));
+        assert!(!units.iter().any(|u| u.text == "Ship Friday"), "stale unit removed");
+    }
+
+    #[test]
+    fn units_carry_channel_date_and_confidence_metadata() {
+        use repository::KnowledgeRepository;
+        let repo = SqliteRepository::in_memory().unwrap();
+        let embedder = DemoEmbedder::default();
+        let svc = KnowledgeService::new(&repo, &embedder);
+        let s = summary("Headline", &["a key point"]);
+        svc.ingest(&ws(), &s, "sum_1", Some("c-eng"), 7000).unwrap();
+        let units = repo.list_units(&ws()).unwrap();
+        assert!(units.iter().all(|u| u.source_channel.as_deref() == Some("c-eng")));
+        assert!(units.iter().all(|u| u.confidence > 0.0));
+        assert!(units.iter().all(|u| u.source_date > 0));
     }
 
     #[test]
@@ -493,7 +538,7 @@ mod tests {
             "headline alpha",
             &["the migration runs thursday", "deploy the service friday"],
         );
-        assert_eq!(svc.ingest(&ws(), &s1, "sum_1", 100).unwrap(), 3);
+        assert_eq!(svc.ingest(&ws(), &s1, "sum_1", None, 100).unwrap(), 3);
         assert_eq!(repo.count_units(&ws()).unwrap(), 3);
 
         // s2: a distinct headline (BETA) + a MIGRATION *paraphrase* (different
@@ -505,7 +550,7 @@ mod tests {
                 "gamma decision was recorded",
             ],
         );
-        svc.ingest(&ws(), &s2, "sum_2", 200).unwrap();
+        svc.ingest(&ws(), &s2, "sum_2", None, 200).unwrap();
         // +headline beta, +gamma; the migration paraphrase is gated → 3 + 2 = 5.
         assert_eq!(repo.count_units(&ws()).unwrap(), 5);
     }
@@ -552,9 +597,9 @@ mod tests {
         let svc = KnowledgeService::new(&repo, &emb).with_near_dup_threshold(0.93);
 
         // Original fact, grounded in message m1.
-        assert_eq!(svc.ingest(&ws(), &cited("the migration runs thursday", "m1"), "s1", 1).unwrap(), 1);
+        assert_eq!(svc.ingest(&ws(), &cited("the migration runs thursday", "m1"), "s1", None, 1).unwrap(), 1);
         // A paraphrase grounded in m2 → no new unit, but its provenance merges in.
-        assert_eq!(svc.ingest(&ws(), &cited("migration is scheduled for thursday", "m2"), "s2", 2).unwrap(), 0);
+        assert_eq!(svc.ingest(&ws(), &cited("migration is scheduled for thursday", "m2"), "s2", None, 2).unwrap(), 0);
         assert_eq!(repo.count_units(&ws()).unwrap(), 1, "paraphrase did not add a unit");
 
         let units = repo.list_units(&ws()).unwrap();

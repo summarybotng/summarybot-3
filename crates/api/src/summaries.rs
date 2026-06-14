@@ -276,6 +276,7 @@ pub async fn create_summary(
             &workspace,
             &record.summary,
             &record.id,
+            record.channel_id.as_ref().map(|c| c.as_str()),
             now,
         );
     }

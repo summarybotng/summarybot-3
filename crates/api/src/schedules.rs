@@ -474,6 +474,7 @@ pub async fn trigger_schedule(
                     &workspace,
                     &rec.summary,
                     &rec.id,
+                    rec.channel_id.as_ref().map(|c| c.as_str()),
                     now,
                 );
             }
