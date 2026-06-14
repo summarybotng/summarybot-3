@@ -132,6 +132,9 @@ each workspace picks the target on **Delivery**.
 **As a workspace user (Delivery tab):**
 3. Pick a **Type** (only the per-workspace **target** fields appear — channel id,
    Confluence space key, Drive folder, recipient, webhook URL) and **Add**.
+   Tick **Deliver on each run of a rolling schedule** if this destination should
+   receive the in-progress digest every run; otherwise it gets only the finalized
+   end-of-period digest (the list shows a **rolling: each run** badge when on).
 4. **Test** sends a sample so you can confirm it works; **Remove** deletes it.
 
 Every summary still always lands on the dashboard regardless of destinations.

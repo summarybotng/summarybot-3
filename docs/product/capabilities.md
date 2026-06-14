@@ -81,6 +81,10 @@ roadmap are listed at the end so the boundary is explicit.
   has disabled is refused.
 - **Gating** — destinations are gated by the pure delivery policy (enabled +
   configured / connected) before anything is sent.
+- **Per-schedule + per-destination rolling control** — a schedule can pin delivery
+  to a chosen subset of destinations (ADR-014), and a destination can opt into
+  receiving the **in-progress** rolling digest on every run rather than only the
+  finalized end-of-period digest (ADR-108).
 
 ## Knowledge base
 
@@ -146,7 +150,6 @@ stream over Server-Sent Events.
 
 - Discord/Slack **DM** send and an independent background poller (fetch on its own
   cadence, separate from summary schedules).
-- Per-destination rolling-delivery control (intermediate vs finalize-only).
 - Curator **auto-apply** (merge/prune with undo) and LLM topic re-organization.
 - Per-perspective prompt presets; push templates per destination.
 - End-to-end runs of OAuth login and the Confluence/Drive/SMTP sends against live

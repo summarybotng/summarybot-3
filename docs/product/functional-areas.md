@@ -118,6 +118,9 @@ Fans a produced summary out to its destinations.
   subset of the workspace's destinations (`schedule_destinations`; empty = all).
   The runner filters the workspace destinations by the selection before sending.
   *(ADR-014)*
+- **Per-destination rolling delivery** — a destination flagged
+  `rolling_deliver_intermediate` receives the in-progress rolling digest on every
+  run (no dashboard store); all destinations receive the finalized digest. *(ADR-108)*
 
 Boundary: delivery is the only subsystem that talks to external sink services;
 the gating decision is pure and testable.

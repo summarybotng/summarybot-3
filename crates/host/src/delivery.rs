@@ -310,6 +310,8 @@ pub struct ConfiguredDestination {
     pub id: String,
     pub dest: Destination,
     pub config: Value,
+    /// ADR-108: deliver here on every rolling run, not just at finalize.
+    pub rolling_deliver_intermediate: bool,
 }
 
 /// Per-destination result.
@@ -392,6 +394,31 @@ impl<'a, R: StructuredSummaryRepository> DeliveryService<'a, R> {
         Ok(DeliveryReport { results })
     }
 
+    /// Deliver to external destinations **without** the dashboard store — for
+    /// intermediate rolling-period updates (ADR-108), where the in-progress
+    /// digest goes out to flagged destinations on each run but shouldn't litter
+    /// the dashboard with a record every time (the finalized digest is stored).
+    pub fn deliver_external(
+        &self,
+        record: &SummaryRecord,
+        destinations: &[ConfiguredDestination],
+        caps: &DeliveryCapabilities,
+    ) -> DeliveryReport {
+        let mut results = Vec::new();
+        let rendered = RenderedSummary::new(&record.summary);
+        for cd in destinations {
+            if cd.dest.class == DeliveryClass::Dashboard {
+                continue;
+            }
+            let outcome = match resolve_delivery(&cd.dest, caps) {
+                DeliveryDecision::Rejected(reason) => DeliveryOutcome::Rejected(reason),
+                DeliveryDecision::Allowed => self.dispatch(&cd.dest.kind, &cd.config, &rendered),
+            };
+            results.push((cd.dest.kind.clone(), outcome));
+        }
+        DeliveryReport { results }
+    }
+
     fn dispatch(&self, kind: &str, config: &Value, summary: &RenderedSummary) -> DeliveryOutcome {
         match self.deliverers.iter().find(|d| d.id() == kind) {
             Some(d) => match d.deliver(config, summary) {
@@ -462,6 +489,7 @@ pub fn load_workspace_delivery(
             id: row.id.clone(),
             dest: Destination::service(row.kind),
             config,
+            rolling_deliver_intermediate: row.rolling_deliver_intermediate,
         });
     }
     Ok((destinations, caps))
@@ -1131,6 +1159,7 @@ mod tests {
             id: format!("d-{kind}"),
             dest: Destination::service(kind),
             config: serde_json::json!({ "url": "https://x" }),
+            rolling_deliver_intermediate: false,
         }
     }
 
@@ -1229,6 +1258,7 @@ mod tests {
                     address_enc: Some(enc),
                     enabled: true,
                     created_at: 1,
+                    rolling_deliver_intermediate: false,
                 },
             )
             .unwrap();
@@ -1242,6 +1272,7 @@ mod tests {
                     address_enc: Some(crate::encrypt_secret(&master, r#"{"url":"off"}"#).unwrap()),
                     enabled: false,
                     created_at: 2,
+                    rolling_deliver_intermediate: false,
                 },
             )
             .unwrap();
@@ -1277,6 +1308,7 @@ mod tests {
                     address_enc: Some(enc),
                     enabled: true,
                     created_at: 1,
+                    rolling_deliver_intermediate: false,
                 },
             )
             .unwrap();
@@ -1338,6 +1370,7 @@ mod tests {
                     address_enc: Some(target),
                     enabled: true,
                     created_at: 1,
+                    rolling_deliver_intermediate: false,
                 },
             )
             .unwrap();
@@ -1380,6 +1413,7 @@ mod tests {
                     address_enc: Some("not-decryptable".into()),
                     enabled: true,
                     created_at: 1,
+                    rolling_deliver_intermediate: false,
                 },
             )
             .unwrap();

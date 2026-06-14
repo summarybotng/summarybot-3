@@ -27,6 +27,8 @@ pub struct DestinationDto {
     pub enabled: bool,
     /// Non-secret summary of the config (e.g. `https://hooks.slack.com · #ops`).
     pub hint: Option<String>,
+    /// ADR-108: deliver here on every rolling run, not just at finalize.
+    pub rolling_deliver_intermediate: bool,
 }
 
 /// A plugin descriptor exposed to the dashboard so it can render a config form.
@@ -51,6 +53,9 @@ pub struct CreateDestinationRequest {
     pub kind: String,
     #[serde(default)]
     pub config: serde_json::Map<String, Value>,
+    /// ADR-108: deliver on every rolling run, not just at finalize (default false).
+    #[serde(default)]
+    pub rolling_deliver_intermediate: bool,
 }
 
 fn workspace(ws: String) -> Result<domain::WorkspaceId, ApiError> {
@@ -100,6 +105,7 @@ fn to_dto(row: &StoredDestination, master: Option<&[u8; 32]>) -> DestinationDto 
         kind: row.kind.clone(),
         enabled: row.enabled,
         hint,
+        rolling_deliver_intermediate: row.rolling_deliver_intermediate,
     }
 }
 
@@ -205,6 +211,7 @@ pub async fn create_destination(
         address_enc: Some(address_enc),
         enabled: true,
         created_at: crate::auth::now_secs(),
+        rolling_deliver_intermediate: body.rolling_deliver_intermediate,
     };
     let repo = state.repo.lock().expect("repo mutex");
     // Honor the tenant enablement gate: a workspace can't add a destination for a

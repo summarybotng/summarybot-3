@@ -190,6 +190,8 @@ export interface Destination {
   enabled: boolean
   /** Non-secret summary of the config; secret fields are never returned. */
   hint: string | null
+  /** ADR-108: deliver here on every rolling run, not just at finalize. */
+  rolling_deliver_intermediate: boolean
 }
 
 export interface KnowledgeHit {

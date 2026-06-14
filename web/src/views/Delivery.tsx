@@ -14,6 +14,7 @@ export function Delivery() {
   const [dests, setDests] = useState<Destination[]>([])
   const [kind, setKind] = useState('')
   const [form, setForm] = useState<Record<string, string>>({})
+  const [rollingIntermediate, setRollingIntermediate] = useState(false)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
   const [testing, setTesting] = useState<string | null>(null)
@@ -43,8 +44,9 @@ export function Delivery() {
     setBusy(true)
     setMsg(null)
     try {
-      await client.addDestination(kind, form)
+      await client.addDestination(kind, form, rollingIntermediate)
       setForm({})
+      setRollingIntermediate(false)
       setMsg(`${selected.display_name} destination added. New summaries will be delivered to it.`)
       await load()
     } catch (e) {
@@ -131,6 +133,22 @@ export function Delivery() {
               </div>
             ))}
 
+            {/* ADR-108: rolling schedules can push to this destination each run. */}
+            <label className="flex items-start gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={rollingIntermediate}
+                onChange={(e) => setRollingIntermediate(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                Deliver on each run of a rolling schedule
+                <span className="block text-xs text-slate-400">
+                  Off (default): only the finalized end-of-period digest is delivered here.
+                </span>
+              </span>
+            </label>
+
             <button
               type="submit"
               disabled={busy || requiredMissing}
@@ -159,6 +177,11 @@ export function Delivery() {
                   {d.hint ?? '(config hidden)'}
                 </span>
                 {!d.enabled && <span className="ml-2 text-xs text-slate-400">disabled</span>}
+                {d.rolling_deliver_intermediate && (
+                  <span className="ml-2 rounded bg-accent/10 px-1.5 py-0.5 text-xs text-accent">
+                    rolling: each run
+                  </span>
+                )}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button

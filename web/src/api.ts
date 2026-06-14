@@ -463,10 +463,14 @@ export class Client {
   }
 
   /** Add a destination of `kind` with its config (stored encrypted, never returned). */
-  addDestination(kind: string, config: Record<string, string>): Promise<Destination> {
+  addDestination(
+    kind: string,
+    config: Record<string, string>,
+    rollingDeliverIntermediate = false,
+  ): Promise<Destination> {
     return this.json<Destination>(
       `/workspaces/${this.ws()}/destinations`,
-      this.body('POST', { kind, config }),
+      this.body('POST', { kind, config, rolling_deliver_intermediate: rollingDeliverIntermediate }),
     )
   }
 

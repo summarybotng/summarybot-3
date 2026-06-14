@@ -402,6 +402,73 @@ where
         Ok(())
     }
 
+    /// Deliver an *intermediate* rolling update (ADR-108): the in-progress digest
+    /// goes only to destinations flagged `rolling_deliver_intermediate` (and within
+    /// the schedule's ADR-014 selection), with no dashboard store. A quiet no-op
+    /// when no destination opted in — the common case.
+    fn deliver_intermediate(
+        &self,
+        ws: &domain::WorkspaceId,
+        schedule_id: &str,
+        record: &SummaryRecord,
+    ) -> Result<(), String> {
+        let (mut destinations, caps) =
+            load_workspace_delivery(self.repo, ws, self.master.as_ref()).map_err(|e| e.to_string())?;
+        let selected = self
+            .repo
+            .list_schedule_destinations(schedule_id)
+            .unwrap_or_default();
+        if !selected.is_empty() {
+            destinations.retain(|d| selected.contains(&d.id));
+        }
+        destinations.retain(|d| d.rolling_deliver_intermediate);
+        if destinations.is_empty() {
+            return Ok(());
+        }
+        DeliveryService::new(self.repo)
+            .with_deliverers(self.deliverers)
+            .deliver_external(record, &destinations, &caps);
+        Ok(())
+    }
+
+    /// Build an intermediate rolling record (ADR-108) from the accumulated
+    /// document so far — an Append-style snapshot (no synthesis cost), tagged so
+    /// it's distinguishable from the finalized digest.
+    fn rolling_intermediate_record(
+        &self,
+        stored: &StoredSchedule,
+        channel: &domain::ChannelId,
+        cfg: &RollingConfig,
+        content_md: &str,
+        now: i64,
+    ) -> SummaryRecord {
+        let header = format!(
+            "# {} digest (in progress) · as of {}\n\n",
+            cfg.period,
+            format_day(now, stored.schedule.timezone),
+        );
+        SummaryRecord {
+            id: format!("sum_{}_{}_int", stored.id, now),
+            channel_id: Some(channel.clone()),
+            model: "rolling".to_string(),
+            cost_micros: 0,
+            degraded: false,
+            created_at: now,
+            pinned: false,
+            archived: false,
+            tags: vec![format!("rolling-{}-intermediate", cfg.period)],
+            coherence_score: None,
+            summary: ExtractedSummary {
+                text: format!("{header}{content_md}"),
+                key_points: vec![],
+                action_items: vec![],
+                technical_terms: vec![],
+                participants: vec![],
+                citations: vec![],
+            },
+        }
+    }
+
     /// Summarize a channel's messages in `(since, until]` (live-syncing first, as
     /// the one-shot path does). Returns `None` when there's nothing substantial —
     /// so an empty window contributes no section to the rolling document.
@@ -560,13 +627,18 @@ where
                         period_end: window.end,
                         accumulated_through: until,
                         accumulation_count: count,
-                        content_md,
+                        content_md: content_md.clone(),
                         cost_micros,
                         model,
                         created_at: now,
                         updated_at: now,
                     })
                     .map_err(|e| e.to_string())?;
+                // ADR-108: push the in-progress digest to any opted-in destinations.
+                if !content_md.trim().is_empty() {
+                    let rec = self.rolling_intermediate_record(stored, channel, cfg, &content_md, now);
+                    self.deliver_intermediate(ws, &stored.id, &rec)?;
+                }
             }
             RollingAction::Accumulate { since, until } => {
                 let Some(mut row) = active else { return Ok(()) };
@@ -583,6 +655,12 @@ where
                 self.repo
                     .upsert_active_rolling(&row)
                     .map_err(|e| e.to_string())?;
+                // ADR-108: push the in-progress digest to any opted-in destinations.
+                if !row.content_md.trim().is_empty() {
+                    let rec =
+                        self.rolling_intermediate_record(stored, channel, cfg, &row.content_md, now);
+                    self.deliver_intermediate(ws, &stored.id, &rec)?;
+                }
             }
             RollingAction::Finalize => {
                 let Some(mut row) = active else { return Ok(()) };
@@ -895,6 +973,99 @@ mod tests {
         assert!(records[0].summary.key_points.is_empty());
     }
 
+    #[cfg(feature = "http-llm")]
+    #[test]
+    fn rolling_intermediate_delivers_only_to_opted_in_destinations() {
+        // ADR-108: during a rolling period, only destinations flagged
+        // `rolling_deliver_intermediate` receive the in-progress digest; the
+        // others wait for finalize. The finalized digest then goes to all.
+        use crate::delivery::{Deliverer, RenderedSummary};
+        use repository::{
+            DestinationRepository, RollingConfig, RollingRepository, StoredDestination,
+        };
+        use serde_json::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        struct UrlSpy {
+            seen: Rc<RefCell<Vec<String>>>,
+        }
+        impl Deliverer for UrlSpy {
+            fn id(&self) -> &str {
+                "webhook"
+            }
+            fn deliver(&self, config: &Value, _s: &RenderedSummary) -> Result<(), String> {
+                self.seen.borrow_mut().push(
+                    config.get("url").and_then(Value::as_str).unwrap_or("").to_string(),
+                );
+                Ok(())
+            }
+        }
+
+        let master = [3u8; 32];
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.create_schedule(&schedule_with_channel(&ws, 0)).unwrap();
+        repo.set_rolling_config(
+            "sch_1",
+            &RollingConfig { period: "weekly".into(), strategy: "append".into(), end_day: 6 },
+        )
+        .unwrap();
+
+        // Two webhook destinations: "live" opted into intermediate delivery, "final" not.
+        for (id, url, intermediate) in [
+            ("d_live", "https://live.example/hook", true),
+            ("d_final", "https://final.example/hook", false),
+        ] {
+            let enc = crate::encrypt_secret(&master, &format!(r#"{{"url":"{url}"}}"#)).unwrap();
+            repo.upsert_destination(
+                &ws,
+                &StoredDestination {
+                    id: id.into(),
+                    kind: "webhook".into(),
+                    address_enc: Some(enc),
+                    enabled: true,
+                    created_at: 1,
+                    rolling_deliver_intermediate: intermediate,
+                },
+            )
+            .unwrap();
+        }
+
+        let tz = chrono_tz::UTC;
+        let window = RollingPeriod::Weekly.window(1_767_700_000, tz, end_weekday(6)).unwrap();
+        repo.save_message(&ws, &msg("m0", window.start + 500, "we shipped the release today"))
+            .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
+        let deliverers: Vec<Box<dyn Deliverer>> = vec![Box::new(UrlSpy { seen: Rc::clone(&seen) })];
+        let runner = SummarizingScheduleRunner::new(&repo, &engine, &l)
+            .with_delivery(&deliverers, Some(master));
+        let sched = repo.get_schedule(&ws, "sch_1").unwrap().unwrap();
+
+        // Mid-period run (StartNew) → only the opted-in destination is hit.
+        runner.run(&sched, window.start + 1_000).unwrap();
+        assert_eq!(
+            seen.borrow().clone(),
+            vec!["https://live.example/hook".to_string()],
+            "intermediate update goes only to the opted-in destination"
+        );
+
+        // Finalize → the digest goes to both destinations.
+        seen.borrow_mut().clear();
+        runner.run(&sched, window.end + 10).unwrap();
+        let mut got = seen.borrow().clone();
+        got.sort();
+        assert_eq!(
+            got,
+            vec!["https://final.example/hook".to_string(), "https://live.example/hook".to_string()],
+            "the finalized digest goes to all destinations"
+        );
+    }
+
     #[test]
     fn rolling_hybrid_finalize_synthesizes_a_structured_digest() {
         use repository::{RollingConfig, RollingRepository};
@@ -1095,6 +1266,7 @@ mod tests {
                     address_enc: Some(enc),
                     enabled: true,
                     created_at: 1,
+                    rolling_deliver_intermediate: false,
                 },
             )
             .unwrap();

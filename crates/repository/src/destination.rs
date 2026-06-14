@@ -21,6 +21,9 @@ pub struct StoredDestination {
     pub address_enc: Option<String>,
     pub enabled: bool,
     pub created_at: i64,
+    /// ADR-108: for a rolling-period schedule, deliver here on every run (true)
+    /// rather than only when the period finalizes (false, the default).
+    pub rolling_deliver_intermediate: bool,
 }
 
 /// Storage boundary for a workspace's delivery destinations.
@@ -36,7 +39,7 @@ pub trait DestinationRepository {
 impl DestinationRepository for SqliteRepository {
     fn list_destinations(&self, workspace: &WorkspaceId) -> Result<Vec<StoredDestination>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, kind, address_enc, enabled, created_at
+            "SELECT id, kind, address_enc, enabled, created_at, rolling_deliver_intermediate
              FROM workspace_destinations WHERE workspace_id = ?1
              ORDER BY created_at, id",
         )?;
@@ -47,6 +50,7 @@ impl DestinationRepository for SqliteRepository {
                 address_enc: row.get(2)?,
                 enabled: row.get::<_, i64>(3)? != 0,
                 created_at: row.get(4)?,
+                rolling_deliver_intermediate: row.get::<_, i64>(5)? != 0,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -56,12 +60,14 @@ impl DestinationRepository for SqliteRepository {
     fn upsert_destination(&self, workspace: &WorkspaceId, dest: &StoredDestination) -> Result<()> {
         self.conn.execute(
             "INSERT INTO workspace_destinations
-                 (workspace_id, id, kind, address_enc, enabled, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 (workspace_id, id, kind, address_enc, enabled, created_at,
+                  rolling_deliver_intermediate)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(workspace_id, id) DO UPDATE SET
                  kind = excluded.kind,
                  address_enc = excluded.address_enc,
-                 enabled = excluded.enabled",
+                 enabled = excluded.enabled,
+                 rolling_deliver_intermediate = excluded.rolling_deliver_intermediate",
             params![
                 workspace.as_str(),
                 dest.id,
@@ -69,6 +75,7 @@ impl DestinationRepository for SqliteRepository {
                 dest.address_enc,
                 dest.enabled as i64,
                 dest.created_at,
+                dest.rolling_deliver_intermediate as i64,
             ],
         )?;
         Ok(())
@@ -100,6 +107,7 @@ mod tests {
             address_enc: Some(format!("cipher-{id}")),
             enabled,
             created_at: 100,
+            rolling_deliver_intermediate: false,
         }
     }
 
@@ -135,5 +143,23 @@ mod tests {
         assert!(repo.delete_destination(&ws("w1"), "d1").unwrap());
         assert!(!repo.delete_destination(&ws("w1"), "d1").unwrap());
         assert_eq!(repo.list_destinations(&ws("w1")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rolling_intermediate_flag_round_trips() {
+        let repo = repo();
+        let mut d = dest("d1", true);
+        d.rolling_deliver_intermediate = true;
+        repo.upsert_destination(&ws("w1"), &d).unwrap();
+        assert!(repo.list_destinations(&ws("w1")).unwrap()[0].rolling_deliver_intermediate);
+        // Default is false.
+        repo.upsert_destination(&ws("w1"), &dest("d2", true)).unwrap();
+        let d2 = repo
+            .list_destinations(&ws("w1"))
+            .unwrap()
+            .into_iter()
+            .find(|x| x.id == "d2")
+            .unwrap();
+        assert!(!d2.rolling_deliver_intermediate);
     }
 }

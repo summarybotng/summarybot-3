@@ -416,6 +416,9 @@ impl SqliteRepository {
                 address_enc  TEXT,
                 enabled      INTEGER NOT NULL DEFAULT 1,
                 created_at   INTEGER NOT NULL DEFAULT 0,
+                -- ADR-108: for rolling-period schedules, deliver to this destination
+                -- on every run (1) rather than only when the period finalizes (0).
+                rolling_deliver_intermediate INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (workspace_id, id)
             );
             -- Per-workspace summarization settings (SUM-007): free-text guidance
@@ -525,6 +528,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0004_whatsapp_group_created_at",
         "ALTER TABLE whatsapp_imports ADD COLUMN group_created_at INTEGER",
+    ),
+    // Per-destination intermediate rolling delivery (ADR-108) — the baseline
+    // CREATE already includes it; this brings pre-baseline DBs up to date.
+    (
+        "0005_dest_rolling_intermediate",
+        "ALTER TABLE workspace_destinations ADD COLUMN rolling_deliver_intermediate INTEGER NOT NULL DEFAULT 0",
     ),
 ];
 
