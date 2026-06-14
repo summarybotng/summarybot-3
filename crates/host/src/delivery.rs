@@ -306,6 +306,8 @@ pub fn resolve_destination_config(
 
 /// A gating destination paired with its decrypted config, ready to dispatch.
 pub struct ConfiguredDestination {
+    /// Stored destination id (so a schedule can restrict delivery to a subset).
+    pub id: String,
     pub dest: Destination,
     pub config: Value,
 }
@@ -457,6 +459,7 @@ pub fn load_workspace_delivery(
             caps.configured.push(row.kind.clone());
         }
         destinations.push(ConfiguredDestination {
+            id: row.id.clone(),
             dest: Destination::service(row.kind),
             config,
         });
@@ -1125,6 +1128,7 @@ mod tests {
 
     fn cfg(kind: &str) -> ConfiguredDestination {
         ConfiguredDestination {
+            id: format!("d-{kind}"),
             dest: Destination::service(kind),
             config: serde_json::json!({ "url": "https://x" }),
         }

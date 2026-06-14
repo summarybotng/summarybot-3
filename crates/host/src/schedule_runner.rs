@@ -19,9 +19,9 @@ use domain::{
 };
 use repository::{
     DestinationRepository, KnowledgeRepository, PlatformCredentialRepository, RollingConfig,
-    RollingRepository, RollingSummaryRow, ScheduleSourceRepository, StoredSchedule,
-    StructuredSummaryRepository, SummaryRecord, TenantPluginRepository, WhatsAppRepository,
-    WorkspaceRepository, WorkspaceSettingsRepository,
+    RollingRepository, RollingSummaryRow, ScheduleDestinationRepository, ScheduleSourceRepository,
+    StoredSchedule, StructuredSummaryRepository, SummaryRecord, TenantPluginRepository,
+    WhatsAppRepository, WorkspaceRepository, WorkspaceSettingsRepository,
 };
 
 /// Sentinel channel id meaning "all of the workspace's channels" (ADR-011
@@ -154,7 +154,8 @@ where
         + RollingRepository
         + KnowledgeRepository
         + WorkspaceRepository
-        + TenantPluginRepository,
+        + TenantPluginRepository
+        + ScheduleDestinationRepository,
     C: LlmClient,
 {
     fn run(&self, stored: &StoredSchedule, now: i64) -> Result<(), String> {
@@ -227,7 +228,7 @@ where
             coherence_score: Some(outcome.coherence.score),
             summary: outcome.summary,
         };
-        self.deliver_record(ws, &record)
+        self.deliver_record(ws, &stored.id, &record)
     }
 }
 
@@ -273,7 +274,8 @@ where
         + RollingRepository
         + KnowledgeRepository
         + WorkspaceRepository
-        + TenantPluginRepository,
+        + TenantPluginRepository
+        + ScheduleDestinationRepository,
     C: LlmClient,
 {
     /// Feed one rolling delta's facts into the knowledge base (ADR-129 Layer 3) —
@@ -300,14 +302,24 @@ where
 
     /// Deliver a produced record: always-on dashboard store + any configured
     /// destinations (DSH-010/011), gated by the workspace's capabilities. Shared
-    /// by the one-shot and rolling-finalize paths.
+    /// by the one-shot and rolling-finalize paths. If `schedule_id`'s schedule has
+    /// a destination selection (ADR-014), delivery is restricted to it; otherwise
+    /// it goes to all enabled destinations.
     fn deliver_record(
         &self,
         ws: &domain::WorkspaceId,
+        schedule_id: &str,
         record: &SummaryRecord,
     ) -> Result<(), String> {
-        let (destinations, caps) = load_workspace_delivery(self.repo, ws, self.master.as_ref())
-            .map_err(|e| e.to_string())?;
+        let (mut destinations, caps) =
+            load_workspace_delivery(self.repo, ws, self.master.as_ref()).map_err(|e| e.to_string())?;
+        let selected = self
+            .repo
+            .list_schedule_destinations(schedule_id)
+            .unwrap_or_default();
+        if !selected.is_empty() {
+            destinations.retain(|d| selected.contains(&d.id));
+        }
         DeliveryService::new(self.repo)
             .with_deliverers(self.deliverers)
             .deliver(ws, record, &destinations, &caps)
@@ -582,7 +594,7 @@ where
                         coherence_score: None,
                         summary,
                     };
-                    self.deliver_record(ws, &record)?;
+                    self.deliver_record(ws, &stored.id, &record)?;
                 }
                 self.repo
                     .delete_active_rolling(&stored.id)
@@ -951,6 +963,87 @@ mod tests {
             stored.len(),
             1,
             "summarized the stored messages despite no live feature"
+        );
+    }
+
+    #[cfg(feature = "http-llm")]
+    #[test]
+    fn schedule_destination_selection_restricts_delivery() {
+        // ADR-014: a schedule may pin its delivery to a subset of the workspace's
+        // destinations. With two webhook destinations configured but the schedule
+        // restricted to one, only that one receives the summary.
+        use crate::delivery::{Deliverer, RenderedSummary};
+        use repository::{
+            DestinationRepository, ScheduleDestinationRepository, StoredDestination,
+        };
+        use serde_json::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        /// Records the `url` of every config it's asked to deliver, into a shared
+        /// buffer the test can inspect once the runner releases its borrow.
+        struct UrlSpy {
+            seen: Rc<RefCell<Vec<String>>>,
+        }
+        impl Deliverer for UrlSpy {
+            fn id(&self) -> &str {
+                "webhook"
+            }
+            fn deliver(&self, config: &Value, _summary: &RenderedSummary) -> Result<(), String> {
+                let url = config
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                self.seen.borrow_mut().push(url);
+                Ok(())
+            }
+        }
+
+        let master = [9u8; 32];
+        let repo = SqliteRepository::in_memory().unwrap();
+        let ws = WorkspaceId::parse("ws-1").unwrap();
+        repo.save_message(&ws, &msg("m0", 3_500, "we shipped the release today"))
+            .unwrap();
+        repo.create_schedule(&schedule_with_channel(&ws, 3_600))
+            .unwrap();
+
+        // Two enabled webhook destinations.
+        for (id, url) in [("d1", "https://one.example/hook"), ("d2", "https://two.example/hook")]
+        {
+            let enc = crate::encrypt_secret(&master, &format!(r#"{{"url":"{url}"}}"#)).unwrap();
+            repo.upsert_destination(
+                &ws,
+                &StoredDestination {
+                    id: id.into(),
+                    kind: "webhook".into(),
+                    address_enc: Some(enc),
+                    enabled: true,
+                    created_at: 1,
+                },
+            )
+            .unwrap();
+        }
+        // Restrict the schedule to d1 only.
+        repo.set_schedule_destinations("sch_1", &["d1".into()])
+            .unwrap();
+
+        let limiter = Arc::new(GlobalRateLimiter::new(RateLimitConfig::default()));
+        let engine = ResilientLlm::new(FakeLlm, limiter);
+        let l = ladder();
+        let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(vec![]));
+        let deliverers: Vec<Box<dyn Deliverer>> = vec![Box::new(UrlSpy {
+            seen: Rc::clone(&seen),
+        })];
+        let runner = SummarizingScheduleRunner::new(&repo, &engine, &l)
+            .with_delivery(&deliverers, Some(master));
+
+        SchedulerService::new(&repo).tick(&runner, 3_600).unwrap();
+
+        // The deliverer ran exactly once, for d1's URL — d2 was filtered out.
+        assert_eq!(
+            seen.borrow().clone(),
+            vec!["https://one.example/hook".to_string()]
         );
     }
 

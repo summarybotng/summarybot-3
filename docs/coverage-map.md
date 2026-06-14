@@ -80,7 +80,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Unified "create summary" wizard (now / schedule / retrospective) | 🟡 | — | the three paths exist but as separate controls across tabs, not one wizard (ADR-088/089) |
 | View summary detail (key points, action items) | ✅ | Summaries | expandable card |
 | Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
-| Choose delivery destinations *per schedule* | ⛔ | — | delivery is workspace-wide; no per-schedule destination picker (ADR-014) |
+| Choose delivery destinations *per schedule* | ✅ | Schedules | a destination picker pins a schedule to a chosen subset; empty = all enabled (ADR-014). Stored in `schedule_destinations`; the runner filters delivery to the selection. ADR-108 (intermediate-vs-finalize routing per destination) is the remaining refinement |
 | Schedule scope = all-channels (workspace) | ✅ | Schedules | "all channels" toggle → a workspace-wide digest across every channel (ADR-011) |
 | Schedule scope = Discord category | ⛔ | — | needs live channel resolution from a bound Discord source (ADR-011); all-channels + single-channel shipped |
 | Jobs view (long-running work + progress) | ✅ | Jobs | a Jobs tab lists background work with status/progress/cost; the retrospective by-week run records a job (ADR-040). Live streaming progress mid-run is a refinement |
@@ -102,13 +102,14 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 debt that works but is rough — OAuth/Drive connect need server config; tenant
 provisioning, workspace discovery, and the forward weekly rolling digest still
 lean on typed ids; "generate now" lacks the quick time presets; the three
-create-summary paths aren't unified into one wizard. The ⛔ rows are v2-spec'd
-flows the rewrite hasn't built: **per-schedule destinations** (ADR-014),
-**category/all-channel schedule scope** (ADR-011), a **jobs/progress** view for
-long runs (ADR-040), per-destination rolling delivery (ADR-108), the curator
-*apply* step, and the wiki raw-provenance tab (ADR-063). None are 🔌 (shipped
-backend, no UI) right now — the Discord browse case that prompted this matrix is
-closed. These ⛔/🟡 rows are the live UX backlog; close them against the spec, not
+create-summary paths aren't unified into one wizard. The remaining ⛔ rows are
+v2-spec'd flows the rewrite hasn't built: **Discord-category schedule scope**
+(ADR-011; all-channel + single-channel shipped) and **per-destination rolling
+delivery routing** (ADR-108; per-schedule destination *selection* shipped via
+ADR-014). The earlier UX backlog this matrix opened — per-schedule destinations,
+all-channel scope, jobs/progress, the curator apply step, and the wiki
+raw-provenance tab — is now closed. None are 🔌 (shipped backend, no UI) right
+now. These ⛔/🟡 rows are the live UX backlog; close them against the spec, not
 by guessing.
 
 ---

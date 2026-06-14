@@ -17,6 +17,7 @@ mod membership;
 mod platform_credential;
 mod rolling_store;
 mod schedule;
+mod schedule_destination;
 mod schedule_run;
 mod schedule_source;
 mod session;
@@ -36,6 +37,7 @@ pub use membership::MembershipRepository;
 pub use platform_credential::PlatformCredentialRepository;
 pub use rolling_store::{RollingConfig, RollingRepository, RollingSummaryRow};
 pub use schedule::{ScheduleRepository, StoredSchedule};
+pub use schedule_destination::ScheduleDestinationRepository;
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use schedule_source::{ScheduleSource, ScheduleSourceRepository};
 pub use session::SessionRepository;
@@ -463,6 +465,15 @@ impl SqliteRepository {
                 schedule_id TEXT NOT NULL PRIMARY KEY,
                 platform    TEXT NOT NULL,
                 source_id   TEXT
+            );
+
+            -- Per-schedule delivery destination selection (ADR-014): which of the
+            -- workspace's destinations this schedule delivers to. No rows for a
+            -- schedule = deliver to all (the default); rows restrict to that set.
+            CREATE TABLE IF NOT EXISTS schedule_destinations (
+                schedule_id    TEXT NOT NULL,
+                destination_id TEXT NOT NULL,
+                PRIMARY KEY (schedule_id, destination_id)
             );
 
             CREATE TABLE IF NOT EXISTS rolling_schedules (

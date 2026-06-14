@@ -61,6 +61,8 @@ export interface Schedule {
   rolling_period: string | null
   rolling_strategy: string | null
   rolling_end_day: number | null
+  /** Destination ids this schedule is pinned to (ADR-014); empty = all enabled. */
+  destinations: string[]
   next_run: number
   consecutive_failures: number
 }

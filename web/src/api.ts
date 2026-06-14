@@ -103,6 +103,8 @@ export interface CreateScheduleBody {
   rolling_period?: string | null
   rolling_strategy?: string | null
   rolling_end_day?: number | null
+  /** Destination ids to pin delivery to (ADR-014); empty/omitted = all enabled. */
+  destinations?: string[]
 }
 
 /** An authenticated API client bound to a session, with refresh-on-401. */

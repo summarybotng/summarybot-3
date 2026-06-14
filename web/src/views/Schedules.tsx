@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../auth'
-import type { Schedule, ScheduleRun } from '../types'
+import type { Destination, Schedule, ScheduleRun } from '../types'
 
 function when(ts: number): string {
   return new Date(ts * 1000).toLocaleString()
@@ -19,11 +19,14 @@ export function Schedules() {
   const [platform, setPlatform] = useState('')
   const [sourceId, setSourceId] = useState('')
   const [rollingPeriod, setRollingPeriod] = useState('')
+  const [dests, setDests] = useState<Destination[]>([])
+  const [pinned, setPinned] = useState<string[]>([])
   const [note, setNote] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!client) return
     setItems(await client.listSchedules())
+    setDests((await client.listDestinations()).filter((d) => d.enabled))
   }, [client])
 
   useEffect(() => {
@@ -43,10 +46,17 @@ export function Schedules() {
       platform: platform || null,
       source_id: sourceId.trim() || null,
       rolling_period: rollingPeriod || null,
+      // Delivery scope (ADR-014): empty = all enabled destinations.
+      destinations: pinned,
     })
     setChannel('')
     setSourceId('')
+    setPinned([])
     await load()
+  }
+
+  function togglePinned(id: string) {
+    setPinned((cur) => (cur.includes(id) ? cur.filter((d) => d !== id) : [...cur, id]))
   }
 
   async function trigger(id: string) {
@@ -165,6 +175,41 @@ export function Schedules() {
               : ''}
           </span>
         </div>
+        {/* Delivery scope (ADR-014): pin to chosen destinations, or all by default. */}
+        {dests.length > 0 && (
+          <div className="mt-2">
+            <p className="text-xs text-slate-500">
+              Deliver to{' '}
+              {pinned.length === 0 ? (
+                <span className="text-slate-400">all enabled destinations</span>
+              ) : (
+                <span className="text-slate-600">{pinned.length} selected</span>
+              )}
+            </p>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {dests.map((d) => {
+                const on = pinned.includes(d.id)
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => togglePinned(d.id)}
+                    className={`rounded-full px-2.5 py-1 text-xs ring-1 ${
+                      on
+                        ? 'bg-accent text-accent-fg ring-accent'
+                        : 'bg-white text-slate-600 ring-slate-300'
+                    }`}
+                    title={d.hint ?? d.kind}
+                  >
+                    {on ? '✓ ' : ''}
+                    {d.kind}
+                    {d.hint ? ` · ${d.hint}` : ''}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </form>
 
       {note && (
@@ -192,6 +237,9 @@ export function Schedules() {
                         : ' · (unscoped)'}
                     {s.platform && ` · ↻ ${s.platform}`}
                     {s.rolling_period && ` · 📅 rolling ${s.rolling_period}`}
+                    {s.destinations.length > 0
+                      ? ` · → ${s.destinations.length} destination${s.destinations.length > 1 ? 's' : ''}`
+                      : ' · → all destinations'}
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap justify-end gap-1">

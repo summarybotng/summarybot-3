@@ -60,6 +60,10 @@ pub struct CreateScheduleRequest {
     /// Weekday a weekly period ends on (Mon=0..Sun=6); defaults to Sunday.
     #[serde(default)]
     pub rolling_end_day: Option<u32>,
+    /// Restrict delivery to these destination ids (ADR-014). Omit/empty =
+    /// deliver to all the workspace's enabled destinations.
+    #[serde(default)]
+    pub destinations: Vec<String>,
 }
 
 fn default_dom() -> u32 {
@@ -91,6 +95,9 @@ pub struct ScheduleDto {
     pub rolling_period: Option<String>,
     pub rolling_strategy: Option<String>,
     pub rolling_end_day: Option<u32>,
+    /// Destination ids this schedule is restricted to (empty = all). (ADR-014)
+    #[serde(default)]
+    pub destinations: Vec<String>,
     pub next_run: i64,
     pub consecutive_failures: u32,
 }
@@ -113,6 +120,7 @@ impl From<StoredSchedule> for ScheduleDto {
             rolling_period: None,
             rolling_strategy: None,
             rolling_end_day: None,
+            destinations: vec![],
             next_run: s.next_run,
             consecutive_failures: s.consecutive_failures,
         }
@@ -133,6 +141,10 @@ fn dto_with_source(repo: &repository::SqliteRepository, s: StoredSchedule) -> Sc
         dto.rolling_period = Some(cfg.period);
         dto.rolling_strategy = Some(cfg.strategy);
         dto.rolling_end_day = Some(cfg.end_day);
+    }
+    if let Ok(ids) = repository::ScheduleDestinationRepository::list_schedule_destinations(repo, &id)
+    {
+        dto.destinations = ids;
     }
     dto
 }
@@ -266,6 +278,11 @@ pub async fn create_schedule(
             body.rolling_strategy.as_deref(),
             body.rolling_end_day,
         )?;
+        repository::ScheduleDestinationRepository::set_schedule_destinations(
+            &*repo,
+            &stored.id,
+            &body.destinations,
+        )?;
         dto_with_source(&repo, stored)
     };
     Ok(Json(dto))
@@ -315,6 +332,11 @@ pub async fn update_schedule(
         body.rolling_period.as_deref(),
         body.rolling_strategy.as_deref(),
         body.rolling_end_day,
+    )?;
+    repository::ScheduleDestinationRepository::set_schedule_destinations(
+        &*repo,
+        &id,
+        &body.destinations,
     )?;
     Ok(Json(dto_with_source(
         &repo,
