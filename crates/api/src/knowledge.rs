@@ -306,24 +306,44 @@ pub async fn synthesize(
         state.limiter.clone(),
     );
 
+    // Track wiki synthesis as a job (ADR-013/040) so it shows in the Jobs view
+    // with status + cost. Recorded (Running) before the LLM work; finalized below.
+    let mut job = domain::Job::record(
+        domain::JobId::parse(format!("job_wiki_{now}"))
+            .map_err(|e| ApiError::bad_request(e.to_string()))?,
+        workspace.clone(),
+        domain::JobType::WikiSynthesis,
+        now,
+    );
+    let _ = job.start(now);
+
     let page = {
+        use repository::JobRepository;
         let repo = state.repo.lock().expect("repo mutex");
-        let outcome = WikiService::new(&*repo, &engine, &ladder)
-            .synthesize(
-                &workspace,
-                LlmProvider::OpenRouter,
-                RequestPriority::Manual,
-                i64::MAX,
-                now,
-            )
-            .map_err(|e| match e {
-                WikiError::NoUnits => ApiError::bad_request(e.to_string()),
-                _ => ApiError::Internal(e.to_string()),
-            })?;
+        let _ = repo.create_job(&job);
+        let outcome = match WikiService::new(&*repo, &engine, &ladder).synthesize(
+            &workspace,
+            LlmProvider::OpenRouter,
+            RequestPriority::Manual,
+            i64::MAX,
+            now,
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                let _ = job.fail(domain::FailureClass::Unknown, 0, crate::auth::now_secs());
+                let _ = repo.update_job(&job);
+                return Err(match e {
+                    WikiError::NoUnits => ApiError::bad_request(e.to_string()),
+                    _ => ApiError::Internal(e.to_string()),
+                });
+            }
+        };
         // Draw down the tenant's budget by what synthesis cost (ADR-125).
         if let Some((tenant, window)) = &charge {
             crate::budget_charge(&repo, tenant, *window, outcome.cost_micros)?;
         }
+        let _ = job.complete(outcome.cost_micros, crate::auth::now_secs());
+        let _ = repo.update_job(&job);
         outcome.page
     };
     Ok(Json(WikiPageDto::from(page)))

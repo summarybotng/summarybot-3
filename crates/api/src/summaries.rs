@@ -237,16 +237,40 @@ pub async fn create_summary(
         state.client_for_base(resolution.base_url, resolution.api_key),
         state.limiter.clone(),
     );
-    let outcome = SummarizationService::new(&engine, &ladder)
-        .summarize(&SummarizeRequest {
-            messages: &messages,
-            length: SummaryLength::Detailed,
-            provider: LlmProvider::OpenRouter,
-            priority: RequestPriority::Manual,
-            cap_micros: i64::MAX,
-            instructions: instructions.as_deref(),
-        })
-        .map_err(|e| ApiError::bad_request(format!("{e:?}")))?;
+    // Track the on-demand summary as a job (ADR-013/040) so it shows in the Jobs
+    // view with status + cost. Recorded (Running) after the budget gate, just
+    // before the LLM work; finalized to Completed/Failed below.
+    let mut job = domain::Job::record(
+        domain::JobId::parse(format!("job_sum_{}", unique_suffix()))
+            .map_err(|e| ApiError::bad_request(e.to_string()))?,
+        workspace.clone(),
+        domain::JobType::Summarization,
+        now,
+    );
+    let _ = job.start(now);
+    {
+        use repository::JobRepository;
+        let repo = state.repo.lock().expect("repo mutex");
+        let _ = repo.create_job(&job);
+    }
+
+    let outcome = match SummarizationService::new(&engine, &ladder).summarize(&SummarizeRequest {
+        messages: &messages,
+        length: SummaryLength::Detailed,
+        provider: LlmProvider::OpenRouter,
+        priority: RequestPriority::Manual,
+        cap_micros: i64::MAX,
+        instructions: instructions.as_deref(),
+    }) {
+        Ok(o) => o,
+        Err(e) => {
+            use repository::JobRepository;
+            let _ = job.fail(e.failure_class(), 0, crate::auth::now_secs());
+            let repo = state.repo.lock().expect("repo mutex");
+            let _ = repo.update_job(&job);
+            return Err(ApiError::bad_request(format!("{e:?}")));
+        }
+    };
 
     let record = SummaryRecord {
         id: format!("sum_{}", unique_suffix()),
@@ -288,6 +312,10 @@ pub async fn create_summary(
             record.channel_id.as_ref().map(|c| c.as_str()),
             now,
         );
+        // Finalize the job with the cost the summary actually incurred.
+        use repository::JobRepository;
+        let _ = job.complete(record.cost_micros, crate::auth::now_secs());
+        let _ = repo.update_job(&job);
     }
     state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
     Ok(Json(SummaryDto::from(record)))

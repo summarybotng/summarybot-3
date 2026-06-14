@@ -221,11 +221,36 @@ pub async fn sync(
         FetchScope::Channels(ids)
     };
 
+    // Track the sync as a job (ADR-013/040) so platform ingestion shows in the
+    // Jobs view. Recorded (Running) before the fetch; finalized below with
+    // progress = stored / fetched.
+    let mut job = domain::Job::record(
+        domain::JobId::parse(format!("job_sync_{}_{}", platform.as_str(), now))
+            .map_err(|e| ApiError::bad_request(e.to_string()))?,
+        workspace.clone(),
+        domain::JobType::Sync,
+        now,
+    );
+    let _ = job.start(now);
+
     // Fetch + persist via the shared helper (also used by the scheduler).
     let report = {
+        use repository::JobRepository;
         let repo = state.repo.lock().expect("repo mutex");
-        host::sync_into_store(&*fetcher, &*repo, &workspace, &scope, start, now)
-            .map_err(|e| ApiError::Internal(e.to_string()))?
+        let _ = repo.create_job(&job);
+        match host::sync_into_store(&*fetcher, &*repo, &workspace, &scope, start, now) {
+            Ok(r) => {
+                job.set_progress(r.stored as u32, r.fetched as u32, crate::auth::now_secs());
+                let _ = job.complete(0, crate::auth::now_secs());
+                let _ = repo.update_job(&job);
+                r
+            }
+            Err(e) => {
+                let _ = job.fail(domain::FailureClass::Unknown, 0, crate::auth::now_secs());
+                let _ = repo.update_job(&job);
+                return Err(ApiError::Internal(e.to_string()));
+            }
+        }
     };
 
     Ok(Json(SyncResponse {

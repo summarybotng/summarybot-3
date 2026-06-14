@@ -15,27 +15,40 @@ string_id!(
     128
 );
 
-/// What kind of work a job represents.
+/// What kind of work a job represents (ADR-013/040 — the Jobs view tracks every
+/// long-running producer, not just summarization).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JobType {
-    /// Generate a summary.
+    /// Generate a summary on demand (the manual "Summarize now" path).
     Summarization,
-    /// (Re)ingest historical messages (DAT-003..006).
+    /// A scheduled summary run fired by the scheduler (or a manual trigger).
+    Scheduled,
+    /// (Re)ingest historical messages (DAT-003..006) — retrospective by-week.
     Backfill,
+    /// Fetch + persist messages from a connected platform (ADR-128).
+    Sync,
+    /// Synthesize the knowledge-base wiki page from stored units (ADR-067).
+    WikiSynthesis,
 }
 
 impl JobType {
     pub fn as_str(self) -> &'static str {
         match self {
             JobType::Summarization => "summarization",
+            JobType::Scheduled => "scheduled",
             JobType::Backfill => "backfill",
+            JobType::Sync => "sync",
+            JobType::WikiSynthesis => "wiki_synthesis",
         }
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "summarization" => Some(JobType::Summarization),
+            "scheduled" => Some(JobType::Scheduled),
             "backfill" => Some(JobType::Backfill),
+            "sync" => Some(JobType::Sync),
+            "wiki_synthesis" => Some(JobType::WikiSynthesis),
             _ => None,
         }
     }
@@ -249,7 +262,13 @@ mod tests {
 
     #[test]
     fn type_and_status_round_trip() {
-        for t in [JobType::Summarization, JobType::Backfill] {
+        for t in [
+            JobType::Summarization,
+            JobType::Scheduled,
+            JobType::Backfill,
+            JobType::Sync,
+            JobType::WikiSynthesis,
+        ] {
             assert_eq!(JobType::parse(t.as_str()), Some(t));
         }
         for s in [

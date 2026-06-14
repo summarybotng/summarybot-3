@@ -12,6 +12,15 @@ const STATUS_TONE: Record<string, string> = {
   failed: 'bg-red-100 text-red-700',
 }
 
+// Friendly labels for the job-type strings the API emits (ADR-013/040).
+const TYPE_LABEL: Record<string, string> = {
+  summarization: 'Summary',
+  scheduled: 'Scheduled summary',
+  backfill: 'Retrospective backfill',
+  sync: 'Message sync',
+  wiki_synthesis: 'Wiki synthesis',
+}
+
 export function Jobs() {
   const { client } = useAuth()
   const [jobs, setJobs] = useState<Job[] | null>(null)
@@ -62,7 +71,7 @@ export function Jobs() {
           {jobs?.map((j) => (
             <li key={j.id} className="flex items-center justify-between gap-3 py-3 text-sm">
               <div className="min-w-0">
-                <span className="text-slate-800">{j.job_type}</span>
+                <span className="text-slate-800">{TYPE_LABEL[j.job_type] ?? j.job_type}</span>
                 {j.progress_total > 0 && (
                   <span className="ml-2 text-xs text-slate-400">
                     {j.progress_current}/{j.progress_total}

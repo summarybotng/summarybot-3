@@ -18,10 +18,10 @@ use domain::{
     RollingState,
 };
 use repository::{
-    DestinationRepository, KnowledgeRepository, PlatformCredentialRepository, RollingConfig,
-    RollingRepository, RollingSummaryRow, ScheduleDestinationRepository, ScheduleSourceRepository,
-    StoredSchedule, StructuredSummaryRepository, SummaryRecord, TenantPluginRepository,
-    WhatsAppRepository, WorkspaceRepository, WorkspaceSettingsRepository,
+    DestinationRepository, JobRepository, KnowledgeRepository, PlatformCredentialRepository,
+    RollingConfig, RollingRepository, RollingSummaryRow, ScheduleDestinationRepository,
+    ScheduleSourceRepository, StoredSchedule, StructuredSummaryRepository, SummaryRecord,
+    TenantPluginRepository, WhatsAppRepository, WorkspaceRepository, WorkspaceSettingsRepository,
 };
 
 /// Sentinel channel id meaning "all of the workspace's channels" (ADR-011
@@ -217,6 +217,7 @@ where
         + KnowledgeRepository
         + WorkspaceRepository
         + TenantPluginRepository
+        + JobRepository
         + ScheduleDestinationRepository,
     C: LlmClient,
 {
@@ -269,16 +270,38 @@ where
             .map_err(|e| e.to_string())?
             .summary_instructions;
 
-        let outcome = SummarizationService::new(self.engine, self.ladder)
-            .summarize(&SummarizeRequest {
+        // Track the run as a job (ADR-013/040) so scheduled summaries — not just
+        // manual ones — show in the Jobs view with status + cost. Recorded before
+        // the LLM work; failures persist a classified reason. Deterministic id so a
+        // re-fire at the same instant is idempotent.
+        let mut job = domain::Job::record(
+            domain::JobId::parse(format!("job_sch_{}_{}", stored.id, now))
+                .map_err(|e| e.to_string())?,
+            ws.clone(),
+            domain::JobType::Scheduled,
+            now,
+        );
+        let _ = job.start(now);
+        let _ = self.repo.create_job(&job);
+
+        let outcome = match SummarizationService::new(self.engine, self.ladder).summarize(
+            &SummarizeRequest {
                 messages: &messages,
                 length: self.length,
                 provider: self.provider,
                 priority: RequestPriority::Low, // scheduled work yields to manual
                 cap_micros: self.cap_micros,
                 instructions: instructions.as_deref(),
-            })
-            .map_err(|e| format!("{e:?}"))?;
+            },
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                let _ = job.fail(e.failure_class(), 0, now);
+                let _ = self.repo.update_job(&job);
+                return Err(format!("{e:?}"));
+            }
+        };
+        let cost = outcome.cost_micros;
 
         // All-channels and category scopes span multiple channels, so the record
         // has no single channel; each carries a tag describing its scope.
@@ -304,7 +327,17 @@ where
             usage: outcome.usage,
             summary: outcome.summary,
         };
-        self.deliver_record(ws, &stored.id, &record)
+        let delivered = self.deliver_record(ws, &stored.id, &record);
+        match &delivered {
+            Ok(()) => {
+                let _ = job.complete(cost, now);
+            }
+            Err(_) => {
+                let _ = job.fail(domain::FailureClass::Unknown, cost, now);
+            }
+        }
+        let _ = self.repo.update_job(&job);
+        delivered
     }
 }
 
@@ -351,6 +384,7 @@ where
         + KnowledgeRepository
         + WorkspaceRepository
         + TenantPluginRepository
+        + JobRepository
         + ScheduleDestinationRepository,
     C: LlmClient,
 {
@@ -905,6 +939,13 @@ mod tests {
             vec!["shipped"]
         );
         assert_eq!(stored[0].channel_id.as_ref().unwrap().as_str(), "c1");
+
+        // The run is tracked as a completed `Scheduled` job (ADR-013/040), so it
+        // shows in the Jobs view alongside manual summaries and backfills.
+        let jobs = repo.list_jobs(&ws, 10).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_type, domain::JobType::Scheduled);
+        assert_eq!(jobs[0].status, domain::JobStatus::Completed);
     }
 
     #[test]
