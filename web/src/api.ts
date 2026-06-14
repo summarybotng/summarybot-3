@@ -368,6 +368,14 @@ export class Client {
     )
   }
 
+  /** Apply the curator: prune duplicate units (provenance preserved). */
+  pruneWiki(): Promise<{ pruned: number }> {
+    return this.json<{ pruned: number }>(
+      `/workspaces/${this.ws()}/wiki/curate/prune`,
+      this.body('POST', {}),
+    )
+  }
+
   /** Summarization cost analytics over the last `days` (ADR-125). */
   spend(days = 30): Promise<Spend> {
     return this.json<Spend>(`/workspaces/${this.ws()}/spend?days=${days}`)

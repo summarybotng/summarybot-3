@@ -300,6 +300,39 @@ pub async fn curate(
     }))
 }
 
+/// Result of applying the curator's prune.
+#[derive(Serialize)]
+pub struct PruneResult {
+    pub pruned: usize,
+}
+
+/// `POST /workspaces/:ws/wiki/curate/prune` — apply the curator: remove redundant
+/// duplicate units, folding each one's provenance into the surviving canonical
+/// first (so no grounding is lost). Audit-logged (CUR / ADR-077).
+pub async fn prune(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+) -> Result<Json<PruneResult>, ApiError> {
+    use host::CuratorService;
+    use repository::IdentityRepository;
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+    let repo = state.repo.lock().expect("repo mutex");
+    let pruned = CuratorService::new(&*repo)
+        .prune_duplicates(&workspace, now)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let _ = repo.append_audit(&repository::AuditEntry {
+        ts: now,
+        actor: Some(user.0.sub.clone()),
+        action: "knowledge.pruned".to_string(),
+        detail: format!("pruned {pruned} duplicate knowledge unit(s)"),
+    });
+    Ok(Json(PruneResult { pruned }))
+}
+
 /// Ingest a produced summary's knowledge units (KNO-001..003). Best-effort: a
 /// failure (e.g. the embedder is down) is logged, never propagated — knowledge
 /// ingestion must not fail the summary that was already stored/delivered.

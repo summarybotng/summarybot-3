@@ -110,6 +110,46 @@ impl<'a, R: KnowledgeRepository> CuratorService<'a, R> {
         })
     }
 
+    /// Apply the curator's duplicate findings (CUR / ADR-077): for each cluster,
+    /// merge every redundant unit's source ids into the canonical (so no
+    /// provenance is lost) then delete the redundant units. Returns how many were
+    /// pruned. Provenance-preserving by construction; the caller audit-logs it.
+    pub fn prune_duplicates(
+        &self,
+        workspace: &domain::WorkspaceId,
+        now: i64,
+    ) -> anyhow::Result<usize> {
+        let report = self.curate(workspace, now, i64::MAX)?;
+        // Index units so we can fold provenance into the canonical before deleting.
+        let mut by_id: std::collections::HashMap<String, StoredKnowledgeUnit> = self
+            .repo
+            .list_units(workspace)?
+            .into_iter()
+            .map(|u| (u.id.clone(), u))
+            .collect();
+        let mut pruned = 0;
+        for cluster in &report.duplicate_clusters {
+            let Some(mut canonical) = by_id.remove(&cluster.canonical_id) else {
+                continue;
+            };
+            for dup_id in &cluster.duplicate_ids {
+                if let Some(dup) = by_id.get(dup_id) {
+                    for s in &dup.source_ids {
+                        if !canonical.source_ids.contains(s) {
+                            canonical.source_ids.push(s.clone());
+                        }
+                    }
+                }
+                if self.repo.delete_unit(workspace, dup_id)? {
+                    pruned += 1;
+                }
+            }
+            // Re-save the canonical with the merged provenance.
+            self.repo.save_units(workspace, std::slice::from_ref(&canonical))?;
+        }
+        Ok(pruned)
+    }
+
     /// Greedy single-link clustering over same-kind embedded units: the first
     /// (oldest) unembedded-into-a-cluster unit seeds a cluster and absorbs every
     /// later same-kind unit within `dup_threshold`. Only clusters of ≥2 are kept.
@@ -201,6 +241,27 @@ mod tests {
         assert_eq!(report.redundant_count(), 1);
         // a (100) and b (300) are ≥500s old; c (400) is 600s old → all three stale.
         assert_eq!(report.stale.len(), 3);
+    }
+
+    #[test]
+    fn prune_removes_duplicates_and_preserves_provenance() {
+        let repo = SqliteRepository::in_memory().unwrap();
+        let mut a = unit("a", "key_point", "migration thursday", vec![0.0, 0.0, 1.0, 0.0], 100);
+        a.source_ids = vec!["m1".into()];
+        let mut b = unit("b", "key_point", "migration is thursday", vec![0.0, 0.0, 1.0, 0.0], 300);
+        b.source_ids = vec!["m2".into()];
+        repo.save_units(&ws(), &[a, b, unit("c", "key_point", "ship friday", vec![0.0, 0.0, 0.0, 1.0], 400)])
+            .unwrap();
+
+        let pruned = CuratorService::new(&repo).prune_duplicates(&ws(), 1_000).unwrap();
+        assert_eq!(pruned, 1);
+        let units = repo.list_units(&ws()).unwrap();
+        assert_eq!(units.len(), 2); // duplicate 'b' removed; 'a' + 'c' remain
+        let canonical = units.iter().find(|u| u.id == "a").unwrap();
+        // 'b''s provenance was folded into the surviving canonical.
+        assert!(canonical.source_ids.contains(&"m1".to_string()));
+        assert!(canonical.source_ids.contains(&"m2".to_string()));
+        assert!(!units.iter().any(|u| u.id == "b"));
     }
 
     #[test]

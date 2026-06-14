@@ -66,6 +66,24 @@ export function Knowledge() {
     }
   }
 
+  const [pruneBusy, setPruneBusy] = useState(false)
+  const [pruneNote, setPruneNote] = useState<string | null>(null)
+  async function prune() {
+    if (!client) return
+    setPruneBusy(true)
+    setPruneNote(null)
+    try {
+      const r = await client.pruneWiki()
+      setPruneNote(`Pruned ${r.pruned} duplicate unit(s) — provenance kept on the survivor.`)
+      setReport(await client.curateWiki())
+      if (units) setUnits(await client.listUnits())
+    } catch {
+      setPruneNote('Prune failed.')
+    } finally {
+      setPruneBusy(false)
+    }
+  }
+
   async function loadUnits() {
     if (!client) return
     setUnitsBusy(true)
@@ -154,8 +172,19 @@ export function Knowledge() {
                     </li>
                   ))}
                 </ul>
+                <button
+                  onClick={prune}
+                  disabled={pruneBusy}
+                  className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:opacity-50"
+                >
+                  {pruneBusy ? 'Pruning…' : `Prune ${report.redundant_count} duplicate(s)`}
+                </button>
+                <p className="mt-1 text-xs text-slate-400">
+                  Keeps the oldest in each cluster and folds the others' sources into it.
+                </p>
               </div>
             )}
+            {pruneNote && <p className="mt-2 text-xs text-emerald-700">{pruneNote}</p>}
             {report.duplicate_clusters.length === 0 && report.stale.length === 0 && (
               <p className="mt-2 text-emerald-700">No duplicates or stale units — the knowledge base is healthy.</p>
             )}

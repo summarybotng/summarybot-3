@@ -92,7 +92,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Semantic knowledge search | ✅ | Knowledge | |
 | (Re)generate the wiki page | ✅ | Knowledge | |
 | Curator health report (duplicates/stale) | ✅ | Knowledge | advisory |
-| Apply curator suggestions (prune/merge) | ⛔ | — | advisory only; apply + undo deferred |
+| Apply curator suggestions (prune duplicates) | ✅ | Knowledge | "Prune duplicates" removes redundant units, folding their provenance into the survivor; audit-logged (CUR-*). One-click undo is the remaining refinement |
 | BYO LLM + budget | ✅ | Settings | |
 | Spend analytics | ✅ | Spend | |
 | Audit log | ✅ | Audit | Admin+ |

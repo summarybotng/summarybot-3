@@ -388,6 +388,7 @@ pub fn build_router(state: AppState) -> Router {
             post(knowledge::synthesize),
         )
         .route("/workspaces/:ws/wiki/curate", post(knowledge::curate))
+        .route("/workspaces/:ws/wiki/curate/prune", post(knowledge::prune))
         .route(
             "/workspaces/:ws/connections/:platform",
             get(connections::status),
@@ -634,6 +635,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/wiki/units": { "get": { "summary": "Raw knowledge units with source provenance — ?k (ADR-063)" } },
             "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
             "/workspaces/{ws}/wiki/curate": { "post": { "summary": "AI wiki curator: advisory health report — duplicate clusters + stale units — ?stale_days (CUR-*)" } },
+            "/workspaces/{ws}/wiki/curate/prune": { "post": { "summary": "Apply the curator: prune duplicate units (provenance merged into the canonical), audit-logged (CUR-*)" } },
             "/workspaces/{ws}/connections/{platform}": { "get": { "summary": "Live source status — token_set + supported (discord|slack, ADR-128)" } },
             "/workspaces/{ws}/connections/{platform}/token": {
                 "put": { "summary": "Set/replace the platform bot token (encrypted at rest)" },
@@ -776,6 +778,54 @@ mod tests {
                 citations: vec![],
             },
         }
+    }
+
+    #[tokio::test]
+    async fn wiki_prune_removes_duplicate_units() {
+        use repository::{KnowledgeRepository, StoredKnowledgeUnit};
+        let (state, token) = seeded_state();
+        {
+            let repo = state.repo.lock().unwrap();
+            let u = |id: &str, created: i64| StoredKnowledgeUnit {
+                id: id.into(),
+                summary_id: "s".into(),
+                kind: "key_point".into(),
+                text: format!("migration {id}"),
+                source_ids: vec![],
+                embedding: Some(vec![0.0, 0.0, 1.0, 0.0]), // identical → duplicates
+                model: Some("fixed".into()),
+                created_at: created,
+            };
+            repo.save_units(
+                &domain::WorkspaceId::parse("ws-1").unwrap(),
+                &[u("a", 100), u("b", 200), u("c", 300)],
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/wiki/curate/prune")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["pruned"], 2); // a kept, b+c pruned
+        // Only the canonical remains.
+        let units = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/wiki/units")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(body_json(units).await.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

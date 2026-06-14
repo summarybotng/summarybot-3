@@ -35,6 +35,8 @@ pub trait KnowledgeRepository {
     fn list_units(&self, workspace: &WorkspaceId) -> Result<Vec<StoredKnowledgeUnit>>;
     /// Count of units in a workspace.
     fn count_units(&self, workspace: &WorkspaceId) -> Result<i64>;
+    /// Remove a unit by id (workspace-scoped). Returns whether a row was removed.
+    fn delete_unit(&self, workspace: &WorkspaceId, id: &str) -> Result<bool>;
 }
 
 /// Encode an f32 vector as little-endian bytes for the `embedding` blob.
@@ -118,6 +120,14 @@ impl KnowledgeRepository for SqliteRepository {
             params![workspace.as_str()],
             |row| row.get(0),
         )?)
+    }
+
+    fn delete_unit(&self, workspace: &WorkspaceId, id: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "DELETE FROM knowledge_units WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace.as_str(), id],
+        )?;
+        Ok(n > 0)
     }
 }
 
