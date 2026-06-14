@@ -358,9 +358,29 @@ pub async fn summarize_weeks(
         buckets = buckets.split_off(buckets.len() - MAX_WEEKS);
     }
 
+    // Record this as a tracked job (ADR-040) so it shows in the Jobs view with
+    // progress (weeks done / total) and cost, even though it runs synchronously.
+    let total_weeks = buckets.len() as u32;
+    let mut job = domain::Job::record(
+        domain::JobId::parse(format!("job_retro_{}_{now}", channel.as_str()))
+            .map_err(|e| ApiError::bad_request(e.to_string()))?,
+        workspace.clone(),
+        domain::JobType::Backfill,
+        now,
+    );
+    let _ = job.start(now);
+    job.set_progress(0, total_weeks, now);
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        use repository::JobRepository;
+        let _ = repo.create_job(&job);
+    }
+
     let deliverers = state.deliverers();
     let mut summary_ids = Vec::new();
     let mut weeks_empty = 0usize;
+    let mut total_cost = 0i64;
+    let mut done = 0u32;
     for (wk_start, wk_end) in buckets {
         // Re-gate the budget each week so a long run stops cleanly when exhausted
         // (rather than failing the whole request or overspending silently).
@@ -420,7 +440,23 @@ pub async fn summarize_weeks(
             crate::knowledge::ingest_summary(&state, &repo, &workspace, &record.summary, &record.id, now);
         }
         state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
+        total_cost += record.cost_micros;
         summary_ids.push(record.id);
+        done += 1;
+        // Persist progress as each week completes (visible if the job is polled).
+        let repo = state.repo.lock().expect("repo mutex");
+        use repository::JobRepository;
+        job.set_progress(done, total_weeks, crate::auth::now_secs());
+        let _ = repo.update_job(&job);
+    }
+
+    // Finalize the job (cost = total spent across the weeks produced).
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        use repository::JobRepository;
+        let fin = crate::auth::now_secs();
+        let _ = job.complete(total_cost, fin);
+        let _ = repo.update_job(&job);
     }
 
     Ok(Json(RetrospectiveDto {

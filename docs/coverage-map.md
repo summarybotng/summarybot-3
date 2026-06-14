@@ -83,7 +83,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Choose delivery destinations *per schedule* | ⛔ | — | delivery is workspace-wide; no per-schedule destination picker (ADR-014) |
 | Schedule scope = all-channels (workspace) | ✅ | Schedules | "all channels" toggle → a workspace-wide digest across every channel (ADR-011) |
 | Schedule scope = Discord category | ⛔ | — | needs live channel resolution from a bound Discord source (ADR-011); all-channels + single-channel shipped |
-| Long-running job progress (e.g. a big retrospective) | ⛔ | — | runs synchronously; no jobs/progress view (ADR-040) |
+| Jobs view (long-running work + progress) | ✅ | Jobs | a Jobs tab lists background work with status/progress/cost; the retrospective by-week run records a job (ADR-040). Live streaming progress mid-run is a refinement |
 | Wiki raw units + provenance | ✅ | Knowledge | "Knowledge units (raw)" lists every fact with its source-message count (ADR-063) |
 | Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |
 | Enable + configure a tenant plugin | ✅ | Plugins | tenant credentials, once |

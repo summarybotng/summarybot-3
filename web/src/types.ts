@@ -200,6 +200,19 @@ export interface WikiPage {
   updated_at: number
 }
 
+/** A background / long-running job (ADR-040). */
+export interface Job {
+  id: string
+  job_type: string
+  status: string
+  progress_current: number
+  progress_total: number
+  cost_micros: number
+  failure_reason: string | null
+  created_at: number
+  updated_at: number
+}
+
 /** A raw knowledge unit with its source provenance (ADR-063). */
 export interface KnowledgeUnit {
   id: string

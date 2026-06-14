@@ -19,6 +19,7 @@ import type {
   CoverageGap,
   ImportInvitation,
   WikiPage,
+  Job,
   KnowledgeUnit,
   CurationReport,
   ConnectionStatus,
@@ -353,6 +354,11 @@ export class Client {
   /** (Re)generate the knowledge-base page from this workspace's units. */
   synthesizeWiki(): Promise<WikiPage> {
     return this.json<WikiPage>(`/workspaces/${this.ws()}/wiki/synthesize`, this.body('POST', {}))
+  }
+
+  /** Background / long-running jobs with progress (ADR-040). */
+  listJobs(limit = 50): Promise<Job[]> {
+    return this.json<Job[]>(`/workspaces/${this.ws()}/jobs?limit=${limit}`)
   }
 
   /** Raw knowledge units with provenance (ADR-063 raw-updates view). */

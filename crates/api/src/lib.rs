@@ -17,6 +17,7 @@ mod connections;
 mod destinations;
 mod error;
 mod events;
+mod jobs;
 mod knowledge;
 #[cfg(feature = "oauth")]
 mod oauth;
@@ -383,6 +384,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/workspaces/:ws/wiki/search", get(knowledge::search))
         .route("/workspaces/:ws/wiki/pages", get(knowledge::list_pages))
         .route("/workspaces/:ws/wiki/units", get(knowledge::list_units))
+        .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
         .route(
             "/workspaces/:ws/wiki/synthesize",
             post(knowledge::synthesize),
@@ -633,6 +635,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/wiki/search": { "get": { "summary": "Semantic search over knowledge units — ?q,k (KNO-005, ADR-127)" } },
             "/workspaces/{ws}/wiki/pages": { "get": { "summary": "List synthesized wiki pages (WIK-003)" } },
             "/workspaces/{ws}/wiki/units": { "get": { "summary": "Raw knowledge units with source provenance — ?k (ADR-063)" } },
+            "/workspaces/{ws}/jobs": { "get": { "summary": "Background/long-running jobs with status + progress — ?limit (ADR-040)" } },
             "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
             "/workspaces/{ws}/wiki/curate": { "post": { "summary": "AI wiki curator: advisory health report — duplicate clusters + stale units — ?stale_days (CUR-*)" } },
             "/workspaces/{ws}/wiki/curate/prune": { "post": { "summary": "Apply the curator: prune duplicate units (provenance merged into the canonical), audit-logged (CUR-*)" } },
@@ -778,6 +781,37 @@ mod tests {
                 citations: vec![],
             },
         }
+    }
+
+    #[tokio::test]
+    async fn jobs_endpoint_lists_recorded_jobs() {
+        use repository::JobRepository;
+        let (state, token) = seeded_state();
+        {
+            let repo = state.repo.lock().unwrap();
+            let mut job = domain::Job::record(
+                domain::JobId::parse("job_1").unwrap(),
+                domain::WorkspaceId::parse("ws-1").unwrap(),
+                domain::JobType::Backfill,
+                10,
+            );
+            job.set_progress(3, 5, 20);
+            repo.create_job(&job).unwrap();
+        }
+        let resp = build_router(state)
+            .oneshot(
+                Request::get("/workspaces/ws-1/jobs")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        assert_eq!(j.as_array().unwrap().len(), 1);
+        assert_eq!(j[0]["job_type"], "backfill");
+        assert_eq!(j[0]["progress_total"], 5);
     }
 
     #[tokio::test]

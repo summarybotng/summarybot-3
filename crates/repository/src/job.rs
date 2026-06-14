@@ -17,6 +17,8 @@ pub trait JobRepository {
     /// Persist the full current state of a job (status/progress/cost/reason).
     fn update_job(&self, job: &Job) -> Result<()>;
     fn get_job(&self, workspace: &WorkspaceId, id: &JobId) -> Result<Option<Job>>;
+    /// A workspace's jobs, newest first, capped at `limit` (the Jobs view).
+    fn list_jobs(&self, workspace: &WorkspaceId, limit: u32) -> Result<Vec<Job>>;
     /// Restart recovery: move all `Running` jobs to `Paused`. Returns the count.
     fn pause_running(&self, now: i64) -> Result<u64>;
 }
@@ -99,6 +101,44 @@ impl JobRepository for SqliteRepository {
                 })
             })
             .transpose()
+    }
+
+    fn list_jobs(&self, workspace: &WorkspaceId, limit: u32) -> Result<Vec<Job>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, job_type, status, progress_current, progress_total, cost_micros,
+                    failure_reason, created_at, updated_at
+             FROM jobs WHERE workspace_id = ?1 ORDER BY created_at DESC, id LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![workspace.as_str(), limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, u32>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, ty, st, pc, pt, cost, reason, created, updated) = row?;
+            out.push(Job {
+                id: JobId::parse(id).map_err(anyhow::Error::new)?,
+                workspace_id: workspace.clone(),
+                job_type: JobType::parse(&ty).context("unknown job_type in storage")?,
+                status: JobStatus::parse(&st).context("unknown job status in storage")?,
+                progress_current: pc,
+                progress_total: pt,
+                cost_micros: cost,
+                failure_reason: reason,
+                created_at: created,
+                updated_at: updated,
+            });
+        }
+        Ok(out)
     }
 
     fn pause_running(&self, now: i64) -> Result<u64> {
