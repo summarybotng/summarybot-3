@@ -268,6 +268,8 @@ function ChatCoverageCard({
   const openInvites = cov.invitations.filter((i) => i.status === 'open')
   const [weekBusy, setWeekBusy] = useState(false)
   const [weekNote, setWeekNote] = useState<string | null>(null)
+  const [actBusy, setActBusy] = useState<string | null>(null)
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
   // Retrospective: one summary per week across this chat's imported history.
   async function summarizeByWeek() {
@@ -291,6 +293,55 @@ function ChatCoverageCard({
     }
   }
 
+  // Generate-now over a chosen recent window (ADR-089 Now).
+  async function summarizeRecent(label: string, secs: number) {
+    if (!client) return
+    setActBusy(label)
+    setWeekNote(null)
+    try {
+      const r = await client.summarizeChannelNow(chat.chat_id, secs)
+      setWeekNote(
+        r.produced && r.summary
+          ? `Summarized the last ${label} — see the Summaries tab.`
+          : `No substantial messages in the last ${label}.`,
+      )
+    } catch {
+      setWeekNote('Summarize failed.')
+    } finally {
+      setActBusy(null)
+    }
+  }
+
+  // Set up an ongoing rolling weekly digest scoped to this chat (ADR-101).
+  async function scheduleWeekly() {
+    if (!client) return
+    setActBusy('schedule')
+    setWeekNote(null)
+    try {
+      await client.createSchedule({
+        schedule_type: 'weekly',
+        hour: 9,
+        minute: 0,
+        timezone: tz,
+        channel: chat.chat_id,
+        rolling_period: 'weekly',
+        rolling_strategy: 'hybrid',
+        lookback_secs: 7 * 86400,
+      })
+      setWeekNote('Weekly digest scheduled — manage it on the Schedules tab.')
+    } catch {
+      setWeekNote('Could not create the schedule.')
+    } finally {
+      setActBusy(null)
+    }
+  }
+
+  const PRESETS: [string, number][] = [
+    ['24h', 86_400],
+    ['7d', 7 * 86_400],
+    ['30d', 30 * 86_400],
+  ]
+
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
       <div className="flex items-baseline justify-between">
@@ -301,16 +352,34 @@ function ChatCoverageCard({
         </span>
       </div>
 
-      {/* Retrospective weekly digests over the imported history (ADR-088/089). */}
-      <div className="mt-2 flex items-center gap-2">
+      {/* Summary actions for this chat: recent window, full-history by week, or an
+          ongoing rolling weekly schedule (ADR-088/089 Now/Recurring/Retrospective). */}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           onClick={() => void summarizeByWeek()}
-          disabled={weekBusy}
+          disabled={weekBusy || actBusy !== null}
           className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg disabled:opacity-50"
         >
           {weekBusy ? 'Summarizing weeks…' : 'Summarize by week'}
         </button>
-        <span className="text-xs text-slate-400">one summary per week of history</span>
+        <span className="text-xs text-slate-400">summarize last:</span>
+        {PRESETS.map(([label, secs]) => (
+          <button
+            key={label}
+            onClick={() => void summarizeRecent(label, secs)}
+            disabled={weekBusy || actBusy !== null}
+            className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 disabled:opacity-50"
+          >
+            {actBusy === label ? '…' : label}
+          </button>
+        ))}
+        <button
+          onClick={() => void scheduleWeekly()}
+          disabled={weekBusy || actBusy !== null}
+          className="rounded-lg border border-accent px-2 py-1 text-xs font-medium text-accent disabled:opacity-50"
+        >
+          {actBusy === 'schedule' ? 'Scheduling…' : 'Schedule weekly digest'}
+        </button>
       </div>
       {weekNote && <p className="mt-2 text-xs text-slate-600">{weekNote}</p>}
 

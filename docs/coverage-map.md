@@ -75,8 +75,8 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Create / edit / pause / run a schedule | ✅ | Schedules | |
 | Configure a rolling digest (period + merge) | ✅ | Schedules | Append / Hybrid |
 | **Retrospective** weekly summaries of an imported chat | ✅ | WhatsApp | "Summarize by week" on the coverage card → one summary per non-empty week of history (ADR-088/089 retrospective, ADR-101/048) |
-| Forward weekly *rolling* digest of an imported chat | 🟡 | Schedules | works if you type the chat's channel id + pick rolling weekly; no link from the WhatsApp tab, and rolling is forward-only (re-import to add weeks) |
-| Generate-now with a time-range picker (4/8/24/48h) | 🟡 | Source / WhatsApp | a lookback-days field (Source) / fixed window (WhatsApp); no quick presets (ADR-089 Now) |
+| Forward weekly *rolling* digest of an imported chat | ✅ | WhatsApp | one-click "Schedule weekly digest" on the coverage card (rolling weekly scoped to the chat) |
+| Generate-now with a time-range picker | ✅ | WhatsApp | "summarize last 24h / 7d / 30d" presets on the coverage card (ADR-089 Now); Source tab has a lookback-days field |
 | Unified "create summary" wizard (now / schedule / retrospective) | 🟡 | — | the three paths exist but as separate controls across tabs, not one wizard (ADR-088/089) |
 | View summary detail (key points, action items) | ✅ | Summaries | expandable card |
 | Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
