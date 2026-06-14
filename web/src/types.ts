@@ -62,6 +62,9 @@ export interface Summary {
   /** Input/output tokens the producing run consumed (ADR-106 metadata). */
   input_tokens: number
   output_tokens: number
+  /** Covered message-time window (ADR-133); zero-width for ad-hoc pasted text. */
+  period_start: number
+  period_end: number
   pinned: boolean
   archived: boolean
   tags: string[]

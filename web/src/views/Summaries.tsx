@@ -232,6 +232,15 @@ export function Summaries() {
                   )}
                 </button>
                 <div className="flex shrink-0 gap-1">
+                  {s.period_end > s.period_start && (
+                    <button
+                      title="Regenerate over the same window"
+                      onClick={() => void act(client!.regenerateSummary(s.id))}
+                      className="rounded px-2 py-1 text-sm hover:bg-slate-100"
+                    >
+                      🔄
+                    </button>
+                  )}
                   <button
                     title={s.pinned ? 'Unpin' : 'Pin'}
                     onClick={() => void act(client!.setPinned(s.id, !s.pinned))}
@@ -353,6 +362,15 @@ export function Summaries() {
                       )}
                       <dt className="text-slate-400">Created</dt>
                       <dd>{when(s.created_at)}</dd>
+                      {s.period_end > s.period_start && (
+                        <>
+                          <dt className="text-slate-400">Covered</dt>
+                          <dd>
+                            {new Date(s.period_start * 1000).toLocaleString()} —{' '}
+                            {new Date(s.period_end * 1000).toLocaleString()}
+                          </dd>
+                        </>
+                      )}
                       <dt className="text-slate-400">Extracted</dt>
                       <dd>
                         {s.key_points.length} key point{s.key_points.length === 1 ? '' : 's'} ·{' '}

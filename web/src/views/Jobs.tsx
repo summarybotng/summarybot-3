@@ -19,6 +19,7 @@ const TYPE_LABEL: Record<string, string> = {
   backfill: 'Retrospective backfill',
   sync: 'Message sync',
   wiki_synthesis: 'Wiki synthesis',
+  regenerate: 'Regenerate',
 }
 
 export function Jobs() {

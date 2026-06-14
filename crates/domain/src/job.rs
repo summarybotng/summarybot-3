@@ -29,6 +29,9 @@ pub enum JobType {
     Sync,
     /// Synthesize the knowledge-base wiki page from stored units (ADR-067).
     WikiSynthesis,
+    /// Re-run a stored summary over the same source window with changed
+    /// parameters (perspective/length) — ADR-133.
+    Regenerate,
 }
 
 impl JobType {
@@ -39,6 +42,7 @@ impl JobType {
             JobType::Backfill => "backfill",
             JobType::Sync => "sync",
             JobType::WikiSynthesis => "wiki_synthesis",
+            JobType::Regenerate => "regenerate",
         }
     }
 
@@ -49,6 +53,7 @@ impl JobType {
             "backfill" => Some(JobType::Backfill),
             "sync" => Some(JobType::Sync),
             "wiki_synthesis" => Some(JobType::WikiSynthesis),
+            "regenerate" => Some(JobType::Regenerate),
             _ => None,
         }
     }
@@ -268,6 +273,7 @@ mod tests {
             JobType::Backfill,
             JobType::Sync,
             JobType::WikiSynthesis,
+            JobType::Regenerate,
         ] {
             assert_eq!(JobType::parse(t.as_str()), Some(t));
         }

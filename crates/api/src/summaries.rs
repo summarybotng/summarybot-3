@@ -26,6 +26,10 @@ pub struct SummaryDto {
     /// Input/output tokens the producing run consumed (ADR-106 metadata).
     pub input_tokens: i64,
     pub output_tokens: i64,
+    /// The message-time window this summary covers (ADR-133). Zero-width
+    /// (`start == end`) for ad-hoc pasted text. Drives the Regenerate affordance.
+    pub period_start: i64,
+    pub period_end: i64,
     pub pinned: bool,
     pub archived: bool,
     pub tags: Vec<String>,
@@ -81,6 +85,8 @@ impl From<SummaryRecord> for SummaryDto {
             latency_ms: r.usage.latency_ms,
             input_tokens: r.usage.input_tokens,
             output_tokens: r.usage.output_tokens,
+            period_start: r.period_start,
+            period_end: r.period_end,
             pinned: r.pinned,
             archived: r.archived,
             tags: r.tags,
@@ -347,6 +353,190 @@ pub async fn create_summary(
         );
         // Finalize the job with the cost the summary actually incurred.
         use repository::JobRepository;
+        let _ = job.complete(record.cost_micros, crate::auth::now_secs());
+        let _ = repo.update_job(&job);
+    }
+    state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
+    Ok(Json(SummaryDto::from(record)))
+}
+
+/// Body for `regenerate_summary` — all optional (defaults reuse the original).
+#[derive(Deserialize)]
+pub struct RegenerateRequest {
+    #[serde(default)]
+    pub perspective: Option<String>,
+    #[serde(default)]
+    pub prompt_template_id: Option<String>,
+    /// `brief` | `detailed` | `comprehensive`; defaults to detailed.
+    #[serde(default)]
+    pub length: Option<String>,
+}
+
+/// `POST /workspaces/:ws/summaries/:id/regenerate` (ADR-133) — re-run a stored
+/// summary over its *same source window* with changed params (perspective /
+/// template / length), producing a new summary. Tracked as a `Regenerate` job.
+/// Only works for a channel-scoped summary that recorded a real window.
+pub async fn regenerate_summary(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+    Json(body): Json<RegenerateRequest>,
+) -> Result<Json<SummaryDto>, ApiError> {
+    use host::llm::{LlmProvider, RequestPriority, ResilientLlm};
+    use host::{SummarizationService, SummarizeRequest};
+    use repository::{JobRepository, PromptTemplateRepository, WhatsAppRepository};
+
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+
+    // Load the original + its recorded source window.
+    let original = {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.get_record(&workspace, &id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or(ApiError::NotFound)?
+    };
+    let Some(channel) = original.channel_id.clone() else {
+        return Err(ApiError::bad_request(
+            "this summary spans multiple channels or has no source window — cannot regenerate",
+        ));
+    };
+    if original.period_end <= original.period_start {
+        return Err(ApiError::bad_request(
+            "this summary has no stored source window to regenerate from",
+        ));
+    }
+    let length = match body.length.as_deref() {
+        Some("brief") => SummaryLength::Brief,
+        Some("comprehensive") => SummaryLength::Comprehensive,
+        Some("detailed") | None => SummaryLength::Detailed,
+        Some(_) => {
+            return Err(ApiError::bad_request("length must be brief|detailed|comprehensive"))
+        }
+    };
+
+    // Re-read the messages that fell in the original window.
+    let messages = {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.list_messages(&workspace, &channel, original.period_start, original.period_end)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+    if !messages.iter().any(|m| m.is_substantial()) {
+        return Err(ApiError::bad_request(
+            "no substantial messages remain in the original window",
+        ));
+    }
+
+    // Resolve LLM + budget + steering (perspective/template), as create_summary.
+    let (resolution, charge, instructions) = {
+        use repository::WorkspaceSettingsRepository;
+        let repo = state.repo.lock().expect("repo mutex");
+        let r = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
+        let charge = crate::budget_gate(&repo, &r, now)?;
+        let base = repo
+            .get_settings(&workspace)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .summary_instructions;
+        let steer: Option<String> = if let Some(tid) = &body.prompt_template_id {
+            let t = repo
+                .get_template(&workspace, tid)
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .ok_or_else(|| ApiError::bad_request("unknown prompt_template_id"))?;
+            let _ = repo.bump_template_usage(&workspace, tid);
+            Some(t.content)
+        } else if let Some(p) = &body.perspective {
+            domain::summarize::Perspective::parse(p)
+                .ok_or_else(|| ApiError::bad_request("unknown perspective"))?
+                .instructions()
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let instructions = match (steer, base) {
+            (Some(s), Some(b)) => Some(format!("{s}\n\n{b}")),
+            (Some(s), None) => Some(s),
+            (None, b) => b,
+        };
+        (r, charge, instructions)
+    };
+    let ladder = state.ladder_for(&resolution.model);
+    let engine = ResilientLlm::new(
+        state.client_for_base(resolution.base_url, resolution.api_key),
+        state.limiter.clone(),
+    );
+
+    // Track as a Regenerate job (ADR-013/040/133).
+    let mut job = domain::Job::record(
+        domain::JobId::parse(format!("job_regen_{}", unique_suffix()))
+            .map_err(|e| ApiError::bad_request(e.to_string()))?,
+        workspace.clone(),
+        domain::JobType::Regenerate,
+        now,
+    );
+    let _ = job.start(now);
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        let _ = repo.create_job(&job);
+    }
+
+    let outcome = match SummarizationService::new(&engine, &ladder).summarize(&SummarizeRequest {
+        messages: &messages,
+        length,
+        provider: LlmProvider::OpenRouter,
+        priority: RequestPriority::Manual,
+        cap_micros: i64::MAX,
+        instructions: instructions.as_deref(),
+    }) {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = job.fail(e.failure_class(), 0, crate::auth::now_secs());
+            let repo = state.repo.lock().expect("repo mutex");
+            let _ = repo.update_job(&job);
+            return Err(ApiError::bad_request(format!("{e:?}")));
+        }
+    };
+
+    let record = SummaryRecord {
+        id: format!("sum_regen_{}", unique_suffix()),
+        channel_id: Some(channel),
+        model: outcome.model,
+        cost_micros: outcome.cost_micros,
+        degraded: outcome.degraded,
+        created_at: now,
+        pinned: false,
+        archived: false,
+        tags: vec![format!("regenerated-from:{id}")],
+        coherence_score: Some(outcome.coherence.score),
+        usage: outcome.usage,
+        // Same window the original covered.
+        period_start: original.period_start,
+        period_end: original.period_end,
+        summary: outcome.summary,
+    };
+    {
+        let repo = state.repo.lock().expect("repo mutex");
+        let deliverers = state.deliverers();
+        let (destinations, caps) =
+            host::load_workspace_delivery(&*repo, &workspace, state.master_key())
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        host::DeliveryService::new(&*repo)
+            .with_deliverers(&deliverers)
+            .deliver(&workspace, &record, &destinations, &caps)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        if let Some((tenant, window)) = &charge {
+            crate::budget_charge(&repo, tenant, *window, record.cost_micros)?;
+        }
+        crate::knowledge::ingest_summary(
+            &state,
+            &repo,
+            &workspace,
+            &record.summary,
+            &record.id,
+            record.channel_id.as_ref().map(|c| c.as_str()),
+            now,
+        );
         let _ = job.complete(record.cost_micros, crate::auth::now_secs());
         let _ = repo.update_job(&job);
     }

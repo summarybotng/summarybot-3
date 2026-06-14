@@ -2,7 +2,8 @@
 
 > Rewrite-era ADR. Numbering continues from the local ADR set (…, ADR-132).
 
-- **Status**: Proposed (2026-06-14)
+- **Status**: Accepted (2026-06-14) — **A1 Coverage**, **A2 Prompts/Perspectives**,
+  and **B Jobs `Regenerate`** shipped; A3–A8 + the remaining B enrichments remain.
 - **Deciders**: Martin Cleaver
 - **Related**: ADR-013/040 (jobs), ADR-072/112/121 (coverage), ADR-067/077/090/127
   (wiki/knowledge), ADR-088/089/101 (retrospective/rolling), ADR-126 (delivery

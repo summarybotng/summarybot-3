@@ -223,6 +223,17 @@ export class Client {
     return this.json<void>(`/workspaces/${this.ws()}/summaries/${id}`, { method: 'DELETE' })
   }
 
+  /** Re-run a stored summary over its source window with changed params (ADR-133). */
+  regenerateSummary(
+    id: string,
+    opts: { perspective?: string; prompt_template_id?: string; length?: string } = {},
+  ): Promise<Summary> {
+    return this.json<Summary>(
+      `/workspaces/${this.ws()}/summaries/${id}/regenerate`,
+      this.body('POST', opts),
+    )
+  }
+
   setPinned(id: string, pinned: boolean): Promise<Summary> {
     return this.json<Summary>(
       `/workspaces/${this.ws()}/summaries/${id}/${pinned ? 'pin' : 'unpin'}`,

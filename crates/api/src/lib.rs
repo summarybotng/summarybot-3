@@ -398,6 +398,10 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/summaries/:id",
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
+        .route(
+            "/workspaces/:ws/summaries/:id/regenerate",
+            post(summaries::regenerate_summary),
+        )
         .route("/workspaces/:ws/events", get(events::workspace_events))
         .route(
             "/workspaces/:ws/settings",
@@ -2069,6 +2073,105 @@ mod tests {
         assert_eq!(j["produced"], 2, "one summary per non-empty week");
         assert!(j["weeks_empty"].as_i64().unwrap() >= 1, "the empty week was skipped");
         assert_eq!(j["summary_ids"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn regenerate_reruns_window_and_records_a_regenerate_job() {
+        use domain::{ChannelId, MessageId, NormalizedMessage, Platform};
+        use repository::{ImportRecord, WhatsAppRepository};
+        let (state, token) = seeded_state(); // token grants ws-1
+        let ws = domain::WorkspaceId::parse("ws-1").unwrap();
+        let chat = ChannelId::parse("family").unwrap();
+        const WEEK: i64 = 604_800;
+        let base = crate::auth::now_secs() - 4 * WEEK;
+        {
+            let repo = state.repo.lock().unwrap();
+            repo.record_import(&ImportRecord {
+                id: "imp1",
+                workspace_id: &ws,
+                chat_id: &chat,
+                file_hash: "h1",
+                uploader: &domain::UserId::parse("u1").unwrap(),
+                imported_at: base,
+                format: "ios",
+                message_count: 1,
+                date_start: base,
+                date_end: base + WEEK,
+                group_created_at: None,
+            })
+            .unwrap();
+            repo.save_message(
+                &ws,
+                &NormalizedMessage {
+                    id: MessageId::parse("m0").unwrap(),
+                    platform: Platform::WhatsApp,
+                    channel_id: chat.clone(),
+                    author_id: "p1".into(),
+                    author_name: "Alice".into(),
+                    content: "we shipped the release and planned next steps in detail".into(),
+                    timestamp: base + 100,
+                    is_system: false,
+                    reply_to: None,
+                    attachments: vec![],
+                },
+            )
+            .unwrap();
+        }
+        let app = build_router(state);
+        let auth = format!("Bearer {token}");
+        // Produce a channel-scoped retrospective summary (real week window).
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/workspaces/ws-1/whatsapp/chats/family/summarize-weeks")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let j = body_json(resp).await;
+        let original_id = j["summary_ids"][0].as_str().unwrap().to_string();
+
+        // Regenerate it with a different perspective.
+        let regen = app
+            .clone()
+            .oneshot(
+                Request::post(format!(
+                    "/workspaces/ws-1/summaries/{original_id}/regenerate"
+                ))
+                .header("authorization", &auth)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"perspective":"developer"}"#))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(regen.status(), StatusCode::OK, "regenerate should succeed");
+        let rj = body_json(regen).await;
+        let new_id = rj["id"].as_str().unwrap();
+        assert_ne!(new_id, original_id, "regenerate makes a new summary");
+        assert!(new_id.starts_with("sum_regen_"));
+
+        // A Regenerate job was recorded.
+        let jobs = app
+            .oneshot(
+                Request::get("/workspaces/ws-1/jobs")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let jj = body_json(jobs).await;
+        assert!(
+            jj.as_array()
+                .unwrap()
+                .iter()
+                .any(|j| j["job_type"] == "regenerate" && j["status"] == "completed"),
+            "a completed regenerate job should be listed"
+        );
     }
 
     #[tokio::test]
