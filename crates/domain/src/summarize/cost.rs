@@ -38,12 +38,24 @@ pub enum SpendDecision {
     CapReached,
 }
 
+/// Token + latency usage of a produced summary (ADR-106 metadata). Latency is
+/// stamped by the host (wall-clock); tokens accumulate across the retry/fallback
+/// + map-reduce calls via the [`CostGuard`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SummaryUsage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub latency_ms: i64,
+}
+
 /// Tracks spend against a hard cap across a multi-call request (the resilient
 /// retry/fallback chain). Check *before* each call; record the *actual* after.
 #[derive(Debug, Clone)]
 pub struct CostGuard {
     cap_micros: i64,
     spent_micros: i64,
+    input_tokens: i64,
+    output_tokens: i64,
 }
 
 impl CostGuard {
@@ -52,6 +64,8 @@ impl CostGuard {
         Self {
             cap_micros: cap_micros.max(0),
             spent_micros: 0,
+            input_tokens: 0,
+            output_tokens: 0,
         }
     }
 
@@ -60,7 +74,20 @@ impl CostGuard {
         Self {
             cap_micros: i64::MAX,
             spent_micros: 0,
+            input_tokens: 0,
+            output_tokens: 0,
         }
+    }
+
+    /// Accumulate the token usage of a completed call (alongside [`record`]).
+    pub fn record_tokens(&mut self, input: i64, output: i64) {
+        self.input_tokens = self.input_tokens.saturating_add(input.max(0));
+        self.output_tokens = self.output_tokens.saturating_add(output.max(0));
+    }
+
+    /// Total tokens accumulated so far (input, output).
+    pub fn tokens(&self) -> (i64, i64) {
+        (self.input_tokens, self.output_tokens)
     }
 
     /// Would spending `estimate_micros` more stay within the cap?

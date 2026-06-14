@@ -21,6 +21,11 @@ pub struct SummaryDto {
     pub degraded: bool,
     /// Coherence-gate grounded score in `[0,1]` (COH-001); `null` if unassessed.
     pub coherence_score: Option<f32>,
+    /// Latency of the producing run, in milliseconds (ADR-106 metadata).
+    pub latency_ms: i64,
+    /// Input/output tokens the producing run consumed (ADR-106 metadata).
+    pub input_tokens: i64,
+    pub output_tokens: i64,
     pub pinned: bool,
     pub archived: bool,
     pub tags: Vec<String>,
@@ -73,6 +78,9 @@ impl From<SummaryRecord> for SummaryDto {
             cost_micros: r.cost_micros,
             degraded: r.degraded,
             coherence_score: r.coherence_score,
+            latency_ms: r.usage.latency_ms,
+            input_tokens: r.usage.input_tokens,
+            output_tokens: r.usage.output_tokens,
             pinned: r.pinned,
             archived: r.archived,
             tags: r.tags,
@@ -251,6 +259,7 @@ pub async fn create_summary(
         archived: false,
         tags: vec![],
         coherence_score: Some(outcome.coherence.score),
+        usage: outcome.usage,
         summary: outcome.summary,
     };
     {

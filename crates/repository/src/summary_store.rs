@@ -10,6 +10,7 @@ use crate::SqliteRepository;
 use anyhow::Result;
 use domain::summarize::{
     ActionItem, ExtractedSummary, MessageReference, ReferencedClaim, ResolvedCitation,
+    SummaryUsage,
 };
 use domain::{ChannelId, MessageId, WorkspaceId};
 use rusqlite::types::ToSql;
@@ -31,6 +32,8 @@ pub struct SummaryRecord {
     pub summary: ExtractedSummary,
     /// Coherence-gate grounded score in `[0,1]` (COH-001); `None` if unassessed.
     pub coherence_score: Option<f32>,
+    /// Token + latency usage of the producing run (ADR-106 metadata).
+    pub usage: SummaryUsage,
 }
 
 /// Filter + pagination for a summary listing (PRD §5.1: DSH-002/004/005). All
@@ -185,8 +188,8 @@ impl StructuredSummaryRepository for SqliteRepository {
             "INSERT INTO summary_records
                (id, workspace_id, channel_id, model, cost_micros, degraded, created_at,
                 text, key_points, technical_terms, participants, pinned, archived, tags,
-                coherence_score)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                coherence_score, input_tokens, output_tokens, latency_ms)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![
                 record.id,
                 workspace.as_str(),
@@ -203,6 +206,9 @@ impl StructuredSummaryRepository for SqliteRepository {
                 record.archived,
                 join(&record.tags),
                 record.coherence_score,
+                record.usage.input_tokens,
+                record.usage.output_tokens,
+                record.usage.latency_ms,
             ],
         )?;
         for (i, k) in record.summary.key_points.iter().enumerate() {
@@ -242,7 +248,7 @@ impl StructuredSummaryRepository for SqliteRepository {
             .query_row(
                 "SELECT channel_id, model, cost_micros, degraded, created_at,
                         text, key_points, technical_terms, participants, pinned, archived, tags,
-                        coherence_score
+                        coherence_score, input_tokens, output_tokens, latency_ms
                  FROM summary_records WHERE id = ?1 AND workspace_id = ?2",
                 params![id, workspace.as_str()],
                 |row| {
@@ -260,6 +266,9 @@ impl StructuredSummaryRepository for SqliteRepository {
                         row.get::<_, bool>(10)?,
                         row.get::<_, String>(11)?,
                         row.get::<_, Option<f32>>(12)?,
+                        row.get::<_, i64>(13)?,
+                        row.get::<_, i64>(14)?,
+                        row.get::<_, i64>(15)?,
                     ))
                 },
             )
@@ -278,6 +287,9 @@ impl StructuredSummaryRepository for SqliteRepository {
             archived,
             tags,
             coherence_score,
+            input_tokens,
+            output_tokens,
+            latency_ms,
         )) = main
         else {
             return Ok(None);
@@ -363,6 +375,11 @@ impl StructuredSummaryRepository for SqliteRepository {
                 citations,
             },
             coherence_score,
+            usage: SummaryUsage {
+                input_tokens,
+                output_tokens,
+                latency_ms,
+            },
         }))
     }
 
@@ -579,6 +596,11 @@ mod tests {
                     message_id: MessageId::parse("m0").unwrap(),
                     quote: Some("ship it".into()),
                 }],
+            },
+            usage: SummaryUsage {
+                input_tokens: 2_000,
+                output_tokens: 500,
+                latency_ms: 1_234,
             },
         }
     }

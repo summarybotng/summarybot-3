@@ -829,6 +829,7 @@ mod tests {
             archived: false,
             tags: vec![],
             coherence_score: None,
+            usage: domain::summarize::SummaryUsage::default(),
             summary: ExtractedSummary {
                 text: "We shipped.".into(),
                 key_points: vec!["Launched".into()],

@@ -301,6 +301,7 @@ where
             archived: false,
             tags,
             coherence_score: Some(outcome.coherence.score),
+            usage: outcome.usage,
             summary: outcome.summary,
         };
         self.deliver_record(ws, &stored.id, &record)
@@ -458,6 +459,7 @@ where
             archived: false,
             tags: vec![format!("rolling-{}-intermediate", cfg.period)],
             coherence_score: None,
+            usage: domain::summarize::SummaryUsage::default(),
             summary: ExtractedSummary {
                 text: format!("{header}{content_md}"),
                 key_points: vec![],
@@ -745,6 +747,7 @@ where
                         archived: false,
                         tags: vec![format!("rolling-{}", cfg.period)],
                         coherence_score: None,
+                        usage: domain::summarize::SummaryUsage::default(),
                         summary,
                     };
                     self.deliver_record(ws, &stored.id, &record)?;

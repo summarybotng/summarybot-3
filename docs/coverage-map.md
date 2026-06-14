@@ -70,7 +70,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Pick **channels** by category | ✅ | Discord / Slack | Browse channels (**was 🟡** — pasted ids) |
 | Sync source messages | ✅ | Discord / Slack | selected channels or all |
 | Summarize a channel / pasted messages | ✅ | Source / Summaries | |
-| Search / filter / pin / archive / tag summaries | ✅ | Summaries | |
+| Search / filter / pin / archive / tag summaries | ✅ | Summaries | a filter bar wires all of the API's filters (DSH-004 text, DSH-005 participant, DSH-009 tag, DSH-008 include-archived) — previously only the text search `q` was surfaced |
 | Set per-workspace summary instructions | ✅ | Settings | |
 | Create / edit / pause / run a schedule | ✅ | Schedules | |
 | Configure a rolling digest (period + merge) | ✅ | Schedules | Append / Hybrid |
@@ -78,7 +78,7 @@ surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
 | Forward weekly *rolling* digest of an imported chat | ✅ | WhatsApp | one-click "Schedule weekly digest" on the coverage card (rolling weekly scoped to the chat) |
 | Generate-now with a time-range picker | ✅ | WhatsApp | "summarize last 24h / 7d / 30d" presets on the coverage card (ADR-089 Now); Source tab has a lookback-days field |
 | Unified "create summary" wizard (now / schedule / retrospective) | ✅ | Create | a 2-step wizard (What → When) on a new **Create** tab unifies all three flows: pick platform + channel/chat, then Now (range presets) / Recurring (schedule + rolling) / Past (by-week retrospective). Dispatches to the existing summarize-now, createSchedule, and summarize-weeks endpoints (ADR-088/089) |
-| View summary detail (key points, action items) | ✅ | Summaries | expandable card; a collapsible **Metadata** panel (ADR-106) shows model, scope, cost, grounded %, extraction counts, technical terms, tags, id |
+| View summary detail (key points, action items) | ✅ | Summaries | expandable card; a collapsible **Metadata** panel (ADR-106) shows model, scope, cost, latency, token counts (in/out), grounded %, extraction counts, technical terms, tags, id. Tokens accumulate across the retry/fallback + map-reduce calls in the `CostGuard`; latency is wall-clock around `summarize()`; both persist on `summary_records` (migrations 0010–0012) |
 | Per-destination rolling delivery control | ✅ | Delivery | a per-destination "deliver on each run" flag (ADR-108): rolling schedules push the in-progress digest to flagged destinations every run (no dashboard spam), and the finalized digest to all. Stored on `workspace_destinations`; the runner filters intermediate vs finalize delivery |
 | Choose delivery destinations *per schedule* | ✅ | Schedules | a destination picker pins a schedule to a chosen subset; empty = all enabled (ADR-014). Stored in `schedule_destinations`; the runner filters delivery to the selection. Pairs with the per-destination intermediate-vs-finalize flag (ADR-108) |
 | Schedule scope = all-channels (workspace) | ✅ | Schedules | "all channels" toggle → a workspace-wide digest across every channel (ADR-011) |

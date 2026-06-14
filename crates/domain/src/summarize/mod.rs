@@ -18,7 +18,7 @@ pub mod format;
 pub mod model;
 
 pub use allocate::{allocate, Allocation};
-pub use cost::{CostGuard, ModelPrice, SpendDecision};
+pub use cost::{CostGuard, ModelPrice, SpendDecision, SummaryUsage};
 pub use extract::{
     finalize, ActionItem, CitationSource, ExtractedSummary, FinishReason, MessageReference,
     QualityError, RawCitation, RawClaim, RawExtraction, ReferencedClaim, ResolvedCitation,

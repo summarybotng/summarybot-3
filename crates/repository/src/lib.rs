@@ -595,6 +595,20 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0009_knowledge_unit_confidence",
         "ALTER TABLE knowledge_units ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0",
     ),
+    // Token + latency usage on summaries (ADR-106 metadata) — added via migration
+    // so fresh and existing DBs match.
+    (
+        "0010_summary_input_tokens",
+        "ALTER TABLE summary_records ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "0011_summary_output_tokens",
+        "ALTER TABLE summary_records ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        "0012_summary_latency_ms",
+        "ALTER TABLE summary_records ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0",
+    ),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose

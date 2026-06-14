@@ -57,6 +57,11 @@ export interface Summary {
   degraded: boolean
   /** Coherence-gate grounded score in [0,1]; null if unassessed (COH-001). */
   coherence_score: number | null
+  /** Wall-clock latency of the producing run, in ms (ADR-106 metadata). */
+  latency_ms: number
+  /** Input/output tokens the producing run consumed (ADR-106 metadata). */
+  input_tokens: number
+  output_tokens: number
   pinned: boolean
   archived: boolean
   tags: string[]

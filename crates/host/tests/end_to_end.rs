@@ -94,8 +94,13 @@ fn ingest_then_summarize_then_deliver() {
         .expect("summary produced");
 
     assert_eq!(
-        outcome.summary.key_points,
-        vec!["Ship the release on Friday".to_string()]
+        outcome
+            .summary
+            .key_points
+            .iter()
+            .map(|k| k.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Ship the release on Friday"]
     );
     // The grounded citation resolved to a real stored message id (ADR-004).
     assert_eq!(outcome.summary.citations.len(), 1);
@@ -113,6 +118,7 @@ fn ingest_then_summarize_then_deliver() {
         archived: false,
         tags: vec![],
         coherence_score: Some(outcome.coherence.score),
+        usage: outcome.usage,
         summary: outcome.summary.clone(),
     };
     let report = DeliveryService::new(&repo)

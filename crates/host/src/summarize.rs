@@ -17,7 +17,7 @@ use crate::llm::{LlmClient, LlmProvider, LlmRequest, RequestPriority, ResilientL
 use domain::summarize::{
     allocate, finalize, ActionItem, CostGuard, ExtractedSummary, FinishReason, ModelLadder,
     NextModel, QualityError, RawCitation, RawExtraction, ResolvedCitation, SpendDecision,
-    SummaryLength,
+    SummaryLength, SummaryUsage,
 };
 use domain::{
     ChannelId, FailureClass, Job, JobId, JobType, MessageId, NormalizedMessage, Platform,
@@ -57,6 +57,9 @@ pub struct SummaryOutcome {
     /// Coherence gate result vs. the source messages (COH-001). `score` 1.0 with
     /// no flags when unassessed (no sources).
     pub coherence: domain::CoherenceReport,
+    /// Token + latency usage (ADR-106): stamped in `summarize` from the cost
+    /// guard's accumulated tokens + wall-clock.
+    pub usage: SummaryUsage,
 }
 
 /// Why summarization failed outright.
@@ -175,6 +178,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
             return Err(SummarizeError::NoSubstantialMessages);
         }
 
+        let started = std::time::Instant::now();
         let mut guard = CostGuard::new(req.cap_micros);
         let mut degraded = false;
         // Source texts for the coherence gate (COH-001), checked against the
@@ -208,6 +212,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                 &mut degraded,
             )?;
             outcome.coherence = domain::check_coherence(&outcome.summary, &source_texts);
+            outcome.usage = stamp_usage(&guard, started);
             return Ok(outcome);
         }
 
@@ -256,6 +261,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                     score: 1.0,
                     ungrounded: vec![],
                 },
+                usage: SummaryUsage::default(),
             }
         } else {
             match self.reduce(req, partials, context_tokens, &mut guard, &mut degraded) {
@@ -274,6 +280,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                             score: 1.0,
                             ungrounded: vec![],
                         },
+                usage: SummaryUsage::default(),
                     }
                 }
             }
@@ -283,6 +290,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         outcome.summary.citations = dedup_citations(carried);
         outcome.degraded = degraded;
         outcome.coherence = domain::check_coherence(&outcome.summary, &source_texts);
+        outcome.usage = stamp_usage(&guard, started);
         Ok(outcome)
     }
 
@@ -358,6 +366,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                 Ok(response) => {
                     let out_tokens = estimate_tokens(&response.text);
                     guard.record(model.price.cost_micros(input_tokens, out_tokens));
+                    guard.record_tokens(input_tokens, out_tokens);
                     match self.parse_and_finalize(
                         &response.text,
                         response.finish_reason,
@@ -375,6 +384,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                                     score: 1.0,
                                     ungrounded: vec![],
                                 },
+                usage: SummaryUsage::default(),
                             });
                         }
                         // Recoverable quality problem: try a stronger model.
@@ -540,6 +550,17 @@ fn extract_json(body: &str) -> &str {
 /// Rough token estimate: ~4 chars/token. The host swaps in a real tokenizer.
 fn estimate_tokens(text: &str) -> i64 {
     (text.len() as i64).div_euclid(4).max(1)
+}
+
+/// Snapshot the accumulated token usage + elapsed wall-clock into a
+/// [`SummaryUsage`] for the ADR-106 metadata panel.
+fn stamp_usage(guard: &CostGuard, started: std::time::Instant) -> SummaryUsage {
+    let (input_tokens, output_tokens) = guard.tokens();
+    SummaryUsage {
+        input_tokens,
+        output_tokens,
+        latency_ms: started.elapsed().as_millis() as i64,
+    }
 }
 
 /// Split messages into contiguous groups whose formatted input is each ≈

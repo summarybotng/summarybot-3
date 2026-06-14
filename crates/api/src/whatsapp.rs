@@ -469,6 +469,7 @@ pub async fn summarize_weeks(
             archived: false,
             tags: vec!["retrospective-weekly".to_string()],
             coherence_score: Some(outcome.coherence.score),
+            usage: outcome.usage,
             summary: outcome.summary,
         };
         {

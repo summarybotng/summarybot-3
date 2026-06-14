@@ -23,17 +23,32 @@ export function Summaries() {
   const { client } = useAuth()
   const [items, setItems] = useState<Summary[]>([])
   const [q, setQ] = useState('')
+  const [participant, setParticipant] = useState('')
+  const [tag, setTag] = useState('')
+  const [includeArchived, setIncludeArchived] = useState(false)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [liveFlash, setLiveFlash] = useState<string | null>(null)
 
   const load = useCallback(
-    async (query?: string) => {
+    async (filters?: { q?: string; participant?: string; tag?: string; includeArchived?: boolean }) => {
       if (!client) return
-      setItems(await client.listSummaries({ q: query || undefined }))
+      setItems(
+        await client.listSummaries({
+          q: filters?.q || undefined,
+          participant: filters?.participant || undefined,
+          tag: filters?.tag || undefined,
+          includeArchived: filters?.includeArchived || undefined,
+        }),
+      )
     },
     [client],
+  )
+
+  const applyFilters = useCallback(
+    () => load({ q, participant, tag, includeArchived }),
+    [load, q, participant, tag, includeArchived],
   )
 
   useEffect(() => {
@@ -82,7 +97,7 @@ export function Summaries() {
 
   async function act(fn: Promise<unknown>) {
     await fn
-    await load(q)
+    await load({ q, participant, tag, includeArchived })
   }
 
   return (
@@ -108,23 +123,65 @@ export function Summaries() {
         </div>
       </form>
 
-      {/* Search */}
+      {/* Filters (DSH-004/005/009): text, participant, tag, archived. */}
       <form
         onSubmit={(e) => {
           e.preventDefault()
-          void load(q)
+          void applyFilters()
         }}
-        className="flex gap-2"
+        className="rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200"
       >
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search text, key points…"
-          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
-        />
-        <button className="rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium">
-          Search
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search text, key points…"
+            className="min-w-[12rem] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <input
+            value={participant}
+            onChange={(e) => setParticipant(e.target.value)}
+            placeholder="Participant"
+            className="w-40 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <input
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            placeholder="Tag"
+            className="w-32 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-accent"
+          />
+          <button className="rounded-lg bg-accent px-4 text-sm font-medium text-accent-fg">
+            Filter
+          </button>
+        </div>
+        <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={includeArchived}
+              onChange={(e) => {
+                setIncludeArchived(e.target.checked)
+                void load({ q, participant, tag, includeArchived: e.target.checked })
+              }}
+            />
+            Include archived
+          </label>
+          {(q || participant || tag || includeArchived) && (
+            <button
+              type="button"
+              onClick={() => {
+                setQ('')
+                setParticipant('')
+                setTag('')
+                setIncludeArchived(false)
+                void load()
+              }}
+              className="text-slate-500 underline hover:text-slate-700"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
       </form>
 
       {/* List */}
@@ -265,6 +322,27 @@ export function Summaries() {
                       <dd>{scopeLabel(s)}</dd>
                       <dt className="text-slate-400">Cost</dt>
                       <dd>${(s.cost_micros / 1_000_000).toFixed(4)}</dd>
+                      {(s.latency_ms > 0 || s.input_tokens > 0 || s.output_tokens > 0) && (
+                        <>
+                          <dt className="text-slate-400">Latency</dt>
+                          <dd>
+                            {s.latency_ms === 0
+                              ? '<1 ms'
+                              : s.latency_ms < 1000
+                                ? `${s.latency_ms} ms`
+                                : `${(s.latency_ms / 1000).toFixed(1)} s`}
+                          </dd>
+                        </>
+                      )}
+                      {(s.input_tokens > 0 || s.output_tokens > 0) && (
+                        <>
+                          <dt className="text-slate-400">Tokens</dt>
+                          <dd>
+                            {s.input_tokens.toLocaleString()} in ·{' '}
+                            {s.output_tokens.toLocaleString()} out
+                          </dd>
+                        </>
+                      )}
                       {s.coherence_score != null && (
                         <>
                           <dt className="text-slate-400">Grounded</dt>
