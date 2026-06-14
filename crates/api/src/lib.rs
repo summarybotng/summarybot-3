@@ -404,6 +404,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/workspaces/:ws/wiki/search", get(knowledge::search))
         .route("/workspaces/:ws/wiki/pages", get(knowledge::list_pages))
         .route("/workspaces/:ws/wiki/units", get(knowledge::list_units))
+        .route(
+            "/workspaces/:ws/wiki/units/export",
+            get(knowledge::export_units),
+        )
         .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
         .route(
             "/workspaces/:ws/wiki/synthesize",
@@ -671,6 +675,7 @@ async fn openapi() -> Json<serde_json::Value> {
             "/workspaces/{ws}/wiki/search": { "get": { "summary": "Semantic search over knowledge units — ?q,k (KNO-005, ADR-127)" } },
             "/workspaces/{ws}/wiki/pages": { "get": { "summary": "List synthesized wiki pages (WIK-003)" } },
             "/workspaces/{ws}/wiki/units": { "get": { "summary": "Raw knowledge units with source provenance — ?k (ADR-063)" } },
+            "/workspaces/{ws}/wiki/units/export": { "get": { "summary": "Export knowledge units as an RVF binary or JSON — ?format=rvf|json&include_embeddings&unit_types (ADR-117)" } },
             "/workspaces/{ws}/jobs": { "get": { "summary": "Background/long-running jobs with status + progress — ?limit (ADR-040)" } },
             "/workspaces/{ws}/wiki/synthesize": { "post": { "summary": "(Re)generate the knowledge-base page from units (WIK-001)" } },
             "/workspaces/{ws}/wiki/curate": { "post": { "summary": "AI wiki curator: advisory health report — duplicate clusters + stale units — ?stale_days (CUR-*)" } },

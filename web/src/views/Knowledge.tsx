@@ -19,6 +19,28 @@ export function Knowledge() {
   const [curateBusy, setCurateBusy] = useState(false)
   const [units, setUnits] = useState<KnowledgeUnit[] | null>(null)
   const [unitsBusy, setUnitsBusy] = useState(false)
+  const [exporting, setExporting] = useState(false)
+
+  // Export knowledge units (ADR-117): fetch the blob, trigger a browser download.
+  async function exportUnits(format: 'rvf' | 'json') {
+    if (!client) return
+    setExporting(true)
+    try {
+      const { blob, filename } = await client.exportUnits(format, true)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch {
+      /* surfaced by the disabled state; a toast is a refinement */
+    } finally {
+      setExporting(false)
+    }
+  }
 
   useEffect(() => {
     if (!client) return
@@ -202,13 +224,31 @@ export function Knowledge() {
               was grounded in.
             </p>
           </div>
-          <button
-            onClick={loadUnits}
-            disabled={unitsBusy}
-            className="shrink-0 rounded-lg border border-accent px-4 py-2 text-sm font-medium text-accent disabled:opacity-50"
-          >
-            {unitsBusy ? 'Loading…' : units ? 'Refresh' : 'Show units'}
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              onClick={() => void exportUnits('rvf')}
+              disabled={exporting}
+              title="Download all knowledge units as an RVF binary, embeddings included (ADR-117)"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 disabled:opacity-50"
+            >
+              {exporting ? 'Exporting…' : 'Export .rvf'}
+            </button>
+            <button
+              onClick={() => void exportUnits('json')}
+              disabled={exporting}
+              title="Download all knowledge units as JSON (ADR-117 fallback)"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 disabled:opacity-50"
+            >
+              JSON
+            </button>
+            <button
+              onClick={loadUnits}
+              disabled={unitsBusy}
+              className="rounded-lg border border-accent px-4 py-2 text-sm font-medium text-accent disabled:opacity-50"
+            >
+              {unitsBusy ? 'Loading…' : units ? 'Refresh' : 'Show units'}
+            </button>
+          </div>
         </div>
         {units && (
           <div className="mt-4 border-t border-slate-100 pt-3">

@@ -5,6 +5,7 @@
 use crate::auth::AuthUser;
 use crate::{ApiError, AppState};
 use axum::extract::{Path, Query, State};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use domain::summarize::ExtractedSummary;
 use host::KnowledgeService;
@@ -108,6 +109,129 @@ pub async fn list_units(
             })
             .collect(),
     ))
+}
+
+/// `?format=rvf|json&include_embeddings=true&unit_types=key_point,action_item`
+#[derive(Deserialize)]
+pub struct ExportQuery {
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub include_embeddings: bool,
+    /// Comma-separated kinds to include (default all).
+    #[serde(default)]
+    pub unit_types: Option<String>,
+}
+
+/// Map a stored unit kind to the ADR-117 unit-type enum.
+fn rvf_unit_type(kind: &str) -> u8 {
+    match kind {
+        "action_item" => 3,
+        "headline" | "key_point" => 0, // claim
+        _ => 4,                        // context
+    }
+}
+
+/// `GET /workspaces/:ws/wiki/units/export?format=rvf|json&include_embeddings=…`
+/// — export the workspace's knowledge units as an RVF binary (ADR-117) or a JSON
+/// fallback, for offline analysis / backup / cross-system sharing. Read-only.
+///
+/// Fields not yet tracked per unit map to ADR-117 defaults: `source_channel` is
+/// empty, `confidence` is 1.0, and `source_date` is derived from the unit's
+/// creation time (the originating message timestamp isn't stored per unit).
+pub async fn export_units(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Query(q): Query<ExportQuery>,
+) -> Result<Response, ApiError> {
+    use repository::KnowledgeRepository;
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws.clone()).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let include_embeddings = q.include_embeddings;
+    let kinds: Option<Vec<String>> = q.unit_types.as_deref().map(|s| {
+        s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect()
+    });
+
+    let mut units = {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.list_units(&workspace).map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+    if let Some(kinds) = &kinds {
+        units.retain(|u| kinds.iter().any(|k| k == &u.kind));
+    }
+    units.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+
+    let ts = crate::auth::now_secs();
+    let filename = format!("knowledge_{}_{}", ws, ts);
+    let json = matches!(q.format.as_deref(), Some("json") | Some("JSON"));
+
+    if json {
+        let arr: Vec<serde_json::Value> = units
+            .iter()
+            .map(|u| {
+                serde_json::json!({
+                    "id": u.id,
+                    "unit_type": rvf_unit_type(&u.kind),
+                    "kind": u.kind,
+                    "content": u.text,
+                    "source_id": u.source_ids.first().cloned().unwrap_or_default(),
+                    "source_channel": "",
+                    "source_date": u.created_at / 86_400,
+                    "confidence": 1.0,
+                    "embedding": if include_embeddings { serde_json::json!(u.embedding) } else { serde_json::Value::Null },
+                })
+            })
+            .collect();
+        let body = serde_json::Value::Array(arr).to_string();
+        return Ok((
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json".to_string()),
+                (
+                    axum::http::header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"{filename}.json\""),
+                ),
+            ],
+            body,
+        )
+            .into_response());
+    }
+
+    // RVF binary (ADR-117). Embedding dim = the common vector length, when asked.
+    let embedding_dim: u32 = if include_embeddings {
+        units
+            .iter()
+            .find_map(|u| u.embedding.as_ref().map(|e| e.len() as u32))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let rvf_units: Vec<domain::rvf::RvfUnit> = units
+        .into_iter()
+        .map(|u| domain::rvf::RvfUnit {
+            unit_type: rvf_unit_type(&u.kind),
+            id: u.id,
+            content: u.text,
+            source_id: u.source_ids.into_iter().next().unwrap_or_default(),
+            source_channel: String::new(),
+            source_date_days: (u.created_at / 86_400).max(0) as u32,
+            confidence: 1.0,
+            embedding: if include_embeddings { u.embedding } else { None },
+        })
+        .collect();
+    let bytes = domain::rvf::encode(&rvf_units, &ws, embedding_dim, ts * 1000);
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}.rvf\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 /// JSON shape of a synthesized wiki page (WIK-001..003).

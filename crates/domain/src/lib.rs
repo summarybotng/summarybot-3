@@ -18,6 +18,7 @@ mod message;
 mod oauth;
 mod rolling;
 mod routing;
+pub mod rvf;
 mod schedule;
 mod secret;
 mod session;

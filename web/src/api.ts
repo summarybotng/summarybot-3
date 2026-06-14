@@ -378,6 +378,24 @@ export class Client {
     return this.json<KnowledgeUnit[]>(`/workspaces/${this.ws()}/wiki/units?k=${k}`)
   }
 
+  /**
+   * Export knowledge units (ADR-117). `format` is `rvf` (binary) or `json`.
+   * Returns the downloaded blob + the server-suggested filename so the caller
+   * can trigger a browser download.
+   */
+  async exportUnits(
+    format: 'rvf' | 'json',
+    includeEmbeddings = false,
+  ): Promise<{ blob: Blob; filename: string }> {
+    const p = new URLSearchParams({ format, include_embeddings: String(includeEmbeddings) })
+    const res = await this.raw(`/workspaces/${this.ws()}/wiki/units/export?${p}`, { method: 'GET' })
+    if (!res.ok) throw new ApiError(res.status, 'export failed')
+    const blob = await res.blob()
+    const cd = res.headers.get('content-disposition') ?? ''
+    const m = /filename="([^"]+)"/.exec(cd)
+    return { blob, filename: m?.[1] ?? `knowledge.${format}` }
+  }
+
   /** AI wiki curator: advisory health report — duplicate clusters + stale units. */
   curateWiki(staleDays = 90): Promise<CurationReport> {
     return this.json<CurationReport>(
