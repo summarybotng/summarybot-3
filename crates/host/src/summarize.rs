@@ -98,12 +98,45 @@ struct WireCitation {
     quote: Option<String>,
 }
 
+/// A key point as the model emits it — tolerant of either a plain string (older
+/// prompts / weaker models) or the ADR-004 object form `{text, citations[],
+/// confidence}`. Both map to a `RawClaim`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireKeyPoint {
+    Text(String),
+    Claim {
+        text: String,
+        #[serde(default)]
+        citations: Vec<usize>,
+        #[serde(default)]
+        confidence: Option<f32>,
+    },
+}
+
+impl From<WireKeyPoint> for domain::summarize::RawClaim {
+    fn from(k: WireKeyPoint) -> Self {
+        match k {
+            WireKeyPoint::Text(text) => domain::summarize::RawClaim {
+                text,
+                citations: vec![],
+                confidence: 1.0,
+            },
+            WireKeyPoint::Claim { text, citations, confidence } => domain::summarize::RawClaim {
+                text,
+                citations,
+                confidence: confidence.unwrap_or(1.0),
+            },
+        }
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct WireExtraction {
     #[serde(default)]
     text: String,
     #[serde(default)]
-    key_points: Vec<String>,
+    key_points: Vec<WireKeyPoint>,
     #[serde(default)]
     action_items: Vec<WireActionItem>,
     #[serde(default)]
@@ -269,7 +302,18 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         guard: &mut CostGuard,
         degraded: &mut bool,
     ) -> Result<SummaryOutcome, SummarizeError> {
-        let message_ids: Vec<MessageId> = messages.iter().map(|m| m.id.clone()).collect();
+        // Per-claim citation sources (ADR-004): the ordered window the model
+        // cites into, carrying the metadata each reference needs (author, time,
+        // text → snippet).
+        let sources: Vec<domain::summarize::CitationSource> = messages
+            .iter()
+            .map(|m| domain::summarize::CitationSource {
+                id: m.id.clone(),
+                author_name: m.author_name.clone(),
+                timestamp: m.timestamp,
+                content: m.content.clone(),
+            })
+            .collect();
         let prompt = assemble_prompt(messages, req.instructions);
         let input_tokens = estimate_tokens(&prompt);
 
@@ -317,7 +361,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                     match self.parse_and_finalize(
                         &response.text,
                         response.finish_reason,
-                        &message_ids,
+                        &sources,
                     ) {
                         Ok(summary) => {
                             return Ok(SummaryOutcome {
@@ -441,7 +485,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         &self,
         json: &str,
         finish_reason: FinishReason,
-        message_ids: &[MessageId],
+        sources: &[domain::summarize::CitationSource],
     ) -> Result<ExtractedSummary, QualityError> {
         // A non-JSON / unparseable body is treated as an empty extraction, so it
         // falls into the same recoverable "try a stronger model" path. Real
@@ -449,7 +493,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
         let wire: WireExtraction = serde_json::from_str(extract_json(json)).unwrap_or_default();
         let raw = RawExtraction {
             text: wire.text,
-            key_points: wire.key_points,
+            key_points: wire.key_points.into_iter().map(Into::into).collect(),
             action_items: wire
                 .action_items
                 .into_iter()
@@ -469,7 +513,7 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
                 })
                 .collect(),
         };
-        finalize(raw, finish_reason, message_ids)
+        finalize(raw, finish_reason, sources)
     }
 }
 
@@ -530,7 +574,8 @@ fn synthetic_message(index: usize, partial: &ExtractedSummary) -> NormalizedMess
     let mut content = partial.text.clone();
     if !partial.key_points.is_empty() {
         content.push_str("\nKey points: ");
-        content.push_str(&partial.key_points.join("; "));
+        let texts: Vec<&str> = partial.key_points.iter().map(|k| k.text.as_str()).collect();
+        content.push_str(&texts.join("; "));
     }
     if !partial.action_items.is_empty() {
         let items: Vec<&str> = partial
@@ -599,11 +644,14 @@ fn assemble_prompt(messages: &[&NormalizedMessage], instructions: Option<&str>) 
         "\nYou are a summarization engine. Read the numbered chat messages above and \
          reply with ONLY a single minified JSON object — no prose, no markdown code \
          fences — of exactly this shape:\n\
-         {\"text\":\"<concise prose summary>\",\"key_points\":[\"...\"],\
+         {\"text\":\"<concise prose summary>\",\
+         \"key_points\":[{\"text\":\"...\",\"citations\":[0],\"confidence\":0.9}],\
          \"action_items\":[{\"text\":\"...\",\"assignee\":null}],\
          \"technical_terms\":[\"...\"],\"participants\":[\"...\"],\
          \"citations\":[{\"message_index\":0,\"quote\":\"<verbatim snippet>\"}]}\n\
-         Set message_index from a message's [index] prefix. Use empty arrays for \
+         Each key point MUST cite the messages that support it: put their [index] \
+         numbers in its \"citations\" array and a 0..1 \"confidence\". Set \
+         message_index from a message's [index] prefix. Use empty arrays for \
          anything you can't fill.",
     );
     // Per-workspace guidance (SUM-007), last so it's prominent and survives any
@@ -741,7 +789,7 @@ mod tests {
         let svc = SummarizationService::new(&e, &l);
         let msgs = messages();
         let out = svc.summarize(&req(&msgs, i64::MAX)).unwrap();
-        assert_eq!(out.summary.key_points, vec!["Launch on Friday".to_string()]);
+        assert_eq!(out.summary.key_points[0].text, "Launch on Friday");
         assert_eq!(out.summary.citations[0].message_id.as_str(), "m0");
         assert!(!out.degraded);
         assert!(out.cost_micros > 0);
@@ -783,7 +831,7 @@ mod tests {
         let msgs = messages();
         let out = svc.summarize(&req(&msgs, 10_000)).unwrap();
         assert!(out.degraded);
-        assert_eq!(out.summary.key_points, vec!["Launch on Friday".to_string()]);
+        assert_eq!(out.summary.key_points[0].text, "Launch on Friday");
     }
 
     #[test]

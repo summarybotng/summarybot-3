@@ -33,8 +33,10 @@ roadmap are listed at the end so the boundary is explicit.
 
 - **Structured summaries** — each summary has prose plus key points, action items,
   technical terms, and participants — not just a blob of text.
-- **Grounded citations** — claims link back to the source messages that support
-  them, resolved post-parse from compact position indices.
+- **Per-claim grounded citations (ADR-004)** — every key point carries its own
+  source references (message id, author, position, snippet) and a confidence,
+  shown inline ("sources: #N author"), so each claim is individually traceable —
+  not just a flat summary-level list. Resolved post-parse from position indices.
 - **Three lengths** — brief, detailed, comprehensive.
 - **Long-history map-reduce** — conversations beyond the model's context window
   are chunked, summarized per chunk, then reduced, with citations carried through.

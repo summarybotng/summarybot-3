@@ -67,7 +67,7 @@ pub fn extract_units(summary: &ExtractedSummary, summary_id: &str) -> Vec<Knowle
     };
     push(UnitKind::Headline, summary.text.clone());
     for kp in &summary.key_points {
-        push(UnitKind::KeyPoint, kp.clone());
+        push(UnitKind::KeyPoint, kp.text.clone());
     }
     for ai in &summary.action_items {
         let text = match &ai.assignee {
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn units_are_capped() {
         let mut s = summary();
-        s.key_points = (0..50).map(|i| format!("point {i}")).collect();
+        s.key_points = (0..50).map(|i| format!("point {i}").into()).collect();
         assert_eq!(extract_units(&s, "x").len(), MAX_UNITS_PER_SUMMARY);
     }
 

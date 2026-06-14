@@ -1863,6 +1863,7 @@ dependencies = [
  "chrono-tz",
  "domain",
  "rusqlite",
+ "serde_json",
 ]
 
 [[package]]

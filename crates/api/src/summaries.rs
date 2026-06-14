@@ -26,11 +26,30 @@ pub struct SummaryDto {
     pub tags: Vec<String>,
     pub created_at: i64,
     pub text: String,
-    pub key_points: Vec<String>,
+    pub key_points: Vec<KeyPointDto>,
     pub action_items: Vec<ActionItemDto>,
     pub technical_terms: Vec<String>,
     pub participants: Vec<String>,
     pub citations: Vec<CitationDto>,
+}
+
+/// A grounded key point (ADR-004): the claim text, its self-assessed confidence,
+/// and the source-message references that support it.
+#[derive(Serialize)]
+pub struct KeyPointDto {
+    pub text: String,
+    pub confidence: f32,
+    pub references: Vec<ReferenceDto>,
+}
+
+/// One source reference behind a claim (ADR-004 §2.1).
+#[derive(Serialize)]
+pub struct ReferenceDto {
+    pub message_id: String,
+    pub author_name: String,
+    pub timestamp: i64,
+    pub position: usize,
+    pub snippet: String,
 }
 
 #[derive(Serialize)]
@@ -59,7 +78,26 @@ impl From<SummaryRecord> for SummaryDto {
             tags: r.tags,
             created_at: r.created_at,
             text: r.summary.text,
-            key_points: r.summary.key_points,
+            key_points: r
+                .summary
+                .key_points
+                .into_iter()
+                .map(|k| KeyPointDto {
+                    text: k.text,
+                    confidence: k.confidence,
+                    references: k
+                        .references
+                        .into_iter()
+                        .map(|rf| ReferenceDto {
+                            message_id: rf.message_id.as_str().to_string(),
+                            author_name: rf.author_name,
+                            timestamp: rf.timestamp,
+                            position: rf.position,
+                            snippet: rf.snippet,
+                        })
+                        .collect(),
+                })
+                .collect(),
             action_items: r
                 .summary
                 .action_items

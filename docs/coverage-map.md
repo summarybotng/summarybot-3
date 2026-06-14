@@ -137,7 +137,7 @@ config-dependent, not code debt; keep closing against the spec, not by guessing.
 | Model ladder + failure fallback | ✅ | ✅ | `domain/summarize/model.rs` (ADR-024) |
 | Long-history chunking (map-reduce) | ✅ (smart chunking) | ✅ | `host/summarize.rs` recursive reduce (ADR-095) |
 | Structured output (key points, action items, terms, participants) | ✅ | ✅ | `domain/summarize/extract.rs` (ADR-004) |
-| Grounded citations | ✅ | ✅ | message-index → id resolution; carried through reduce |
+| Grounded citations (per-claim, ADR-004) | ✅ | ✅ | **each key point is a `ReferencedClaim`** carrying its own source references (message id, author, 1-based position, snippet) + a confidence; shown inline on summaries as "(sources: #N author)". Resolved from per-claim citation indices; stored in the `summary_key_points` child table; the summary-level citation union is retained for provenance. Legacy rows fall back to text-only |
 | Summary lengths (brief/detailed/comprehensive) | ✅ | ✅ | — |
 | Per-perspective prompts (dev/marketing/exec…) | ✅ | ⛔ | single prompt strategy; perspectives not ported |
 | Custom prompts per workspace | ✅ | 🟡 | free-text per-workspace summary instructions appended to the prompt (SUM-007, Settings UI); named per-perspective presets not ported |

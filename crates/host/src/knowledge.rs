@@ -385,7 +385,7 @@ mod tests {
     fn summary(text: &str, points: &[&str]) -> ExtractedSummary {
         ExtractedSummary {
             text: text.into(),
-            key_points: points.iter().map(|p| p.to_string()).collect(),
+            key_points: points.iter().map(|p| (*p).into()).collect(),
             action_items: vec![],
             technical_terms: vec![],
             participants: vec![],

@@ -20,8 +20,8 @@ pub mod model;
 pub use allocate::{allocate, Allocation};
 pub use cost::{CostGuard, ModelPrice, SpendDecision};
 pub use extract::{
-    finalize, ActionItem, ExtractedSummary, FinishReason, QualityError, RawCitation, RawExtraction,
-    ResolvedCitation,
+    finalize, ActionItem, CitationSource, ExtractedSummary, FinishReason, MessageReference,
+    QualityError, RawCitation, RawClaim, RawExtraction, ReferencedClaim, ResolvedCitation,
 };
 pub use format::{render, SummaryFormat};
 pub use model::{Model, ModelLadder, NextModel, SummaryLength};

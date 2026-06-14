@@ -6,7 +6,21 @@
 //! top (they need serde / platform SDKs). Empty sections are omitted so a terse
 //! summary stays terse.
 
-use super::extract::ExtractedSummary;
+use super::extract::{ExtractedSummary, ReferencedClaim};
+
+/// Compact source suffix for a claim (ADR-004): "(sources: #1 Alice, #4 Bob)"
+/// using each reference's 1-based position + author. Empty when ungrounded.
+fn refs_suffix(claim: &ReferencedClaim) -> String {
+    if claim.references.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = claim
+        .references
+        .iter()
+        .map(|r| format!("#{} {}", r.position, r.author_name))
+        .collect();
+    format!(" (sources: {})", parts.join(", "))
+}
 
 /// A platform-agnostic output format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +64,22 @@ fn render_html(s: &ExtractedSummary) -> String {
             out.push_str("</ul>\n");
         }
     };
-    section(&mut out, "Key Points", &s.key_points);
+    if !s.key_points.is_empty() {
+        out.push_str("<h2>Key Points</h2>\n<ul>\n");
+        for k in &s.key_points {
+            let suffix = refs_suffix(k);
+            if suffix.is_empty() {
+                out.push_str(&format!("<li>{}</li>\n", esc(&k.text)));
+            } else {
+                out.push_str(&format!(
+                    "<li>{} <span class=\"sources\">{}</span></li>\n",
+                    esc(&k.text),
+                    esc(&suffix)
+                ));
+            }
+        }
+        out.push_str("</ul>\n");
+    }
     if !s.action_items.is_empty() {
         out.push_str("<h2>Action Items</h2>\n<ul>\n");
         for a in &s.action_items {
@@ -80,7 +109,7 @@ fn render_markdown(s: &ExtractedSummary) -> String {
     if !s.key_points.is_empty() {
         out.push_str("## Key Points\n");
         for p in &s.key_points {
-            out.push_str(&format!("- {p}\n"));
+            out.push_str(&format!("- {}{}\n", p.text, refs_suffix(p)));
         }
         out.push('\n');
     }
@@ -128,7 +157,7 @@ fn render_plain(s: &ExtractedSummary) -> String {
     if !s.key_points.is_empty() {
         out.push_str("Key Points:\n");
         for p in &s.key_points {
-            out.push_str(&format!("- {p}\n"));
+            out.push_str(&format!("- {}{}\n", p.text, refs_suffix(p)));
         }
         out.push('\n');
     }

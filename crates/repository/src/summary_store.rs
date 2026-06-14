@@ -8,7 +8,9 @@
 
 use crate::SqliteRepository;
 use anyhow::Result;
-use domain::summarize::{ActionItem, ExtractedSummary, ResolvedCitation};
+use domain::summarize::{
+    ActionItem, ExtractedSummary, MessageReference, ReferencedClaim, ResolvedCitation,
+};
 use domain::{ChannelId, MessageId, WorkspaceId};
 use rusqlite::types::ToSql;
 use rusqlite::{params, OptionalExtension};
@@ -129,6 +131,53 @@ fn split(s: &str) -> Vec<String> {
         .collect()
 }
 
+/// Denormalized key-points column: newline-joined claim texts (legacy/quick text;
+/// the `summary_key_points` child table is authoritative for references).
+fn join_claims(claims: &[ReferencedClaim]) -> String {
+    claims
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Serialize a claim's references to the `refs_json` column (ADR-004).
+fn serialize_refs(refs: &[MessageReference]) -> String {
+    let arr: Vec<serde_json::Value> = refs
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "message_id": r.message_id.as_str(),
+                "author_name": r.author_name,
+                "timestamp": r.timestamp,
+                "position": r.position,
+                "snippet": r.snippet,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(arr).to_string()
+}
+
+/// Parse the `refs_json` column back into references; a malformed/blank value
+/// yields no references (the claim is then merely ungrounded, never an error).
+fn deserialize_refs(json: &str) -> Vec<MessageReference> {
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(json) else {
+        return vec![];
+    };
+    items
+        .into_iter()
+        .filter_map(|v| {
+            Some(MessageReference {
+                message_id: MessageId::parse(v.get("message_id")?.as_str()?).ok()?,
+                author_name: v.get("author_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                timestamp: v.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0),
+                position: v.get("position").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                snippet: v.get("snippet").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
 impl StructuredSummaryRepository for SqliteRepository {
     fn save_record(&self, workspace: &WorkspaceId, record: &SummaryRecord) -> Result<()> {
         let tx = self.conn.unchecked_transaction()?;
@@ -147,7 +196,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                 record.degraded,
                 record.created_at,
                 record.summary.text,
-                join(&record.summary.key_points),
+                join_claims(&record.summary.key_points),
                 join(&record.summary.technical_terms),
                 join(&record.summary.participants),
                 record.pinned,
@@ -156,6 +205,19 @@ impl StructuredSummaryRepository for SqliteRepository {
                 record.coherence_score,
             ],
         )?;
+        for (i, k) in record.summary.key_points.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO summary_key_points (summary_id, idx, text, confidence, refs_json)
+                 VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    record.id,
+                    i as i64,
+                    k.text,
+                    k.confidence,
+                    serialize_refs(&k.references),
+                ],
+            )?;
+        }
         for (i, a) in record.summary.action_items.iter().enumerate() {
             tx.execute(
                 "INSERT INTO summary_action_items (summary_id, idx, text, assignee)
@@ -250,6 +312,34 @@ impl StructuredSummaryRepository for SqliteRepository {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        // Per-claim key points (ADR-004): authoritative when the child table has
+        // rows; legacy rows (none) fall back to the denormalized text column.
+        let mut kp_stmt = self.conn.prepare(
+            "SELECT text, confidence, refs_json FROM summary_key_points
+             WHERE summary_id = ?1 ORDER BY idx",
+        )?;
+        let key_point_rows = kp_stmt
+            .query_map(params![id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f32>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let key_points: Vec<ReferencedClaim> = if key_point_rows.is_empty() {
+            split(&kp).into_iter().map(Into::into).collect() // legacy: text only
+        } else {
+            key_point_rows
+                .into_iter()
+                .map(|(text, confidence, refs_json)| ReferencedClaim {
+                    text,
+                    references: deserialize_refs(&refs_json),
+                    confidence,
+                })
+                .collect()
+        };
+
         let channel_id = channel
             .map(ChannelId::parse)
             .transpose()
@@ -266,7 +356,7 @@ impl StructuredSummaryRepository for SqliteRepository {
             tags: split(&tags),
             summary: ExtractedSummary {
                 text,
-                key_points: split(&kp),
+                key_points,
                 technical_terms: split(&tt),
                 participants: split(&parts),
                 action_items,

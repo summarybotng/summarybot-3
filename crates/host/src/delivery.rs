@@ -71,7 +71,18 @@ impl RenderedSummary {
 fn summary_data(s: &domain::summarize::ExtractedSummary) -> Value {
     serde_json::json!({
         "text": s.text,
-        "key_points": s.key_points,
+        // Per-claim grounded key points (ADR-004): text + references + confidence.
+        "key_points": s.key_points.iter().map(|k| serde_json::json!({
+            "text": k.text,
+            "confidence": k.confidence,
+            "references": k.references.iter().map(|r| serde_json::json!({
+                "message_id": r.message_id.as_str(),
+                "author_name": r.author_name,
+                "timestamp": r.timestamp,
+                "position": r.position,
+                "snippet": r.snippet,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
         "action_items": s.action_items.iter().map(|a| serde_json::json!({
             "text": a.text,
             "assignee": a.assignee,
@@ -1262,7 +1273,8 @@ mod tests {
     fn rendered_bundle_carries_structured_data() {
         let r = RenderedSummary::new(&record().summary);
         assert_eq!(r.data["text"], "We shipped.");
-        assert_eq!(r.data["key_points"][0], "Launched");
+        // Per-claim grounded key points (ADR-004): each is an object with text.
+        assert_eq!(r.data["key_points"][0]["text"], "Launched");
         assert_eq!(r.data["participants"][0], "Alice");
         assert_eq!(r.data["citations"][0]["message_id"], "m0");
         // Title comes from the plain render's first line.

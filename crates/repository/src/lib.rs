@@ -305,6 +305,19 @@ impl SqliteRepository {
                 quote      TEXT,
                 PRIMARY KEY (summary_id, idx)
             );
+            -- Per-claim grounded key points (ADR-004): each key point's text +
+            -- confidence + its message references (refs_json = JSON array of
+            -- {message_id, author_name, timestamp, position, snippet}). The
+            -- denormalized `summary_records.key_points` column is kept for legacy
+            -- rows / quick text; this child table is authoritative when present.
+            CREATE TABLE IF NOT EXISTS summary_key_points (
+                summary_id TEXT    NOT NULL,
+                idx        INTEGER NOT NULL,
+                text       TEXT    NOT NULL,
+                confidence REAL    NOT NULL DEFAULT 1.0,
+                refs_json  TEXT    NOT NULL DEFAULT '[]',
+                PRIMARY KEY (summary_id, idx)
+            );
             -- Persistent schedules (SCH-005/006): recurrence definition + run
             -- state, restored on restart.
             CREATE TABLE IF NOT EXISTS schedules (

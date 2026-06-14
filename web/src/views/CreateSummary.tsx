@@ -322,7 +322,7 @@ export function CreateSummary() {
               {made.key_points.length > 0 && (
                 <ul className="mt-1 list-disc pl-5 text-xs text-slate-600">
                   {made.key_points.slice(0, 5).map((k, i) => (
-                    <li key={i}>{k}</li>
+                    <li key={i}>{k.text}</li>
                   ))}
                 </ul>
               )}

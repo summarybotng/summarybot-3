@@ -16,13 +16,21 @@ pub struct DemoLlmClient;
 impl LlmClient for DemoLlmClient {
     fn complete(&self, request: &LlmRequest) -> Result<LlmResponse, LlmError> {
         let mut participants: Vec<String> = Vec::new();
-        let mut key_points: Vec<String> = Vec::new();
+        // Each key point is a grounded claim (ADR-004): it cites the message it
+        // was lifted from by that message's [index].
+        let mut key_points: Vec<serde_json::Value> = Vec::new();
         // The prompt is an instruction header + "[i] Author: content" lines
         // (see assemble_prompt). Only the numbered message lines are parsed.
         for line in request.prompt.lines() {
             if !line.starts_with('[') {
                 continue;
             }
+            // Recover the [index] so the key point can cite its source message.
+            let index: usize = line
+                .trim_start_matches('[')
+                .split_once(']')
+                .and_then(|(i, _)| i.trim().parse().ok())
+                .unwrap_or(0);
             let after = line.split_once("] ").map(|(_, r)| r).unwrap_or(line);
             if let Some((author, content)) = after.split_once(": ") {
                 let author = author.trim();
@@ -31,7 +39,11 @@ impl LlmClient for DemoLlmClient {
                 }
                 let content = content.trim();
                 if key_points.len() < 5 && !content.is_empty() {
-                    key_points.push(content.to_string());
+                    key_points.push(serde_json::json!({
+                        "text": content,
+                        "citations": [index],
+                        "confidence": 1.0,
+                    }));
                 }
             }
         }
@@ -80,7 +92,9 @@ mod tests {
         assert_eq!(resp.model, "demo");
         let v: serde_json::Value = serde_json::from_str(&resp.text).unwrap();
         assert_eq!(v["participants"], serde_json::json!(["Alice", "Bob"]));
-        assert_eq!(v["key_points"][0], "ship it friday");
+        // Per-claim grounded key point (ADR-004): text + the cited message index.
+        assert_eq!(v["key_points"][0]["text"], "ship it friday");
+        assert_eq!(v["key_points"][0]["citations"], serde_json::json!([0]));
         assert_eq!(resp.finish_reason, FinishReason::Stop);
     }
 

@@ -322,7 +322,7 @@ fn append_section(content: &str, label: &str, s: &ExtractedSummary) -> String {
     }
     for kp in &s.key_points {
         out.push_str("- ");
-        out.push_str(kp);
+        out.push_str(&kp.text);
         out.push('\n');
     }
     for ai in &s.action_items {
@@ -897,7 +897,10 @@ mod tests {
         assert_eq!(report.fired, 1);
         let stored = repo.list_records(&ws, false, 10).unwrap();
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].summary.key_points, vec!["shipped".to_string()]);
+        assert_eq!(
+            stored[0].summary.key_points.iter().map(|k| k.text.as_str()).collect::<Vec<_>>(),
+            vec!["shipped"]
+        );
         assert_eq!(stored[0].channel_id.as_ref().unwrap().as_str(), "c1");
     }
 

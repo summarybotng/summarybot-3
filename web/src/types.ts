@@ -32,6 +32,23 @@ export interface Citation {
   quote: string | null
 }
 
+/** One source reference behind a grounded claim (ADR-004 §2.1). */
+export interface Reference {
+  message_id: string
+  author_name: string
+  timestamp: number
+  /** 1-based position in the summarized window. */
+  position: number
+  snippet: string
+}
+
+/** A grounded key point (ADR-004): claim text + confidence + its references. */
+export interface KeyPoint {
+  text: string
+  confidence: number
+  references: Reference[]
+}
+
 export interface Summary {
   id: string
   channel_id: string | null
@@ -45,7 +62,7 @@ export interface Summary {
   tags: string[]
   created_at: number
   text: string
-  key_points: string[]
+  key_points: KeyPoint[]
   action_items: ActionItem[]
   technical_terms: string[]
   participants: string[]

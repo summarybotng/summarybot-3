@@ -160,7 +160,7 @@ export function Whatsapp() {
             {summary.key_points.length > 0 && (
               <ul className="mt-2 list-disc pl-5 text-sm text-slate-600">
                 {summary.key_points.map((k, i) => (
-                  <li key={i}>{k}</li>
+                  <li key={i}>{k.text}</li>
                 ))}
               </ul>
             )}

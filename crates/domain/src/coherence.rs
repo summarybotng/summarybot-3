@@ -84,7 +84,7 @@ pub fn check_coherence(summary: &ExtractedSummary, sources: &[&str]) -> Coherenc
     if !summary.text.trim().is_empty() {
         claims.push(summary.text.clone());
     }
-    claims.extend(summary.key_points.iter().cloned());
+    claims.extend(summary.key_points.iter().map(|k| k.text.clone()));
     claims.extend(summary.action_items.iter().map(|a| a.text.clone()));
 
     let mut total = 0usize;
@@ -121,7 +121,7 @@ mod tests {
     fn summary(text: &str, points: &[&str]) -> ExtractedSummary {
         ExtractedSummary {
             text: text.into(),
-            key_points: points.iter().map(|p| p.to_string()).collect(),
+            key_points: points.iter().map(|p| (*p).into()).collect(),
             action_items: vec![ActionItem {
                 text: "deploy the service".into(),
                 assignee: None,

@@ -202,7 +202,20 @@ export function Summaries() {
                       <p className="font-medium text-slate-600">Key points</p>
                       <ul className="mt-1 list-disc pl-5 text-slate-700">
                         {s.key_points.map((k, i) => (
-                          <li key={i}>{k}</li>
+                          <li key={i}>
+                            {k.text}
+                            {k.references.length > 0 && (
+                              <span
+                                className="ml-1 text-xs text-slate-400"
+                                title={k.references
+                                  .map((r) => `#${r.position} ${r.author_name}: ${r.snippet}`)
+                                  .join('\n')}
+                              >
+                                (sources:{' '}
+                                {k.references.map((r) => `#${r.position} ${r.author_name}`).join(', ')})
+                              </span>
+                            )}
+                          </li>
                         ))}
                       </ul>
                     </div>
