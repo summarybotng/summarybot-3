@@ -4,7 +4,7 @@ At-a-glance: how much of the original Python **summarybot-ng** the Rust/WASM
 rewrite covers, and what's left. **Keep this current** — see
 [conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md).
 
-- **As of:** 2026-06-13 — HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
+- **As of:** 2026-06-14 — Discord server + channel browser (pick a server/channels, no pasted ids); a new **[UX reachability](#ux-reachability)** matrix tracking whether each capability is actually usable in the dashboard (not just built); HTTP request metrics + structured access logs; Hybrid/Resummarize rolling merge; rolling-ingest dedup Layer 4 (provenance-merge); AI wiki curator (advisory report); two-layer delivery plugins (per-tenant enable + connect + config; Google Drive OAuth connect flow); membership-derived workspace grants; Discord/Slack channel send-back sinks; Docker + compose + Fly deploy config; WhatsApp coverage complete (WHA-014..019); Tenants/Members admin tab (RBAC); rolling wired end-to-end (ADR-101)
 - **Legend:** ✅ done & tested · 🟡 partial · 🔩 seam only (trait/config/policy, no live impl) · ⛔ not started · ➖ out of scope / dropped
 - **Legacy** column = does the old product have it. **Rewrite** = our status.
 
@@ -32,6 +32,66 @@ delivery, real OAuth — fetch is done), (2) **production hardening** (Docker/de
 migrations + basic metrics + audit done), and (3) **refinements** (rolling now
 wired end-to-end with Append + Hybrid/Resummarize merges — remaining:
 per-destination rolling delivery; rolling-ingest dedup ADR-129 fully shipped).
+
+---
+
+## UX reachability
+
+The feature tables answer *"is it built?"* — but a feature can be built and still
+be **unreachable or painful in the dashboard**, and the status map won't show it.
+That blind spot is exactly what let the Discord case slip: the backend could list
+a server's channels, yet the UI made you paste a guild id + comma-separated
+channel ids, and couldn't list servers at all. The feature row said ✅; the
+*experience* was 🟡/🔌.
+
+This matrix tracks **UX reachability**: can a typical user accomplish the job
+**through the dashboard, end to end**, without pasting raw ids, dropping to the
+API, or rebuilding the server? A feature is only **✅ self-serve** when the answer
+is yes. Maintain it alongside the feature rows (see
+[conventions/keep-coverage-map-current](conventions/keep-coverage-map-current.md)) —
+when you ship UI for a capability, move its row up; when a capability lands
+backend-first, record it as 🔌 so the gap is visible until the UI catches up.
+
+**Legend:** ✅ self-serve · 🟡 reachable but rough (raw ids / manual steps /
+server config or feature flag needed) · 🔌 backend only (works via API, no UI
+surfaces it) · ⛔ not built · ➖ operator/CLI surface by design.
+
+| User-facing job | Reachable | Where | Notes |
+|---|---|---|---|
+| Sign in (dev) | ✅ | Login | workspace name + Dev sign-in |
+| Sign in via Google/Discord OAuth | 🟡 | Login | needs `--features oauth` + provider keys; button present otherwise errors |
+| Discover / switch my workspaces | 🟡 | Login | you type a workspace name at sign-in; no list or switcher yet |
+| Provision a tenant | 🟡 | Settings | must type a tenant id; no guided create/list |
+| Manage members + invites | ✅ | Members | |
+| Import a WhatsApp chat + see coverage/gaps | ✅ | WhatsApp | timeline, contributors, classified gaps |
+| Request a scoped import to fill a gap | ✅ | WhatsApp | auto-fulfilling invitation |
+| Connect a Discord/Slack bot token | ✅ | Discord / Slack | |
+| Pick a Discord **server** | ✅ | Discord | Load servers → dropdown (**was 🔌** before this work) |
+| Pick **channels** by category | ✅ | Discord / Slack | Browse channels (**was 🟡** — pasted ids) |
+| Sync source messages | ✅ | Discord / Slack | selected channels or all |
+| Summarize a channel / pasted messages | ✅ | Source / Summaries | |
+| Search / filter / pin / archive / tag summaries | ✅ | Summaries | |
+| Set per-workspace summary instructions | ✅ | Settings | |
+| Create / edit / pause / run a schedule | ✅ | Schedules | |
+| Configure a rolling digest (period + merge) | ✅ | Schedules | Append / Hybrid |
+| Per-destination rolling delivery control | ⛔ | — | not built (ADR-108) |
+| Add a delivery destination (target) | ✅ | Delivery | workspace-target fields only |
+| Enable + configure a tenant plugin | ✅ | Plugins | tenant credentials, once |
+| Connect Google Drive (OAuth) | 🟡 | Plugins | Connect button present; needs server `GOOGLE_CLIENT_ID/SECRET` |
+| Test a destination | ✅ | Delivery | sample send |
+| Semantic knowledge search | ✅ | Knowledge | |
+| (Re)generate the wiki page | ✅ | Knowledge | |
+| Curator health report (duplicates/stale) | ✅ | Knowledge | advisory |
+| Apply curator suggestions (prune/merge) | ⛔ | — | advisory only; apply + undo deferred |
+| BYO LLM + budget | ✅ | Settings | |
+| Spend analytics | ✅ | Spend | |
+| Audit log | ✅ | Audit | Admin+ |
+| Deploy / metrics / structured logs | ➖ | (ops) | Docker/compose/Fly; `/metrics`, JSON access logs |
+
+**Reading the gaps:** the remaining 🟡 rows are today's reachability debt — OAuth
+and Drive connect need server config; tenant provisioning and workspace discovery
+still lean on typed ids. A 🔌 row (none open right now) is the highest-signal
+warning: shipped backend with no way in.
 
 ---
 
