@@ -16,6 +16,7 @@ import { Members } from './views/Members'
 import { Plugins } from './views/Plugins'
 import { Jobs } from './views/Jobs'
 import { Coverage } from './views/Coverage'
+import { Prompts } from './views/Prompts'
 
 type Tab =
   | 'create'
@@ -28,6 +29,7 @@ type Tab =
   | 'plugins'
   | 'knowledge'
   | 'coverage'
+  | 'prompts'
   | 'spend'
   | 'jobs'
   | 'members'
@@ -142,6 +144,7 @@ export default function App() {
         {tab === 'plugins' && <Plugins />}
         {tab === 'jobs' && <Jobs />}
         {tab === 'coverage' && <Coverage />}
+        {tab === 'prompts' && <Prompts />}
         {tab === 'knowledge' && <Knowledge />}
         {tab === 'spend' && <Spend />}
         {tab === 'members' && <Members />}
@@ -156,5 +159,5 @@ export default function App() {
 const NAV: { section?: string; tabs: Tab[] }[] = [
   { tabs: ['create', 'summaries', 'schedules', 'knowledge', 'coverage', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
-  { section: 'Admin', tabs: ['delivery', 'plugins', 'members', 'audit', 'settings'] },
+  { section: 'Admin', tabs: ['delivery', 'plugins', 'prompts', 'members', 'audit', 'settings'] },
 ]

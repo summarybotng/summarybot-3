@@ -17,6 +17,7 @@ mod knowledge;
 mod llm_config;
 mod membership;
 mod platform_credential;
+mod prompt_template;
 mod rolling_store;
 mod schedule;
 mod schedule_destination;
@@ -39,6 +40,7 @@ pub use knowledge::{KnowledgeRepository, StoredKnowledgeUnit};
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
 pub use platform_credential::PlatformCredentialRepository;
+pub use prompt_template::{PromptTemplate, PromptTemplateRepository};
 pub use rolling_store::{RollingConfig, RollingRepository, RollingSummaryRow};
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_destination::ScheduleDestinationRepository;
@@ -461,6 +463,21 @@ impl SqliteRepository {
                 workspace_id         TEXT PRIMARY KEY,
                 summary_instructions TEXT
             );
+            -- Named prompt templates / custom perspectives (ADR-133 A2). A
+            -- reusable instruction preset beyond the built-in perspectives and
+            -- the single per-workspace summary_instructions.
+            CREATE TABLE IF NOT EXISTS prompt_templates (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT    NOT NULL,
+                name         TEXT    NOT NULL,
+                content      TEXT    NOT NULL,
+                based_on     TEXT,
+                usage_count  INTEGER NOT NULL DEFAULT 0,
+                created_at   INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_prompt_templates_workspace
+                ON prompt_templates(workspace_id, name);
             -- Knowledge units extracted from summaries (KNO-001; ADR-127). The
             -- embedding is f32 little-endian bytes; `model` pins which embedder
             -- produced it (Q#8 — a model change invalidates vectors). `source_ids`

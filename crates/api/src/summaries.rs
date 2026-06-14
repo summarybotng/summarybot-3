@@ -168,6 +168,13 @@ pub struct CreateSummaryRequest {
     /// authorship); defaults to "user".
     #[serde(default = "default_author")]
     pub author: String,
+    /// Optional built-in perspective id (ADR-133), e.g. "developer".
+    #[serde(default)]
+    pub perspective: Option<String>,
+    /// Optional saved prompt-template id (ADR-133). Takes precedence over
+    /// `perspective`; its content is prepended to the workspace instructions.
+    #[serde(default)]
+    pub prompt_template_id: Option<String>,
 }
 
 fn default_author() -> String {
@@ -222,14 +229,36 @@ pub async fn create_summary(
     // the tenant's budget, then build the engine over that backend + the shared
     // limiter.
     let (resolution, charge, instructions) = {
-        use repository::WorkspaceSettingsRepository;
+        use repository::{PromptTemplateRepository, WorkspaceSettingsRepository};
         let repo = state.repo.lock().expect("repo mutex");
         let r = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
         let charge = crate::budget_gate(&repo, &r, now)?;
-        let instructions = repo
+        let base = repo
             .get_settings(&workspace)
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .summary_instructions;
+        // Steering (ADR-133): a saved template (takes precedence, bumps its usage)
+        // or a built-in perspective prepends its instructions to the workspace's.
+        let steer: Option<String> = if let Some(id) = &body.prompt_template_id {
+            let t = repo
+                .get_template(&workspace, id)
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .ok_or_else(|| ApiError::bad_request("unknown prompt_template_id"))?;
+            let _ = repo.bump_template_usage(&workspace, id);
+            Some(t.content)
+        } else if let Some(p) = &body.perspective {
+            domain::summarize::Perspective::parse(p)
+                .ok_or_else(|| ApiError::bad_request("unknown perspective"))?
+                .instructions()
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+        let instructions = match (steer, base) {
+            (Some(s), Some(b)) => Some(format!("{s}\n\n{b}")),
+            (Some(s), None) => Some(s),
+            (None, b) => b,
+        };
         (r, charge, instructions)
     };
     let ladder = state.ladder_for(&resolution.model);

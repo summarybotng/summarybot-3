@@ -189,6 +189,29 @@ export interface WorkspaceCoverage {
   channels: ChannelCoverage[]
 }
 
+/** A built-in summary perspective (ADR-133). */
+export interface Perspective {
+  id: string
+  label: string
+}
+
+/** A saved named prompt template (ADR-133). */
+export interface PromptTemplate {
+  id: string
+  name: string
+  content: string
+  based_on: string | null
+  usage_count: number
+  created_at: number
+  updated_at: number
+}
+
+/** Prompts screen payload: built-in perspectives + workspace templates. */
+export interface Prompts {
+  perspectives: Perspective[]
+  templates: PromptTemplate[]
+}
+
 /** Outcome of a retrospective by-week summarize run. */
 export interface RetrospectiveResult {
   produced: number

@@ -20,6 +20,7 @@ mod events;
 mod identity_claims;
 mod coverage;
 mod jobs;
+mod prompts;
 mod knowledge;
 #[cfg(feature = "oauth")]
 mod oauth;
@@ -412,6 +413,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
         .route("/workspaces/:ws/coverage", get(coverage::coverage))
+        .route(
+            "/workspaces/:ws/prompts",
+            get(prompts::list_prompts).post(prompts::create_prompt),
+        )
+        .route(
+            "/workspaces/:ws/prompts/:id",
+            put(prompts::update_prompt).delete(prompts::delete_prompt),
+        )
         .route(
             "/workspaces/:ws/wiki/synthesize",
             post(knowledge::synthesize),

@@ -17,6 +17,8 @@ import type {
   ChatCoverage,
   Coverage,
   WorkspaceCoverage,
+  Prompts,
+  PromptTemplate,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -377,6 +379,25 @@ export class Client {
   /** Server-wide + per-channel summary coverage (ADR-133). */
   workspaceCoverage(): Promise<WorkspaceCoverage> {
     return this.json<WorkspaceCoverage>(`/workspaces/${this.ws()}/coverage`)
+  }
+
+  /** Prompt templates + built-in perspectives (ADR-133). */
+  listPrompts(): Promise<Prompts> {
+    return this.json<Prompts>(`/workspaces/${this.ws()}/prompts`)
+  }
+
+  createPrompt(input: { name: string; content: string; based_on?: string | null }): Promise<PromptTemplate> {
+    return this.json<PromptTemplate>(`/workspaces/${this.ws()}/prompts`, this.body('POST', input))
+  }
+
+  updatePrompt(id: string, input: { name: string; content: string }): Promise<PromptTemplate> {
+    return this.json<PromptTemplate>(`/workspaces/${this.ws()}/prompts/${id}`, this.body('PUT', input))
+  }
+
+  deletePrompt(id: string): Promise<{ removed: boolean }> {
+    return this.json<{ removed: boolean }>(`/workspaces/${this.ws()}/prompts/${id}`, {
+      method: 'DELETE',
+    })
   }
 
   /** Raw knowledge units with provenance (ADR-063 raw-updates view). */
