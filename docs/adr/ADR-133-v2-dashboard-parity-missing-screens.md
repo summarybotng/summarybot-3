@@ -3,8 +3,12 @@
 > Rewrite-era ADR. Numbering continues from the local ADR set (…, ADR-132).
 
 - **Status**: Accepted (2026-06-14) — **A1 Coverage**, **A2 Prompts/Perspectives**,
-  **A3 Errors**, and **B Jobs `Regenerate`** shipped; A4–A8 + the remaining B
-  enrichments remain.
+  **A3 Errors**, and **all of §B** shipped (Jobs record+buckets/filters/details &
+  `Regenerate`; Schedules prompt-template/perspective/title/continuity; Summaries
+  perspective+kind facets & Calendar view; Channels bot-accessibility). A4 Feeds,
+  A5 Webhooks-manager, A6 Overview, A7 RuVector, A8 Populate remain. Live-only
+  follow-ups: Discord channel-permission resolution; per-summary Length filtering;
+  host-side error recording at scheduled-run/delivery sites.
 - **Deciders**: Martin Cleaver
 - **Related**: ADR-013/040 (jobs), ADR-072/112/121 (coverage), ADR-067/077/090/127
   (wiki/knowledge), ADR-088/089/101 (retrospective/rolling), ADR-126 (delivery
@@ -84,7 +88,7 @@ existing feature-flag conventions where it needs new I/O.
 | A7 | **RuVector Explorer** *(optional)* | Browse/inspect the vector store (embeddings) for debugging knowledge. | under `Knowledge` | read-only `GET /workspaces/:ws/knowledge/vectors` projection over stored units/embeddings. |
 | A8 | **Populate** *(optional)* | Explicit "backfill/ingest history now" trigger with progress. Our Create→Past + retrospective covers most of this; Populate is the always-available manual ingest. | under `Sources` or `Create` | reuses the `Sync`/`Backfill` jobs (ADR-013/040) — mostly a UI affordance. |
 
-### B. Enrich screens we already share
+### B. Enrich screens we already share — ✅ shipped
 
 - **Jobs** — we just wired job tracking (ADR-013/040). Align with v2:
   - **Add `JobType::Regenerate`** and a regenerate flow (re-run a stored summary
