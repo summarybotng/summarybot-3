@@ -106,6 +106,9 @@ pub fn parse_channel_directory(channels: &serde_json::Value) -> Vec<crate::platf
                     .and_then(|pid| categories.get(pid))
                     .map(|s| s.to_string()),
                 category_id: parent_id.map(|s| s.to_string()),
+                // Discord accessibility needs permission-overwrite resolution
+                // against the bot's roles (ADR-097); unknown from the list alone.
+                accessible: None,
             })
         })
         .collect()

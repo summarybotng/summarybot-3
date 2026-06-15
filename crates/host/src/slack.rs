@@ -351,6 +351,9 @@ mod live {
                                         .to_string(),
                                     category: None,
                                     category_id: None,
+                                    // The bot can only read history of channels it's
+                                    // a member of (ADR-097).
+                                    accessible: c.get("is_member").and_then(|m| m.as_bool()),
                                 });
                             }
                         }

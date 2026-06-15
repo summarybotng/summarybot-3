@@ -65,6 +65,10 @@ pub struct ChannelInfo {
     /// The platform's category id (Discord `parent_id`), so a category-scoped
     /// schedule can be pinned to a stable id rather than a display name (ADR-011).
     pub category_id: Option<String>,
+    /// Whether the bot can read this channel (ADR-097): `Some(true/false)` when
+    /// the platform reports it (Slack `is_member`), `None` when unknown (Discord —
+    /// permission-overwrite resolution is a live-only follow-up).
+    pub accessible: Option<bool>,
 }
 
 /// Display context for summary headers (resolved names, never ids).
@@ -231,6 +235,7 @@ mod tests {
                     name: c.as_str().to_string(),
                     category: None,
                     category_id: None,
+                    accessible: None,
                 })
                 .collect();
             chans.dedup_by(|a, b| a.id == b.id);

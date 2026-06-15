@@ -130,6 +130,7 @@ mod tests {
                     name: c.as_str().to_string(),
                     category: None,
                     category_id: None,
+                    accessible: None,
                 })
                 .collect())
         }

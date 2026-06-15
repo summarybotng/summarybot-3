@@ -361,6 +361,8 @@ pub struct ChannelDto {
     /// Discord category id (stable scope target for a category schedule, ADR-011);
     /// `null` for Slack / uncategorized channels.
     pub category_id: Option<String>,
+    /// Whether the bot can read this channel (ADR-097); `null` when unknown.
+    pub accessible: Option<bool>,
 }
 
 /// `GET /workspaces/:ws/connections/:platform/channels?scope_id=<guild>` — the
@@ -408,6 +410,7 @@ pub async fn channels(
                 name: c.name,
                 category: c.category,
                 category_id: c.category_id,
+                accessible: c.accessible,
             })
             .collect(),
     ))

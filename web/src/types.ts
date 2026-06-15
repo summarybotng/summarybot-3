@@ -443,6 +443,8 @@ export interface SourceChannel {
   category: string | null
   /** Discord category id — the scope target for a category schedule (ADR-011). */
   category_id: string | null
+  /** Whether the bot can read this channel (ADR-097); null when unknown. */
+  accessible: boolean | null
 }
 
 export interface PluginField {

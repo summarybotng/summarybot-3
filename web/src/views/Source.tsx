@@ -336,13 +336,25 @@ export function Source({ platform }: { platform: Platform }) {
                     </p>
                     <div className="mt-1 grid grid-cols-1 gap-1 sm:grid-cols-2">
                       {chans.map((c) => (
-                        <label key={c.id} className="flex items-center gap-2 text-sm text-slate-700">
+                        <label
+                          key={c.id}
+                          className="flex items-center gap-2 text-sm text-slate-700"
+                          title={c.accessible === false ? 'The bot cannot read this channel (ADR-097)' : undefined}
+                        >
                           <input
                             type="checkbox"
                             checked={selected.has(c.id)}
                             onChange={() => toggleChannel(c.id)}
+                            disabled={c.accessible === false}
                           />
-                          <span className="truncate">#{c.name}</span>
+                          <span className={`truncate ${c.accessible === false ? 'text-slate-400' : ''}`}>
+                            #{c.name}
+                          </span>
+                          {c.accessible === false && (
+                            <span className="shrink-0 rounded bg-amber-100 px-1 text-[10px] font-medium text-amber-700">
+                              🔒 no access
+                            </span>
+                          )}
                         </label>
                       ))}
                     </div>
