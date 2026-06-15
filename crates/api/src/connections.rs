@@ -243,11 +243,32 @@ pub async fn sync(
                 job.set_progress(r.stored as u32, r.fetched as u32, crate::auth::now_secs());
                 let _ = job.complete(0, crate::auth::now_secs());
                 let _ = repo.update_job(&job);
+                // Per-channel fetch failures are soft-fails (ADR-041/097): the
+                // sync succeeds over what it could read, and each unreadable
+                // channel is recorded for the Errors view (ADR-133/031).
+                for (channel, message) in &r.errors {
+                    crate::errors::record_operational_error(
+                        &repo,
+                        &workspace,
+                        "sync",
+                        domain::FailureClass::Unknown,
+                        Some(channel.clone()),
+                        format!("could not read channel during {} sync: {message}", platform.as_str()),
+                    );
+                }
                 r
             }
             Err(e) => {
                 let _ = job.fail(domain::FailureClass::Unknown, 0, crate::auth::now_secs());
                 let _ = repo.update_job(&job);
+                crate::errors::record_operational_error(
+                    &repo,
+                    &workspace,
+                    "sync",
+                    domain::FailureClass::Unknown,
+                    None,
+                    format!("{} sync failed: {e}", platform.as_str()),
+                );
                 return Err(ApiError::Internal(e.to_string()));
             }
         }

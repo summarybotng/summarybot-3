@@ -19,6 +19,7 @@ import type {
   WorkspaceCoverage,
   Prompts,
   PromptTemplate,
+  Errors as ErrorsData,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -390,6 +391,27 @@ export class Client {
   /** Server-wide + per-channel summary coverage (ADR-133). */
   workspaceCoverage(): Promise<WorkspaceCoverage> {
     return this.json<WorkspaceCoverage>(`/workspaces/${this.ws()}/coverage`)
+  }
+
+  /** Operational error log (ADR-133 A3). */
+  listErrors(includeResolved = false): Promise<ErrorsData> {
+    return this.json<ErrorsData>(
+      `/workspaces/${this.ws()}/errors?include_resolved=${includeResolved}`,
+    )
+  }
+
+  resolveError(id: string): Promise<{ resolved: boolean }> {
+    return this.json<{ resolved: boolean }>(
+      `/workspaces/${this.ws()}/errors/${id}/resolve`,
+      this.body('POST', {}),
+    )
+  }
+
+  resolveAllErrors(): Promise<{ resolved: number }> {
+    return this.json<{ resolved: number }>(
+      `/workspaces/${this.ws()}/errors/resolve-all`,
+      this.body('POST', {}),
+    )
   }
 
   /** Prompt templates + built-in perspectives (ADR-133). */

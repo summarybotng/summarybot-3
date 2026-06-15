@@ -40,6 +40,17 @@ impl FailureClass {
             FailureClass::RateLimited | FailureClass::ServiceUnavailable
         )
     }
+
+    /// Operational-error severity (ADR-133 Errors view; ADR-031). Transient/
+    /// retryable failures are a `warning` (likely self-heals); permanent ones an
+    /// `error` (needs attention).
+    pub fn severity(self) -> &'static str {
+        if self.is_retryable() {
+            "warning"
+        } else {
+            "error"
+        }
+    }
 }
 
 #[cfg(test)]
@@ -53,6 +64,15 @@ mod tests {
         assert!(!FailureClass::QuotaExceeded.is_retryable());
         assert!(!FailureClass::InvalidRequest.is_retryable());
         assert!(!FailureClass::Unknown.is_retryable());
+    }
+
+    #[test]
+    fn severity_splits_transient_from_permanent() {
+        assert_eq!(FailureClass::RateLimited.severity(), "warning");
+        assert_eq!(FailureClass::ServiceUnavailable.severity(), "warning");
+        assert_eq!(FailureClass::QuotaExceeded.severity(), "error");
+        assert_eq!(FailureClass::InvalidRequest.severity(), "error");
+        assert_eq!(FailureClass::Unknown.severity(), "error");
     }
 
     #[test]

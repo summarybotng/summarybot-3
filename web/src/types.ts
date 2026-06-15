@@ -215,6 +215,25 @@ export interface Prompts {
   templates: PromptTemplate[]
 }
 
+/** One recorded operational error (ADR-133 A3). */
+export interface OperationalError {
+  id: string
+  operation: string
+  error_class: string
+  /** `error` | `warning`. */
+  severity: string
+  channel_id: string | null
+  message: string
+  resolved: boolean
+  created_at: number
+}
+
+/** Operational error log payload (ADR-133 A3). */
+export interface Errors {
+  unresolved: number
+  errors: OperationalError[]
+}
+
 /** Outcome of a retrospective by-week summarize run. */
 export interface RetrospectiveResult {
   produced: number

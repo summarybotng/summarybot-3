@@ -19,6 +19,7 @@ mod error;
 mod events;
 mod identity_claims;
 mod coverage;
+mod errors;
 mod jobs;
 mod prompts;
 mod knowledge;
@@ -417,6 +418,15 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
         .route("/workspaces/:ws/coverage", get(coverage::coverage))
+        .route("/workspaces/:ws/errors", get(errors::list_errors))
+        .route(
+            "/workspaces/:ws/errors/resolve-all",
+            post(errors::resolve_all_errors),
+        )
+        .route(
+            "/workspaces/:ws/errors/:id/resolve",
+            post(errors::resolve_error),
+        )
         .route(
             "/workspaces/:ws/prompts",
             get(prompts::list_prompts).post(prompts::create_prompt),

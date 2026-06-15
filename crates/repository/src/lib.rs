@@ -16,6 +16,7 @@ mod job;
 mod knowledge;
 mod llm_config;
 mod membership;
+mod operational_error;
 mod platform_credential;
 mod prompt_template;
 mod rolling_store;
@@ -39,6 +40,7 @@ pub use job::JobRepository;
 pub use knowledge::{KnowledgeRepository, StoredKnowledgeUnit};
 pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
+pub use operational_error::{OperationalError, OperationalErrorRepository};
 pub use platform_credential::PlatformCredentialRepository;
 pub use prompt_template::{PromptTemplate, PromptTemplateRepository};
 pub use rolling_store::{RollingConfig, RollingRepository, RollingSummaryRow};
@@ -478,6 +480,22 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_prompt_templates_workspace
                 ON prompt_templates(workspace_id, name);
+            -- Operational error log (ADR-133 A3; ADR-031). Recorded operational
+            -- failures (sync/summarize/deliver) with operation/severity/scope,
+            -- resolvable from the dashboard. `message` is sanitized by the caller.
+            CREATE TABLE IF NOT EXISTS operational_errors (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT    NOT NULL,
+                operation    TEXT    NOT NULL,
+                error_class  TEXT    NOT NULL,
+                severity     TEXT    NOT NULL,
+                channel_id   TEXT,
+                message      TEXT    NOT NULL,
+                resolved     INTEGER NOT NULL DEFAULT 0,
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_operational_errors_workspace
+                ON operational_errors(workspace_id, resolved, created_at);
             -- Knowledge units extracted from summaries (KNO-001; ADR-127). The
             -- embedding is f32 little-endian bytes; `model` pins which embedder
             -- produced it (Q#8 — a model change invalidates vectors). `source_ids`

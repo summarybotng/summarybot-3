@@ -303,6 +303,15 @@ pub async fn create_summary(
             let _ = job.fail(e.failure_class(), 0, crate::auth::now_secs());
             let repo = state.repo.lock().expect("repo mutex");
             let _ = repo.update_job(&job);
+            // Record the operational failure for the Errors view (ADR-133/031).
+            crate::errors::record_operational_error(
+                &repo,
+                &workspace,
+                "summarize",
+                e.failure_class(),
+                None,
+                format!("on-demand summary failed: {e:?}"),
+            );
             return Err(ApiError::bad_request(format!("{e:?}")));
         }
     };
