@@ -95,6 +95,11 @@ export interface Schedule {
   rolling_end_day: number | null
   /** Destination ids this schedule is pinned to (ADR-014); empty = all enabled. */
   destinations: string[]
+  /** Steering options (ADR-133 §B). */
+  prompt_template_id: string | null
+  perspective: string | null
+  title_template: string | null
+  enable_continuity: boolean
   next_run: number
   consecutive_failures: number
 }

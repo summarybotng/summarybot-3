@@ -22,11 +22,25 @@ export function Schedules() {
   const [dests, setDests] = useState<Destination[]>([])
   const [pinned, setPinned] = useState<string[]>([])
   const [note, setNote] = useState<string | null>(null)
+  // Steering options (ADR-133 §B).
+  const [perspective, setPerspective] = useState('')
+  const [templateId, setTemplateId] = useState('')
+  const [titleTemplate, setTitleTemplate] = useState('')
+  const [continuity, setContinuity] = useState(false)
+  const [perspectives, setPerspectives] = useState<{ id: string; label: string }[]>([])
+  const [templates, setTemplates] = useState<{ id: string; name: string }[]>([])
 
   const load = useCallback(async () => {
     if (!client) return
     setItems(await client.listSchedules())
     setDests((await client.listDestinations()).filter((d) => d.enabled))
+    try {
+      const p = await client.listPrompts()
+      setPerspectives(p.perspectives)
+      setTemplates(p.templates.map((t) => ({ id: t.id, name: t.name })))
+    } catch {
+      /* prompts optional */
+    }
   }, [client])
 
   useEffect(() => {
@@ -48,10 +62,16 @@ export function Schedules() {
       rolling_period: rollingPeriod || null,
       // Delivery scope (ADR-014): empty = all enabled destinations.
       destinations: pinned,
+      // Steering (ADR-133 §B).
+      perspective: templateId ? null : perspective || null,
+      prompt_template_id: templateId || null,
+      title_template: titleTemplate.trim() || null,
+      enable_continuity: continuity,
     })
     setChannel('')
     setSourceId('')
     setPinned([])
+    setTitleTemplate('')
     await load()
   }
 
@@ -175,6 +195,47 @@ export function Schedules() {
               : ''}
           </span>
         </div>
+        {/* Steering options (ADR-133 §B): perspective / template / title / continuity. */}
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <select
+            value={templateId}
+            onChange={(e) => setTemplateId(e.target.value)}
+            className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
+            title="Use a saved prompt template (takes precedence over perspective)"
+          >
+            <option value="">no template</option>
+            {templates.map((t) => (
+              <option key={t.id} value={t.id}>
+                template: {t.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={perspective}
+            onChange={(e) => setPerspective(e.target.value)}
+            disabled={!!templateId}
+            className="rounded-lg border border-slate-300 px-2 py-2 text-sm disabled:opacity-50"
+            title="Built-in perspective (audience/voice)"
+          >
+            <option value="">default perspective</option>
+            {perspectives.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <input
+            value={titleTemplate}
+            onChange={(e) => setTitleTemplate(e.target.value)}
+            placeholder="Title (optional)"
+            className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
+            title="A title applied to each produced summary"
+          />
+          <label className="flex items-center gap-2 text-sm text-slate-600" title="Carry the previous digest forward as context">
+            <input type="checkbox" checked={continuity} onChange={(e) => setContinuity(e.target.checked)} />
+            Continuity
+          </label>
+        </div>
         {/* Delivery scope (ADR-014): pin to chosen destinations, or all by default. */}
         {dests.length > 0 && (
           <div className="mt-2">
@@ -237,6 +298,10 @@ export function Schedules() {
                         : ' · (unscoped)'}
                     {s.platform && ` · ↻ ${s.platform}`}
                     {s.rolling_period && ` · 📅 rolling ${s.rolling_period}`}
+                    {s.prompt_template_id && ' · ✎ template'}
+                    {s.perspective && ` · 🎭 ${s.perspective}`}
+                    {s.enable_continuity && ' · 🔗 continuity'}
+                    {s.title_template && ` · “${s.title_template}”`}
                     {s.destinations.length > 0
                       ? ` · → ${s.destinations.length} destination${s.destinations.length > 1 ? 's' : ''}`
                       : ' · → all destinations'}

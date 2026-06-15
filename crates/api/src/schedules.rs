@@ -64,6 +64,19 @@ pub struct CreateScheduleRequest {
     /// deliver to all the workspace's enabled destinations.
     #[serde(default)]
     pub destinations: Vec<String>,
+    // --- Steering options (ADR-133 §B) ---
+    /// Saved prompt-template id to steer the summary (takes precedence).
+    #[serde(default)]
+    pub prompt_template_id: Option<String>,
+    /// Built-in perspective id (e.g. `developer`).
+    #[serde(default)]
+    pub perspective: Option<String>,
+    /// Title applied to the produced summary (a leading `# <title>` line).
+    #[serde(default)]
+    pub title_template: Option<String>,
+    /// Carry the previous digest forward as context (continuity).
+    #[serde(default)]
+    pub enable_continuity: bool,
 }
 
 fn default_dom() -> u32 {
@@ -98,6 +111,11 @@ pub struct ScheduleDto {
     /// Destination ids this schedule is restricted to (empty = all). (ADR-014)
     #[serde(default)]
     pub destinations: Vec<String>,
+    /// Steering options (ADR-133 §B).
+    pub prompt_template_id: Option<String>,
+    pub perspective: Option<String>,
+    pub title_template: Option<String>,
+    pub enable_continuity: bool,
     pub next_run: i64,
     pub consecutive_failures: u32,
 }
@@ -121,6 +139,10 @@ impl From<StoredSchedule> for ScheduleDto {
             rolling_strategy: None,
             rolling_end_day: None,
             destinations: vec![],
+            prompt_template_id: None,
+            perspective: None,
+            title_template: None,
+            enable_continuity: false,
             next_run: s.next_run,
             consecutive_failures: s.consecutive_failures,
         }
@@ -146,7 +168,43 @@ fn dto_with_source(repo: &repository::SqliteRepository, s: StoredSchedule) -> Sc
     {
         dto.destinations = ids;
     }
+    if let Ok(Some(opts)) = repository::ScheduleOptionsRepository::get_schedule_options(repo, &id) {
+        dto.prompt_template_id = opts.prompt_template_id;
+        dto.perspective = opts.perspective;
+        dto.title_template = opts.title_template;
+        dto.enable_continuity = opts.enable_continuity;
+    }
     dto
+}
+
+/// Persist (or clear) a schedule's steering options (ADR-133 §B). An all-empty
+/// set clears the row so `get` returns `None`.
+fn apply_options(
+    repo: &repository::SqliteRepository,
+    schedule_id: &str,
+    body: &CreateScheduleRequest,
+) -> Result<(), ApiError> {
+    use repository::{ScheduleOptions, ScheduleOptionsRepository};
+    // Validate a built-in perspective if given (templates are validated on use).
+    if let Some(p) = body.perspective.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        if domain::summarize::Perspective::parse(p).is_none() {
+            return Err(ApiError::bad_request("unknown perspective"));
+        }
+    }
+    let opts = ScheduleOptions {
+        prompt_template_id: body.prompt_template_id.clone().filter(|s| !s.trim().is_empty()),
+        perspective: body.perspective.clone().filter(|s| !s.trim().is_empty()),
+        title_template: body.title_template.clone().filter(|s| !s.trim().is_empty()),
+        enable_continuity: body.enable_continuity,
+    };
+    if opts.is_empty() {
+        repo.delete_schedule_options(schedule_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    } else {
+        repo.set_schedule_options(schedule_id, &opts)
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Validate + persist (or clear) a schedule's optional rolling-period config.
@@ -283,6 +341,7 @@ pub async fn create_schedule(
             &stored.id,
             &body.destinations,
         )?;
+        apply_options(&repo, &stored.id, &body)?;
         dto_with_source(&repo, stored)
     };
     Ok(Json(dto))
@@ -338,6 +397,7 @@ pub async fn update_schedule(
         &id,
         &body.destinations,
     )?;
+    apply_options(&repo, &id, &body)?;
     Ok(Json(dto_with_source(
         &repo,
         StoredSchedule {

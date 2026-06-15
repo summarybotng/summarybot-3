@@ -110,6 +110,11 @@ export interface CreateScheduleBody {
   rolling_end_day?: number | null
   /** Destination ids to pin delivery to (ADR-014); empty/omitted = all enabled. */
   destinations?: string[]
+  /** Steering options (ADR-133 §B). */
+  prompt_template_id?: string | null
+  perspective?: string | null
+  title_template?: string | null
+  enable_continuity?: boolean
 }
 
 /** An authenticated API client bound to a session, with refresh-on-401. */

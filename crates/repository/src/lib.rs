@@ -22,6 +22,7 @@ mod prompt_template;
 mod rolling_store;
 mod schedule;
 mod schedule_destination;
+mod schedule_options;
 mod schedule_run;
 mod schedule_source;
 mod session;
@@ -46,6 +47,7 @@ pub use prompt_template::{PromptTemplate, PromptTemplateRepository};
 pub use rolling_store::{RollingConfig, RollingRepository, RollingSummaryRow};
 pub use schedule::{ScheduleRepository, StoredSchedule};
 pub use schedule_destination::ScheduleDestinationRepository;
+pub use schedule_options::{ScheduleOptions, ScheduleOptionsRepository};
 pub use schedule_run::{RunStatus, ScheduleRun, ScheduleRunRepository};
 pub use schedule_source::{ScheduleSource, ScheduleSourceRepository};
 pub use session::SessionRepository;
@@ -496,6 +498,16 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_operational_errors_workspace
                 ON operational_errors(workspace_id, resolved, created_at);
+            -- Per-schedule steering options (ADR-133 §B): prompt template /
+            -- perspective / title template / continuity. Side-table so the core
+            -- Schedule value object stays small (rolling_config precedent).
+            CREATE TABLE IF NOT EXISTS schedule_options (
+                schedule_id        TEXT PRIMARY KEY,
+                prompt_template_id TEXT,
+                perspective        TEXT,
+                title_template     TEXT,
+                enable_continuity  INTEGER NOT NULL DEFAULT 0
+            );
             -- Knowledge units extracted from summaries (KNO-001; ADR-127). The
             -- embedding is f32 little-endian bytes; `model` pins which embedder
             -- produced it (Q#8 — a model change invalidates vectors). `source_ids`

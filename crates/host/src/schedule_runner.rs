@@ -19,9 +19,10 @@ use domain::{
 };
 use repository::{
     DestinationRepository, JobRepository, KnowledgeRepository, PlatformCredentialRepository,
-    RollingConfig, RollingRepository, RollingSummaryRow, ScheduleDestinationRepository,
-    ScheduleSourceRepository, StoredSchedule, StructuredSummaryRepository, SummaryRecord,
-    TenantPluginRepository, WhatsAppRepository, WorkspaceRepository, WorkspaceSettingsRepository,
+    PromptTemplateRepository, RollingConfig, RollingRepository, RollingSummaryRow,
+    ScheduleDestinationRepository, ScheduleOptionsRepository, ScheduleSourceRepository,
+    StoredSchedule, StructuredSummaryRepository, SummaryRecord, TenantPluginRepository,
+    WhatsAppRepository, WorkspaceRepository, WorkspaceSettingsRepository,
 };
 
 /// Sentinel channel id meaning "all of the workspace's channels" (ADR-011
@@ -218,6 +219,8 @@ where
         + WorkspaceRepository
         + TenantPluginRepository
         + JobRepository
+        + ScheduleOptionsRepository
+        + PromptTemplateRepository
         + ScheduleDestinationRepository,
     C: LlmClient,
 {
@@ -263,12 +266,17 @@ where
             return Ok(());
         }
 
-        // Per-workspace prompt guidance (SUM-007).
-        let instructions = self
+        // Per-workspace prompt guidance (SUM-007), then layer the schedule's
+        // steering options on top (ADR-133 §B): a saved template or built-in
+        // perspective, and — with continuity — the previous digest as context.
+        let base_instructions = self
             .repo
             .get_settings(ws)
             .map_err(|e| e.to_string())?
             .summary_instructions;
+        let opts = self.repo.get_schedule_options(&stored.id).ok().flatten();
+        let instructions = self.steer_instructions(ws, &channel, base_instructions, opts.as_ref());
+        let title_template = opts.as_ref().and_then(|o| o.title_template.clone());
 
         // Track the run as a job (ADR-013/040) so scheduled summaries — not just
         // manual ones — show in the Jobs view with status + cost. Recorded before
@@ -324,6 +332,11 @@ where
         } else {
             vec![]
         };
+        let mut summary = outcome.summary;
+        // Apply the schedule's title template (ADR-133 §B) as a leading heading.
+        if let Some(title) = title_template.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            summary.text = format!("# {title}\n\n{}", summary.text);
+        }
         let record = SummaryRecord {
             id: format!("sum_{}_{}", stored.id, now),
             channel_id: if multi { None } else { Some(channel) },
@@ -339,7 +352,7 @@ where
             // The lookback window this scheduled run covered (ADR-133 coverage).
             period_start: start,
             period_end: now,
-            summary: outcome.summary,
+            summary,
         };
         job.add_summary_id(record.id.clone());
         let delivered = self.deliver_record(ws, &stored.id, &record);
@@ -400,9 +413,63 @@ where
         + WorkspaceRepository
         + TenantPluginRepository
         + JobRepository
+        + ScheduleOptionsRepository
+        + PromptTemplateRepository
         + ScheduleDestinationRepository,
     C: LlmClient,
 {
+    /// Layer the schedule's steering options (ADR-133 §B) over the workspace's
+    /// base instructions: a saved prompt template (precedence) or built-in
+    /// perspective, plus — when continuity is on — a snippet of the previous
+    /// digest for this channel so the model can note what changed. Best-effort;
+    /// a missing template/perspective just falls through to the base.
+    fn steer_instructions(
+        &self,
+        ws: &domain::WorkspaceId,
+        channel: &domain::ChannelId,
+        base: Option<String>,
+        opts: Option<&repository::ScheduleOptions>,
+    ) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(o) = opts {
+            // Template content wins over a built-in perspective.
+            if let Some(tid) = o.prompt_template_id.as_deref() {
+                if let Ok(Some(t)) = self.repo.get_template(ws, tid) {
+                    parts.push(t.content);
+                    let _ = self.repo.bump_template_usage(ws, tid);
+                }
+            } else if let Some(p) = o.perspective.as_deref() {
+                if let Some(text) = domain::summarize::Perspective::parse(p).and_then(|p| p.instructions())
+                {
+                    parts.push(text.to_string());
+                }
+            }
+            if o.enable_continuity {
+                // The most recent prior digest for this channel, trimmed, as context.
+                if let Ok(recs) = self.repo.list_records(ws, false, 20) {
+                    if let Some(prev) = recs.iter().find(|r| {
+                        r.channel_id.as_ref().map(|c| c.as_str()) == Some(channel.as_str())
+                    }) {
+                        let snippet: String = prev.summary.text.chars().take(800).collect();
+                        parts.push(format!(
+                            "For continuity, here is the previous digest for this channel. \
+                             Build on it: emphasize what changed and avoid repeating settled points.\n\
+                             ---\n{snippet}\n---"
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(b) = base.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+            parts.push(b.to_string());
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        }
+    }
+
     /// Feed one rolling delta's facts into the knowledge base (ADR-129 Layer 3) —
     /// incrementally, so dedup (Layers 1–2) handles overlap and finalize needn't
     /// re-ingest the whole digest. Best-effort: never fails the run.
