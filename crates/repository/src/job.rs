@@ -23,13 +23,52 @@ pub trait JobRepository {
     fn pause_running(&self, now: i64) -> Result<u64>;
 }
 
+/// All job columns in a fixed order, shared by `get_job` and `list_jobs`.
+const JOB_COLS: &str = "id, workspace_id, job_type, status, progress_current, progress_total, \
+     cost_micros, failure_reason, created_at, updated_at, scope, schedule_name, summary_ids, \
+     date_start, date_end, started_at, completed_at, creation_source, pause_reason";
+
+/// Map a row selecting [`JOB_COLS`] into a [`Job`].
+fn row_to_job(row: &rusqlite::Row) -> Result<Job> {
+    let ty: String = row.get(2)?;
+    let st: String = row.get(3)?;
+    let summary_ids: String = row.get(12)?;
+    Ok(Job {
+        id: JobId::parse(row.get::<_, String>(0)?).map_err(anyhow::Error::new)?,
+        workspace_id: WorkspaceId::parse(row.get::<_, String>(1)?).map_err(anyhow::Error::new)?,
+        job_type: JobType::parse(&ty).context("unknown job_type in storage")?,
+        status: JobStatus::parse(&st).context("unknown job status in storage")?,
+        progress_current: row.get(4)?,
+        progress_total: row.get(5)?,
+        cost_micros: row.get(6)?,
+        failure_reason: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        scope: row.get(10)?,
+        schedule_name: row.get(11)?,
+        summary_ids: if summary_ids.is_empty() {
+            Vec::new()
+        } else {
+            summary_ids.split('\n').map(str::to_string).collect()
+        },
+        date_start: row.get(13)?,
+        date_end: row.get(14)?,
+        started_at: row.get(15)?,
+        completed_at: row.get(16)?,
+        creation_source: row.get(17)?,
+        pause_reason: row.get(18)?,
+    })
+}
+
 impl JobRepository for SqliteRepository {
     fn create_job(&self, job: &Job) -> Result<()> {
         self.conn.execute(
             "INSERT INTO jobs
                (id, workspace_id, job_type, status, progress_current, progress_total,
-                cost_micros, failure_reason, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                cost_micros, failure_reason, created_at, updated_at, scope, schedule_name,
+                summary_ids, date_start, date_end, started_at, completed_at, creation_source,
+                pause_reason)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
             params![
                 job.id.as_str(),
                 job.workspace_id.as_str(),
@@ -41,6 +80,15 @@ impl JobRepository for SqliteRepository {
                 job.failure_reason,
                 job.created_at,
                 job.updated_at,
+                job.scope,
+                job.schedule_name,
+                job.summary_ids.join("\n"),
+                job.date_start,
+                job.date_end,
+                job.started_at,
+                job.completed_at,
+                job.creation_source,
+                job.pause_reason,
             ],
         )?;
         Ok(())
@@ -49,7 +97,8 @@ impl JobRepository for SqliteRepository {
     fn update_job(&self, job: &Job) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs SET status = ?3, progress_current = ?4, progress_total = ?5,
-                 cost_micros = ?6, failure_reason = ?7, updated_at = ?8
+                 cost_micros = ?6, failure_reason = ?7, updated_at = ?8, summary_ids = ?9,
+                 started_at = ?10, completed_at = ?11, pause_reason = ?12
              WHERE id = ?1 AND workspace_id = ?2",
             params![
                 job.id.as_str(),
@@ -60,6 +109,10 @@ impl JobRepository for SqliteRepository {
                 job.cost_micros,
                 job.failure_reason,
                 job.updated_at,
+                job.summary_ids.join("\n"),
+                job.started_at,
+                job.completed_at,
+                job.pause_reason,
             ],
         )?;
         Ok(())
@@ -68,82 +121,32 @@ impl JobRepository for SqliteRepository {
     fn get_job(&self, workspace: &WorkspaceId, id: &JobId) -> Result<Option<Job>> {
         self.conn
             .query_row(
-                "SELECT job_type, status, progress_current, progress_total, cost_micros,
-                        failure_reason, created_at, updated_at
-                 FROM jobs WHERE id = ?1 AND workspace_id = ?2",
+                &format!("SELECT {JOB_COLS} FROM jobs WHERE id = ?1 AND workspace_id = ?2"),
                 params![id.as_str(), workspace.as_str()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, u32>(2)?,
-                        row.get::<_, u32>(3)?,
-                        row.get::<_, i64>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, i64>(7)?,
-                    ))
-                },
+                |row| Ok(row_to_job(row)),
             )
             .optional()?
-            .map(|(ty, st, pc, pt, cost, reason, created, updated)| {
-                Ok(Job {
-                    id: id.clone(),
-                    workspace_id: workspace.clone(),
-                    job_type: JobType::parse(&ty).context("unknown job_type in storage")?,
-                    status: JobStatus::parse(&st).context("unknown job status in storage")?,
-                    progress_current: pc,
-                    progress_total: pt,
-                    cost_micros: cost,
-                    failure_reason: reason,
-                    created_at: created,
-                    updated_at: updated,
-                })
-            })
             .transpose()
     }
 
     fn list_jobs(&self, workspace: &WorkspaceId, limit: u32) -> Result<Vec<Job>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, job_type, status, progress_current, progress_total, cost_micros,
-                    failure_reason, created_at, updated_at
-             FROM jobs WHERE workspace_id = ?1 ORDER BY created_at DESC, id LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![workspace.as_str(), limit], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, u32>(3)?,
-                row.get::<_, u32>(4)?,
-                row.get::<_, i64>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, i64>(7)?,
-                row.get::<_, i64>(8)?,
-            ))
-        })?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_COLS} FROM jobs WHERE workspace_id = ?1 \
+             ORDER BY created_at DESC, id LIMIT ?2"
+        ))?;
+        let rows = stmt.query_map(params![workspace.as_str(), limit], |row| Ok(row_to_job(row)))?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, ty, st, pc, pt, cost, reason, created, updated) = row?;
-            out.push(Job {
-                id: JobId::parse(id).map_err(anyhow::Error::new)?,
-                workspace_id: workspace.clone(),
-                job_type: JobType::parse(&ty).context("unknown job_type in storage")?,
-                status: JobStatus::parse(&st).context("unknown job status in storage")?,
-                progress_current: pc,
-                progress_total: pt,
-                cost_micros: cost,
-                failure_reason: reason,
-                created_at: created,
-                updated_at: updated,
-            });
+            out.push(row??);
         }
         Ok(out)
     }
 
     fn pause_running(&self, now: i64) -> Result<u64> {
         let changed = self.conn.execute(
-            "UPDATE jobs SET status = 'paused', updated_at = ?1 WHERE status = 'running'",
+            "UPDATE jobs SET status = 'paused', updated_at = ?1,
+                 pause_reason = 'process restarted while running'
+             WHERE status = 'running'",
             params![now],
         )?;
         Ok(changed as u64)

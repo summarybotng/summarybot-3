@@ -324,6 +324,16 @@ export interface Job {
   failure_reason: string | null
   created_at: number
   updated_at: number
+  // ADR-133 §B context.
+  scope: string | null
+  schedule_name: string | null
+  summary_ids: string[]
+  date_start: number
+  date_end: number
+  started_at: number | null
+  completed_at: number | null
+  creation_source: string | null
+  pause_reason: string | null
 }
 
 /** A raw knowledge unit with its source provenance (ADR-063). */

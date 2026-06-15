@@ -656,6 +656,20 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0014_summary_period_end",
         "ALTER TABLE summary_records ADD COLUMN period_end INTEGER NOT NULL DEFAULT 0",
     ),
+    // Job context for the enriched Jobs view (ADR-133 §B) — added via migration
+    // so fresh and existing DBs match.
+    ("0015_job_scope", "ALTER TABLE jobs ADD COLUMN scope TEXT"),
+    ("0016_job_schedule_name", "ALTER TABLE jobs ADD COLUMN schedule_name TEXT"),
+    (
+        "0017_job_summary_ids",
+        "ALTER TABLE jobs ADD COLUMN summary_ids TEXT NOT NULL DEFAULT ''",
+    ),
+    ("0018_job_date_start", "ALTER TABLE jobs ADD COLUMN date_start INTEGER NOT NULL DEFAULT 0"),
+    ("0019_job_date_end", "ALTER TABLE jobs ADD COLUMN date_end INTEGER NOT NULL DEFAULT 0"),
+    ("0020_job_started_at", "ALTER TABLE jobs ADD COLUMN started_at INTEGER"),
+    ("0021_job_completed_at", "ALTER TABLE jobs ADD COLUMN completed_at INTEGER"),
+    ("0022_job_creation_source", "ALTER TABLE jobs ADD COLUMN creation_source TEXT"),
+    ("0023_job_pause_reason", "ALTER TABLE jobs ADD COLUMN pause_reason TEXT"),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose

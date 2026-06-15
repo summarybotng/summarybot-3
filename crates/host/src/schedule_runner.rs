@@ -274,13 +274,24 @@ where
         // manual ones — show in the Jobs view with status + cost. Recorded before
         // the LLM work; failures persist a classified reason. Deterministic id so a
         // re-fire at the same instant is idempotent.
+        let scope_label = if all {
+            "workspace-wide".to_string()
+        } else if let Some(cat) = category {
+            format!("category {cat}")
+        } else {
+            format!("channel #{}", channel.as_str())
+        };
         let mut job = domain::Job::record(
             domain::JobId::parse(format!("job_sch_{}_{}", stored.id, now))
                 .map_err(|e| e.to_string())?,
             ws.clone(),
             domain::JobType::Scheduled,
             now,
-        );
+        )
+        .with_scope(scope_label)
+        .with_schedule_name(stored.id.clone())
+        .with_creation_source("scheduler")
+        .with_date_range(start, now);
         let _ = job.start(now);
         let _ = self.repo.create_job(&job);
 
@@ -330,6 +341,7 @@ where
             period_end: now,
             summary: outcome.summary,
         };
+        job.add_summary_id(record.id.clone());
         let delivered = self.deliver_record(ws, &stored.id, &record);
         match &delivered {
             Ok(()) => {

@@ -413,7 +413,9 @@ pub async fn summarize_weeks(
         workspace.clone(),
         domain::JobType::Backfill,
         now,
-    );
+    )
+    .with_scope(format!("channel #{}", channel.as_str()))
+    .with_creation_source("manual");
     let _ = job.start(now);
     job.set_progress(0, total_weeks, now);
     {
@@ -499,6 +501,7 @@ pub async fn summarize_weeks(
         }
         state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
         total_cost += record.cost_micros;
+        job.add_summary_id(record.id.clone());
         summary_ids.push(record.id);
         done += 1;
         // Persist progress as each week completes (visible if the job is polled).

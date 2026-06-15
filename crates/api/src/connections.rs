@@ -224,13 +224,21 @@ pub async fn sync(
     // Track the sync as a job (ADR-013/040) so platform ingestion shows in the
     // Jobs view. Recorded (Running) before the fetch; finalized below with
     // progress = stored / fetched.
+    let scope_label = match &scope {
+        FetchScope::Workspace => format!("{} · all channels", platform.as_str()),
+        FetchScope::Channels(c) => format!("{} · {} channel(s)", platform.as_str(), c.len()),
+        _ => format!("{} sync", platform.as_str()),
+    };
     let mut job = domain::Job::record(
         domain::JobId::parse(format!("job_sync_{}_{}", platform.as_str(), now))
             .map_err(|e| ApiError::bad_request(e.to_string()))?,
         workspace.clone(),
         domain::JobType::Sync,
         now,
-    );
+    )
+    .with_scope(scope_label)
+    .with_creation_source("manual")
+    .with_date_range(start, now);
     let _ = job.start(now);
 
     // Fetch + persist via the shared helper (also used by the scheduler).

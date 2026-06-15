@@ -275,13 +275,18 @@ pub async fn create_summary(
     // Track the on-demand summary as a job (ADR-013/040) so it shows in the Jobs
     // view with status + cost. Recorded (Running) after the budget gate, just
     // before the LLM work; finalized to Completed/Failed below.
+    let pstart = messages.iter().map(|m| m.timestamp).min().unwrap_or(now);
+    let pend = messages.iter().map(|m| m.timestamp).max().unwrap_or(now);
     let mut job = domain::Job::record(
         domain::JobId::parse(format!("job_sum_{}", unique_suffix()))
             .map_err(|e| ApiError::bad_request(e.to_string()))?,
         workspace.clone(),
         domain::JobType::Summarization,
         now,
-    );
+    )
+    .with_scope("on-demand")
+    .with_creation_source("manual")
+    .with_date_range(pstart, pend);
     let _ = job.start(now);
     {
         use repository::JobRepository;
@@ -362,6 +367,7 @@ pub async fn create_summary(
         );
         // Finalize the job with the cost the summary actually incurred.
         use repository::JobRepository;
+        job.add_summary_id(record.id.clone());
         let _ = job.complete(record.cost_micros, crate::auth::now_secs());
         let _ = repo.update_job(&job);
     }
@@ -483,7 +489,10 @@ pub async fn regenerate_summary(
         workspace.clone(),
         domain::JobType::Regenerate,
         now,
-    );
+    )
+    .with_scope(format!("channel #{}", channel.as_str()))
+    .with_creation_source("manual")
+    .with_date_range(original.period_start, original.period_end);
     let _ = job.start(now);
     {
         let repo = state.repo.lock().expect("repo mutex");
@@ -546,6 +555,7 @@ pub async fn regenerate_summary(
             record.channel_id.as_ref().map(|c| c.as_str()),
             now,
         );
+        job.add_summary_id(record.id.clone());
         let _ = job.complete(record.cost_micros, crate::auth::now_secs());
         let _ = repo.update_job(&job);
     }

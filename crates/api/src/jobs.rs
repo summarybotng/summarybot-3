@@ -24,6 +24,16 @@ pub struct JobDto {
     pub failure_reason: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    // ADR-133 §B context.
+    pub scope: Option<String>,
+    pub schedule_name: Option<String>,
+    pub summary_ids: Vec<String>,
+    pub date_start: i64,
+    pub date_end: i64,
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    pub creation_source: Option<String>,
+    pub pause_reason: Option<String>,
 }
 
 /// `GET /workspaces/:ws/jobs?limit=N` — the workspace's jobs, newest first.
@@ -54,6 +64,15 @@ pub async fn list_jobs(
                 failure_reason: j.failure_reason,
                 created_at: j.created_at,
                 updated_at: j.updated_at,
+                scope: j.scope,
+                schedule_name: j.schedule_name,
+                summary_ids: j.summary_ids,
+                date_start: j.date_start,
+                date_end: j.date_end,
+                started_at: j.started_at,
+                completed_at: j.completed_at,
+                creation_source: j.creation_source,
+                pause_reason: j.pause_reason,
             })
             .collect(),
     ))

@@ -314,7 +314,9 @@ pub async fn synthesize(
         workspace.clone(),
         domain::JobType::WikiSynthesis,
         now,
-    );
+    )
+    .with_scope("workspace-wide")
+    .with_creation_source("manual");
     let _ = job.start(now);
 
     let page = {

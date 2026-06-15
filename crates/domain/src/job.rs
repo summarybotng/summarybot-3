@@ -109,7 +109,9 @@ pub struct InvalidTransition {
     pub action: &'static str,
 }
 
-/// A tracked job.
+/// A tracked job. Beyond the lifecycle core, jobs carry v2-parity context
+/// (ADR-133 §B) so the Jobs view can show *what* ran: scope, the originating
+/// schedule, the covered window, the produced summaries, and timing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
     pub id: JobId,
@@ -124,6 +126,23 @@ pub struct Job {
     /// Unix seconds; supplied by the host.
     pub created_at: i64,
     pub updated_at: i64,
+    // --- ADR-133 §B context ---
+    /// Human scope label, e.g. `channel #c1` / `workspace-wide` / `on-demand`.
+    pub scope: Option<String>,
+    /// Originating schedule's display name (scheduled/rolling runs).
+    pub schedule_name: Option<String>,
+    /// Ids of the summaries this job produced (links from the Jobs view).
+    pub summary_ids: Vec<String>,
+    /// Covered message-time window, `0` when not applicable.
+    pub date_start: i64,
+    pub date_end: i64,
+    /// When the job moved to `Running` (for duration), and to a terminal state.
+    pub started_at: Option<i64>,
+    pub completed_at: Option<i64>,
+    /// What triggered it, e.g. `manual` / `scheduler` / `api`.
+    pub creation_source: Option<String>,
+    /// Why it was paused (restart recovery — ADR-013).
+    pub pause_reason: Option<String>,
 }
 
 impl Job {
@@ -140,12 +159,52 @@ impl Job {
             failure_reason: None,
             created_at: now,
             updated_at: now,
+            scope: None,
+            schedule_name: None,
+            summary_ids: Vec::new(),
+            date_start: 0,
+            date_end: 0,
+            started_at: None,
+            completed_at: None,
+            creation_source: None,
+            pause_reason: None,
         }
     }
 
-    /// Pending → Running.
+    /// Builder: set the scope label (e.g. `channel #c1`).
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.scope = Some(scope.into());
+        self
+    }
+
+    /// Builder: set the originating schedule's name.
+    pub fn with_schedule_name(mut self, name: impl Into<String>) -> Self {
+        self.schedule_name = Some(name.into());
+        self
+    }
+
+    /// Builder: set the covered message-time window.
+    pub fn with_date_range(mut self, start: i64, end: i64) -> Self {
+        self.date_start = start;
+        self.date_end = end;
+        self
+    }
+
+    /// Builder: set what triggered the job.
+    pub fn with_creation_source(mut self, source: impl Into<String>) -> Self {
+        self.creation_source = Some(source.into());
+        self
+    }
+
+    /// Record a summary id this job produced.
+    pub fn add_summary_id(&mut self, id: impl Into<String>) {
+        self.summary_ids.push(id.into());
+    }
+
+    /// Pending → Running (stamps `started_at`).
     pub fn start(&mut self, now: i64) -> Result<(), InvalidTransition> {
         self.expect(JobStatus::Pending, "start")?;
+        self.started_at = Some(now);
         self.set(JobStatus::Running, now);
         Ok(())
     }
@@ -157,10 +216,11 @@ impl Job {
         self.updated_at = now;
     }
 
-    /// Running → Completed, recording final cost.
+    /// Running → Completed, recording final cost (stamps `completed_at`).
     pub fn complete(&mut self, cost_micros: i64, now: i64) -> Result<(), InvalidTransition> {
         self.expect(JobStatus::Running, "complete")?;
         self.cost_micros = cost_micros.max(0);
+        self.completed_at = Some(now);
         self.set(JobStatus::Completed, now);
         Ok(())
     }
@@ -175,13 +235,15 @@ impl Job {
         self.expect(JobStatus::Running, "fail")?;
         self.failure_reason = Some(reason.as_str().to_string());
         self.cost_micros = cost_micros.max(0);
+        self.completed_at = Some(now);
         self.set(JobStatus::Failed, now);
         Ok(())
     }
 
-    /// Running → Paused (used by restart recovery — ADR-013).
+    /// Running → Paused with a reason (used by restart recovery — ADR-013).
     pub fn pause(&mut self, now: i64) -> Result<(), InvalidTransition> {
         self.expect(JobStatus::Running, "pause")?;
+        self.pause_reason = Some("process restarted while running".to_string());
         self.set(JobStatus::Paused, now);
         Ok(())
     }
