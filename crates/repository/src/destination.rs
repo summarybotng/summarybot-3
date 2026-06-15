@@ -24,6 +24,10 @@ pub struct StoredDestination {
     /// ADR-108: for a rolling-period schedule, deliver here on every run (true)
     /// rather than only when the period finalizes (false, the default).
     pub rolling_deliver_intermediate: bool,
+    /// Last delivery attempt time + outcome (ADR-133 A5), for the Webhooks/
+    /// Delivery view. `None` until the first attempt.
+    pub last_delivery_at: Option<i64>,
+    pub last_status: Option<String>,
 }
 
 /// Storage boundary for a workspace's delivery destinations.
@@ -34,12 +38,21 @@ pub trait DestinationRepository {
     fn upsert_destination(&self, workspace: &WorkspaceId, dest: &StoredDestination) -> Result<()>;
     /// Remove a destination by id. Returns whether a row was removed.
     fn delete_destination(&self, workspace: &WorkspaceId, id: &str) -> Result<bool>;
+    /// Record the latest delivery attempt's time + status (ADR-133 A5).
+    fn record_delivery_result(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+        at: i64,
+        status: &str,
+    ) -> Result<()>;
 }
 
 impl DestinationRepository for SqliteRepository {
     fn list_destinations(&self, workspace: &WorkspaceId) -> Result<Vec<StoredDestination>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, kind, address_enc, enabled, created_at, rolling_deliver_intermediate
+            "SELECT id, kind, address_enc, enabled, created_at, rolling_deliver_intermediate,
+                    last_delivery_at, last_status
              FROM workspace_destinations WHERE workspace_id = ?1
              ORDER BY created_at, id",
         )?;
@@ -51,6 +64,8 @@ impl DestinationRepository for SqliteRepository {
                 enabled: row.get::<_, i64>(3)? != 0,
                 created_at: row.get(4)?,
                 rolling_deliver_intermediate: row.get::<_, i64>(5)? != 0,
+                last_delivery_at: row.get(6)?,
+                last_status: row.get(7)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -88,6 +103,21 @@ impl DestinationRepository for SqliteRepository {
         )?;
         Ok(n > 0)
     }
+
+    fn record_delivery_result(
+        &self,
+        workspace: &WorkspaceId,
+        id: &str,
+        at: i64,
+        status: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE workspace_destinations SET last_delivery_at = ?3, last_status = ?4
+             WHERE workspace_id = ?1 AND id = ?2",
+            params![workspace.as_str(), id, at, status],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +138,8 @@ mod tests {
             enabled,
             created_at: 100,
             rolling_deliver_intermediate: false,
+            last_delivery_at: None,
+            last_status: None,
         }
     }
 

@@ -29,6 +29,9 @@ pub struct DestinationDto {
     pub hint: Option<String>,
     /// ADR-108: deliver here on every rolling run, not just at finalize.
     pub rolling_deliver_intermediate: bool,
+    /// Last delivery attempt time + status (ADR-133 A5); `null` until first sent.
+    pub last_delivery_at: Option<i64>,
+    pub last_status: Option<String>,
 }
 
 /// A plugin descriptor exposed to the dashboard so it can render a config form.
@@ -106,6 +109,8 @@ fn to_dto(row: &StoredDestination, master: Option<&[u8; 32]>) -> DestinationDto 
         enabled: row.enabled,
         hint,
         rolling_deliver_intermediate: row.rolling_deliver_intermediate,
+        last_delivery_at: row.last_delivery_at,
+        last_status: row.last_status.clone(),
     }
 }
 
@@ -212,6 +217,8 @@ pub async fn create_destination(
         enabled: true,
         created_at: crate::auth::now_secs(),
         rolling_deliver_intermediate: body.rolling_deliver_intermediate,
+        last_delivery_at: None,
+        last_status: None,
     };
     let repo = state.repo.lock().expect("repo mutex");
     // Honor the tenant enablement gate: a workspace can't add a destination for a
@@ -301,7 +308,18 @@ pub async fn test_destination(
     let sample = host::RenderedSummary::from_text(
         "SummaryBot test delivery — your destination is configured correctly.",
     );
-    match deliverer.deliver(&config, &sample) {
+    let outcome = deliverer.deliver(&config, &sample);
+    // Record the attempt's time + status for the Webhooks/Delivery view (ADR-133 A5).
+    {
+        let now = crate::auth::now_secs();
+        let status = match &outcome {
+            Ok(()) => "test ok".to_string(),
+            Err(e) => format!("test failed: {e}"),
+        };
+        let repo = state.repo.lock().expect("repo mutex");
+        let _ = repo.record_delivery_result(&workspace, &id, now, &status);
+    }
+    match outcome {
         Ok(()) => Ok(Json(TestResult {
             ok: true,
             detail: None,

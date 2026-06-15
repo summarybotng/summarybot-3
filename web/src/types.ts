@@ -313,6 +313,9 @@ export interface Destination {
   hint: string | null
   /** ADR-108: deliver here on every rolling run, not just at finalize. */
   rolling_deliver_intermediate: boolean
+  /** Last delivery attempt time + status (ADR-133 A5); null until first sent. */
+  last_delivery_at: number | null
+  last_status: string | null
 }
 
 export interface KnowledgeHit {

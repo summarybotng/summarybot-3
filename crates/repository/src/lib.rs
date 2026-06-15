@@ -684,6 +684,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0023_job_pause_reason", "ALTER TABLE jobs ADD COLUMN pause_reason TEXT"),
     // Perspective that steered a summary (ADR-133 §B) — added via migration.
     ("0024_summary_perspective", "ALTER TABLE summary_records ADD COLUMN perspective TEXT"),
+    // Per-destination last delivery time + status (ADR-133 A5).
+    ("0025_dest_last_delivery_at", "ALTER TABLE workspace_destinations ADD COLUMN last_delivery_at INTEGER"),
+    ("0026_dest_last_status", "ALTER TABLE workspace_destinations ADD COLUMN last_status TEXT"),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose

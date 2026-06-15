@@ -182,6 +182,15 @@ export function Delivery() {
                     rolling: each run
                   </span>
                 )}
+                {d.last_delivery_at && (
+                  <div className="mt-0.5 text-xs text-slate-400">
+                    last:{' '}
+                    <span className={d.last_status?.includes('failed') ? 'text-red-500' : 'text-emerald-600'}>
+                      {d.last_status}
+                    </span>{' '}
+                    · {new Date(d.last_delivery_at * 1000).toLocaleString()}
+                  </div>
+                )}
               </div>
               <div className="flex shrink-0 gap-2">
                 <button

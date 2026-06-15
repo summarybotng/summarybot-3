@@ -1514,6 +1514,8 @@ mod tests {
                     enabled: true,
                     created_at: 1,
                     rolling_deliver_intermediate: false,
+                    last_delivery_at: None,
+                    last_status: None,
                 },
             )
             .unwrap();
@@ -1528,6 +1530,8 @@ mod tests {
                     enabled: false,
                     created_at: 2,
                     rolling_deliver_intermediate: false,
+                    last_delivery_at: None,
+                    last_status: None,
                 },
             )
             .unwrap();
@@ -1564,6 +1568,8 @@ mod tests {
                     enabled: true,
                     created_at: 1,
                     rolling_deliver_intermediate: false,
+                    last_delivery_at: None,
+                    last_status: None,
                 },
             )
             .unwrap();
@@ -1627,6 +1633,8 @@ mod tests {
                     enabled: true,
                     created_at: 1,
                     rolling_deliver_intermediate: false,
+                    last_delivery_at: None,
+                    last_status: None,
                 },
             )
             .unwrap();
@@ -1696,6 +1704,8 @@ mod tests {
                     enabled: true,
                     created_at: 1,
                     rolling_deliver_intermediate: false,
+                    last_delivery_at: None,
+                    last_status: None,
                 },
             )
             .unwrap();
