@@ -21,6 +21,7 @@ mod identity_claims;
 mod coverage;
 mod errors;
 mod jobs;
+mod overview;
 mod prompts;
 mod knowledge;
 #[cfg(feature = "oauth")]
@@ -417,6 +418,7 @@ pub fn build_router(state: AppState) -> Router {
             get(knowledge::export_units),
         )
         .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
+        .route("/workspaces/:ws/overview", get(overview::overview))
         .route("/workspaces/:ws/coverage", get(coverage::coverage))
         .route("/workspaces/:ws/errors", get(errors::list_errors))
         .route(

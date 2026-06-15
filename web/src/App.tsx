@@ -18,8 +18,10 @@ import { Jobs } from './views/Jobs'
 import { Coverage } from './views/Coverage'
 import { Prompts } from './views/Prompts'
 import { Errors } from './views/Errors'
+import { Overview } from './views/Overview'
 
 type Tab =
+  | 'overview'
   | 'create'
   | 'summaries'
   | 'schedules'
@@ -40,7 +42,7 @@ type Tab =
 
 export default function App() {
   const { client, signOut } = useAuth()
-  const [tab, setTab] = useState<Tab>('summaries')
+  const [tab, setTab] = useState<Tab>('overview')
   const [brand, setBrand] = useState<string>('SummaryBot')
   // Active workspace (one of the session's granted set). Switching it remounts
   // the content so every tab refetches for the new workspace.
@@ -136,6 +138,7 @@ export default function App() {
       </aside>
 
       <main key={activeWs} className="flex-1 overflow-y-auto px-4 py-6">
+        {tab === 'overview' && <Overview onNavigate={(t) => setTab(t as Tab)} />}
         {tab === 'create' && <CreateSummary />}
         {tab === 'summaries' && <Summaries />}
         {tab === 'schedules' && <Schedules />}
@@ -160,7 +163,7 @@ export default function App() {
 
 /// Left-nav groups (vertical sidebar). Grouping keeps 11 tabs scannable.
 const NAV: { section?: string; tabs: Tab[] }[] = [
-  { tabs: ['create', 'summaries', 'schedules', 'knowledge', 'coverage', 'spend', 'jobs'] },
+  { tabs: ['overview', 'create', 'summaries', 'schedules', 'knowledge', 'coverage', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
   { section: 'Admin', tabs: ['delivery', 'plugins', 'prompts', 'members', 'audit', 'errors', 'settings'] },
 ]

@@ -249,6 +249,18 @@ export interface RetrospectiveResult {
   truncated: boolean
 }
 
+/** Workspace overview / dashboard home (ADR-133 A6). */
+export interface Overview {
+  summary_count: number
+  schedule_count: number
+  member_count: number
+  unresolved_errors: number
+  total_cost_micros: number
+  coverage_percent: number
+  last_summary_at: number | null
+  recent: { id: string; title: string; created_at: number }[]
+}
+
 /** One member's contribution to a chat (WHA-018). */
 export interface Contribution {
   uploader: string

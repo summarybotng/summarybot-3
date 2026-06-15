@@ -20,6 +20,7 @@ import type {
   Prompts,
   PromptTemplate,
   Errors as ErrorsData,
+  Overview,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -391,6 +392,11 @@ export class Client {
   /** Background / long-running jobs with progress (ADR-040). */
   listJobs(limit = 50): Promise<Job[]> {
     return this.json<Job[]>(`/workspaces/${this.ws()}/jobs?limit=${limit}`)
+  }
+
+  /** Workspace overview / dashboard home (ADR-133 A6). */
+  overview(): Promise<Overview> {
+    return this.json<Overview>(`/workspaces/${this.ws()}/overview`)
   }
 
   /** Server-wide + per-channel summary coverage (ADR-133). */
