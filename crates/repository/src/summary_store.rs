@@ -39,6 +39,8 @@ pub struct SummaryRecord {
     /// lookback/period window; for ad-hoc pasted text it collapses to a point.
     pub period_start: i64,
     pub period_end: i64,
+    /// Built-in perspective id that steered this summary (ADR-133 §B), if any.
+    pub perspective: Option<String>,
 }
 
 /// Filter + pagination for a summary listing (PRD §5.1: DSH-002/004/005). All
@@ -194,8 +196,8 @@ impl StructuredSummaryRepository for SqliteRepository {
                (id, workspace_id, channel_id, model, cost_micros, degraded, created_at,
                 text, key_points, technical_terms, participants, pinned, archived, tags,
                 coherence_score, input_tokens, output_tokens, latency_ms,
-                period_start, period_end)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+                period_start, period_end, perspective)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             params![
                 record.id,
                 workspace.as_str(),
@@ -217,6 +219,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                 record.usage.latency_ms,
                 record.period_start,
                 record.period_end,
+                record.perspective,
             ],
         )?;
         for (i, k) in record.summary.key_points.iter().enumerate() {
@@ -257,7 +260,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                 "SELECT channel_id, model, cost_micros, degraded, created_at,
                         text, key_points, technical_terms, participants, pinned, archived, tags,
                         coherence_score, input_tokens, output_tokens, latency_ms,
-                        period_start, period_end
+                        period_start, period_end, perspective
                  FROM summary_records WHERE id = ?1 AND workspace_id = ?2",
                 params![id, workspace.as_str()],
                 |row| {
@@ -280,6 +283,7 @@ impl StructuredSummaryRepository for SqliteRepository {
                         row.get::<_, i64>(15)?,
                         row.get::<_, i64>(16)?,
                         row.get::<_, i64>(17)?,
+                        row.get::<_, Option<String>>(18)?,
                     ))
                 },
             )
@@ -303,6 +307,7 @@ impl StructuredSummaryRepository for SqliteRepository {
             latency_ms,
             period_start,
             period_end,
+            perspective,
         )) = main
         else {
             return Ok(None);
@@ -395,6 +400,7 @@ impl StructuredSummaryRepository for SqliteRepository {
             },
             period_start,
             period_end,
+            perspective,
         }))
     }
 
@@ -619,6 +625,7 @@ mod tests {
             },
             period_start: 1_699_900_000,
             period_end: 1_700_000_000,
+            perspective: None,
         }
     }
 

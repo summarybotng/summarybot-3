@@ -486,6 +486,7 @@ mod tests {
             usage: SummaryUsage::default(),
             period_start: 0,
             period_end: 5 * DAY,
+            perspective: None,
             summary: ExtractedSummary {
                 text: "x".into(),
                 key_points: vec![],

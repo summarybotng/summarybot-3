@@ -121,6 +121,7 @@ fn ingest_then_summarize_then_deliver() {
         usage: outcome.usage,
         period_start: 1_699_900_000,
         period_end: 1_700_000_000,
+        perspective: None,
         summary: outcome.summary.clone(),
     };
     let report = DeliveryService::new(&repo)

@@ -30,6 +30,8 @@ pub struct SummaryDto {
     /// (`start == end`) for ad-hoc pasted text. Drives the Regenerate affordance.
     pub period_start: i64,
     pub period_end: i64,
+    /// Built-in perspective that steered this summary (ADR-133 §B), if any.
+    pub perspective: Option<String>,
     pub pinned: bool,
     pub archived: bool,
     pub tags: Vec<String>,
@@ -87,6 +89,7 @@ impl From<SummaryRecord> for SummaryDto {
             output_tokens: r.usage.output_tokens,
             period_start: r.period_start,
             period_end: r.period_end,
+            perspective: r.perspective,
             pinned: r.pinned,
             archived: r.archived,
             tags: r.tags,
@@ -337,6 +340,7 @@ pub async fn create_summary(
         // On-demand pasted text is stamped `now`, so this collapses to a point.
         period_start: messages.iter().map(|m| m.timestamp).min().unwrap_or(now),
         period_end: messages.iter().map(|m| m.timestamp).max().unwrap_or(now),
+        perspective: body.perspective.clone(),
         summary: outcome.summary,
     };
     {
@@ -531,6 +535,7 @@ pub async fn regenerate_summary(
         // Same window the original covered.
         period_start: original.period_start,
         period_end: original.period_end,
+        perspective: body.perspective.clone(),
         summary: outcome.summary,
     };
     {

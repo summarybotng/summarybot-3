@@ -475,6 +475,7 @@ pub async fn summarize_weeks(
             // The week this retrospective digest covers (ADR-133 coverage).
             period_start: wk_start,
             period_end: wk_end,
+            perspective: None,
             summary: outcome.summary,
         };
         {

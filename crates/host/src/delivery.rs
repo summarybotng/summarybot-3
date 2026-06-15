@@ -1338,6 +1338,7 @@ mod tests {
             usage: domain::summarize::SummaryUsage::default(),
             period_start: 0,
             period_end: 1,
+            perspective: None,
             summary: ExtractedSummary {
                 text: "We shipped.".into(),
                 key_points: vec!["Launched".into()],

@@ -65,6 +65,8 @@ export interface Summary {
   /** Covered message-time window (ADR-133); zero-width for ad-hoc pasted text. */
   period_start: number
   period_end: number
+  /** Built-in perspective that steered this summary (ADR-133 §B), if any. */
+  perspective: string | null
   pinned: boolean
   archived: boolean
   tags: string[]

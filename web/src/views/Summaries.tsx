@@ -19,6 +19,16 @@ function scopeLabel(s: Summary): string {
   return 'workspace-wide'
 }
 
+/// The "kind" of a summary, derived from its tags (ADR-133 §B): rolling digest,
+/// retrospective by-week, a scheduled run, or an ad-hoc on-demand summary. This
+/// subsumes the v2 rolling/granularity facets without a per-summary schema.
+function kindOf(s: Summary): 'rolling' | 'retrospective' | 'scheduled' | 'adhoc' {
+  if (s.tags.some((t) => t.startsWith('rolling-'))) return 'rolling'
+  if (s.tags.includes('retrospective-weekly')) return 'retrospective'
+  if (s.id.startsWith('sum_sch_') || s.id.includes('_sch_')) return 'scheduled'
+  return 'adhoc'
+}
+
 export function Summaries() {
   const { client } = useAuth()
   const [items, setItems] = useState<Summary[]>([])
@@ -30,6 +40,10 @@ export function Summaries() {
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [liveFlash, setLiveFlash] = useState<string | null>(null)
+  // Client-side facets over the loaded set (ADR-133 §B).
+  const [kind, setKind] = useState('all')
+  const [persp, setPersp] = useState('all')
+  const [view, setView] = useState<'list' | 'calendar'>('list')
 
   const load = useCallback(
     async (filters?: { q?: string; participant?: string; tag?: string; includeArchived?: boolean }) => {
@@ -99,6 +113,17 @@ export function Summaries() {
     await fn
     await load({ q, participant, tag, includeArchived })
   }
+
+  // Distinct perspectives present in the loaded set, for the facet dropdown.
+  const perspectivesPresent = Array.from(
+    new Set(items.map((s) => s.perspective).filter((p): p is string => !!p)),
+  ).sort()
+  // Apply the client-side facets (kind + perspective) over the loaded set.
+  const shown = items.filter(
+    (s) =>
+      (kind === 'all' || kindOf(s) === kind) &&
+      (persp === 'all' || s.perspective === persp),
+  )
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
@@ -184,12 +209,63 @@ export function Summaries() {
         </div>
       </form>
 
-      {/* List */}
-      {items.length === 0 ? (
-        <p className="py-12 text-center text-sm text-slate-400">No summaries yet.</p>
+      {/* Facets + view toggle (ADR-133 §B): kind (rolling/retrospective/…),
+          perspective, and a Calendar view. Client-side over the loaded set. */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <select
+          value={kind}
+          onChange={(e) => setKind(e.target.value)}
+          className="rounded-lg border border-slate-300 px-2 py-1"
+        >
+          <option value="all">All kinds</option>
+          <option value="scheduled">Scheduled</option>
+          <option value="rolling">Rolling</option>
+          <option value="retrospective">Retrospective</option>
+          <option value="adhoc">Ad-hoc</option>
+        </select>
+        <select
+          value={persp}
+          onChange={(e) => setPersp(e.target.value)}
+          disabled={perspectivesPresent.length === 0}
+          className="rounded-lg border border-slate-300 px-2 py-1 disabled:opacity-50"
+        >
+          <option value="all">All perspectives</option>
+          {perspectivesPresent.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+        <div className="ml-auto inline-flex overflow-hidden rounded-lg ring-1 ring-slate-300">
+          {(['list', 'calendar'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setView(v)}
+              className={`px-3 py-1 capitalize ${view === v ? 'bg-accent text-accent-fg' : 'text-slate-600'}`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* List / Calendar */}
+      {shown.length === 0 ? (
+        <p className="py-12 text-center text-sm text-slate-400">
+          {items.length === 0 ? 'No summaries yet.' : 'No summaries match the filters.'}
+        </p>
+      ) : view === 'calendar' ? (
+        <CalendarView
+          items={shown}
+          onPick={(id) => {
+            setExpanded(id)
+            setView('list')
+          }}
+        />
       ) : (
         <ul className="space-y-3">
-          {items.map((s) => (
+          {shown.map((s) => (
             <li
               key={s.id}
               className={`rounded-xl bg-white p-4 shadow-sm ring-1 transition ${
@@ -329,6 +405,14 @@ export function Summaries() {
                       </dd>
                       <dt className="text-slate-400">Scope</dt>
                       <dd>{scopeLabel(s)}</dd>
+                      <dt className="text-slate-400">Kind</dt>
+                      <dd className="capitalize">{kindOf(s)}</dd>
+                      {s.perspective && (
+                        <>
+                          <dt className="text-slate-400">Perspective</dt>
+                          <dd className="capitalize">{s.perspective}</dd>
+                        </>
+                      )}
                       <dt className="text-slate-400">Cost</dt>
                       <dd>${(s.cost_micros / 1_000_000).toFixed(4)}</dd>
                       {(s.latency_ms > 0 || s.input_tokens > 0 || s.output_tokens > 0) && (
@@ -399,6 +483,67 @@ export function Summaries() {
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/// Month-grid calendar of summaries by creation day (ADR-133 §B). Shows the
+/// month of the most recent summary; each day with summaries lists them as
+/// clickable chips that jump to the expanded card in the list view.
+function CalendarView({ items, onPick }: { items: Summary[]; onPick: (id: string) => void }) {
+  const byDay = new Map<string, Summary[]>()
+  for (const s of items) {
+    const key = new Date(s.created_at * 1000).toDateString()
+    const arr = byDay.get(key) ?? []
+    arr.push(s)
+    byDay.set(key, arr)
+  }
+  const latest = new Date(Math.max(...items.map((s) => s.created_at)) * 1000)
+  const year = latest.getFullYear()
+  const month = latest.getMonth()
+  const startDow = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const cells: (number | null)[] = []
+  for (let i = 0; i < startDow; i++) cells.push(null)
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d)
+
+  const monthName = latest.toLocaleString(undefined, { month: 'long', year: 'numeric' })
+  return (
+    <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <p className="mb-2 text-sm font-medium text-slate-700">{monthName}</p>
+      <div className="grid grid-cols-7 gap-1 text-xs">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => (
+          <div key={d} className="px-1 py-0.5 text-center font-medium text-slate-400">
+            {d}
+          </div>
+        ))}
+        {cells.map((d, i) => {
+          if (d == null) return <div key={`b${i}`} />
+          const key = new Date(year, month, d).toDateString()
+          const day = byDay.get(key) ?? []
+          return (
+            <div
+              key={d}
+              className={`min-h-[3.5rem] rounded border p-1 ${
+                day.length ? 'border-accent/40 bg-accent/5' : 'border-slate-100'
+              }`}
+            >
+              <div className="text-right text-[10px] text-slate-400">{d}</div>
+              {day.slice(0, 3).map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => onPick(s.id)}
+                  title={s.text || s.id}
+                  className="mt-0.5 block w-full truncate rounded bg-white px-1 text-left text-[10px] text-slate-600 ring-1 ring-slate-200 hover:ring-accent"
+                >
+                  {s.text || '(summary)'}
+                </button>
+              ))}
+              {day.length > 3 && <div className="text-[10px] text-slate-400">+{day.length - 3}</div>}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }

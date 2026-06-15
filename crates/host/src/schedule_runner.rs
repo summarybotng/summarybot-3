@@ -352,6 +352,7 @@ where
             // The lookback window this scheduled run covered (ADR-133 coverage).
             period_start: start,
             period_end: now,
+            perspective: opts.as_ref().and_then(|o| o.perspective.clone()),
             summary,
         };
         job.add_summary_id(record.id.clone());
@@ -578,6 +579,7 @@ where
             usage: domain::summarize::SummaryUsage::default(),
             period_start: now,
             period_end: now,
+            perspective: None,
             summary: ExtractedSummary {
                 text: format!("{header}{content_md}"),
                 key_points: vec![],
@@ -868,6 +870,7 @@ where
                         usage: domain::summarize::SummaryUsage::default(),
                         period_start: row.period_start,
                         period_end: row.period_end,
+                        perspective: None,
                         summary,
                     };
                     self.deliver_record(ws, &stored.id, &record)?;

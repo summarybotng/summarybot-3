@@ -682,6 +682,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("0021_job_completed_at", "ALTER TABLE jobs ADD COLUMN completed_at INTEGER"),
     ("0022_job_creation_source", "ALTER TABLE jobs ADD COLUMN creation_source TEXT"),
     ("0023_job_pause_reason", "ALTER TABLE jobs ADD COLUMN pause_reason TEXT"),
+    // Perspective that steered a summary (ADR-133 §B) — added via migration.
+    ("0024_summary_perspective", "ALTER TABLE summary_records ADD COLUMN perspective TEXT"),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose
