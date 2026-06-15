@@ -249,6 +249,23 @@ export interface RetrospectiveResult {
   truncated: boolean
 }
 
+/** Vector-store browser payload (ADR-133 A7 RuVector Explorer). */
+export interface Vectors {
+  total: number
+  embedded: number
+  models: { model: string; count: number; dims: number }[]
+  units: {
+    id: string
+    kind: string
+    text: string
+    model: string | null
+    dims: number
+    has_embedding: boolean
+    source_channel: string | null
+    confidence: number
+  }[]
+}
+
 /** An RSS feed of summaries (ADR-133 A4). */
 export interface Feed {
   id: string

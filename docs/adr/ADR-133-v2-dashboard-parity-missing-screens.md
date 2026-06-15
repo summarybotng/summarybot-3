@@ -2,13 +2,17 @@
 
 > Rewrite-era ADR. Numbering continues from the local ADR set (…, ADR-132).
 
-- **Status**: Accepted (2026-06-14) — **A1 Coverage**, **A2 Prompts/Perspectives**,
-  **A3 Errors**, and **all of §B** shipped (Jobs record+buckets/filters/details &
+- **Status**: Accepted (2026-06-14) — **all of §A and §B shipped.** §A: A1
+  Coverage, A2 Prompts/Perspectives, A3 Errors, A4 Feeds (RSS at a public token
+  URL), A5 Webhooks (folded into Delivery — last delivery/status), A6 Overview,
+  A7 RuVector Explorer (vector-store browser). A8 Populate is satisfied by the
+  existing manual-ingest surfaces (Create→Past / retrospective by-week / source
+  Sync) rather than a redundant screen. §B: Jobs record+buckets/filters/details &
   `Regenerate`; Schedules prompt-template/perspective/title/continuity; Summaries
-  perspective+kind facets & Calendar view; Channels bot-accessibility). A4 Feeds,
-  A5 Webhooks-manager, A6 Overview, A7 RuVector, A8 Populate remain. Live-only
+  perspective+kind facets & Calendar; Channels bot-accessibility. Live-only
   follow-ups: Discord channel-permission resolution; per-summary Length filtering;
-  host-side error recording at scheduled-run/delivery sites.
+  host-side error recording at scheduled-run/delivery sites; live fan-out delivery
+  status (test-send is recorded today).
 - **Deciders**: Martin Cleaver
 - **Related**: ADR-013/040 (jobs), ADR-072/112/121 (coverage), ADR-067/077/090/127
   (wiki/knowledge), ADR-088/089/101 (retrospective/rolling), ADR-126 (delivery

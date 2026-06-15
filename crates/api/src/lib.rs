@@ -416,6 +416,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/workspaces/:ws/wiki/search", get(knowledge::search))
         .route("/workspaces/:ws/wiki/pages", get(knowledge::list_pages))
         .route("/workspaces/:ws/wiki/units", get(knowledge::list_units))
+        .route("/workspaces/:ws/knowledge/vectors", get(knowledge::vectors))
         .route(
             "/workspaces/:ws/wiki/units/export",
             get(knowledge::export_units),

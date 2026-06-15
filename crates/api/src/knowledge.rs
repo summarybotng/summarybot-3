@@ -111,6 +111,85 @@ pub async fn list_units(
     ))
 }
 
+#[derive(serde::Serialize)]
+pub struct VectorModelDto {
+    pub model: String,
+    pub count: i64,
+    pub dims: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct VectorUnitDto {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub model: Option<String>,
+    pub dims: usize,
+    pub has_embedding: bool,
+    pub source_channel: Option<String>,
+    pub confidence: f32,
+}
+
+#[derive(serde::Serialize)]
+pub struct VectorsDto {
+    pub total: i64,
+    pub embedded: i64,
+    pub models: Vec<VectorModelDto>,
+    pub units: Vec<VectorUnitDto>,
+}
+
+/// `GET /workspaces/:ws/knowledge/vectors` — read-only vector-store browser
+/// (ADR-133 A7, "RuVector Explorer"): embedding coverage + per-model breakdown +
+/// per-unit embedding metadata. No raw vectors (use the RVF export for those).
+pub async fn vectors(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<VectorsDto>, ApiError> {
+    use repository::KnowledgeRepository;
+    use std::collections::BTreeMap;
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let limit = q.k.unwrap_or(200).min(500);
+    let repo = state.repo.lock().expect("repo mutex");
+    let mut units = repo
+        .list_units(&workspace)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let total = units.len() as i64;
+    let embedded = units.iter().filter(|u| u.embedding.is_some()).count() as i64;
+    // Per-model breakdown (count + dims).
+    let mut by_model: BTreeMap<String, (i64, usize)> = BTreeMap::new();
+    for u in &units {
+        if let Some(m) = &u.model {
+            let e = by_model.entry(m.clone()).or_insert((0, 0));
+            e.0 += 1;
+            e.1 = u.embedding.as_ref().map(|v| v.len()).unwrap_or(e.1);
+        }
+    }
+    let models = by_model
+        .into_iter()
+        .map(|(model, (count, dims))| VectorModelDto { model, count, dims })
+        .collect();
+    units.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+    units.truncate(limit);
+    let units = units
+        .into_iter()
+        .map(|u| VectorUnitDto {
+            dims: u.embedding.as_ref().map(|v| v.len()).unwrap_or(0),
+            has_embedding: u.embedding.is_some(),
+            id: u.id,
+            kind: u.kind,
+            text: u.text,
+            model: u.model,
+            source_channel: u.source_channel,
+            confidence: u.confidence,
+        })
+        .collect();
+    Ok(Json(VectorsDto { total, embedded, models, units }))
+}
+
 /// `?format=rvf|json&include_embeddings=true&unit_types=key_point,action_item`
 #[derive(Deserialize)]
 pub struct ExportQuery {

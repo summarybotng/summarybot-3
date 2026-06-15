@@ -22,6 +22,7 @@ import type {
   Errors as ErrorsData,
   Overview,
   Feed,
+  Vectors,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -398,6 +399,11 @@ export class Client {
   /** Workspace overview / dashboard home (ADR-133 A6). */
   overview(): Promise<Overview> {
     return this.json<Overview>(`/workspaces/${this.ws()}/overview`)
+  }
+
+  /** Vector-store browser (ADR-133 A7). */
+  vectors(): Promise<Vectors> {
+    return this.json<Vectors>(`/workspaces/${this.ws()}/knowledge/vectors`)
   }
 
   /** RSS feeds of summaries (ADR-133 A4). */

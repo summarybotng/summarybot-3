@@ -20,6 +20,7 @@ import { Prompts } from './views/Prompts'
 import { Errors } from './views/Errors'
 import { Overview } from './views/Overview'
 import { Feeds } from './views/Feeds'
+import { RuVector } from './views/RuVector'
 
 type Tab =
   | 'overview'
@@ -33,6 +34,7 @@ type Tab =
   | 'delivery'
   | 'plugins'
   | 'knowledge'
+  | 'ruvector'
   | 'coverage'
   | 'prompts'
   | 'spend'
@@ -152,6 +154,7 @@ export default function App() {
         {tab === 'jobs' && <Jobs />}
         {tab === 'coverage' && <Coverage />}
         {tab === 'feeds' && <Feeds />}
+        {tab === 'ruvector' && <RuVector />}
         {tab === 'prompts' && <Prompts />}
         {tab === 'errors' && <Errors />}
         {tab === 'knowledge' && <Knowledge />}
@@ -166,7 +169,7 @@ export default function App() {
 
 /// Left-nav groups (vertical sidebar). Grouping keeps 11 tabs scannable.
 const NAV: { section?: string; tabs: Tab[] }[] = [
-  { tabs: ['overview', 'create', 'summaries', 'schedules', 'knowledge', 'coverage', 'spend', 'jobs'] },
+  { tabs: ['overview', 'create', 'summaries', 'schedules', 'knowledge', 'ruvector', 'coverage', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
   { section: 'Admin', tabs: ['delivery', 'feeds', 'plugins', 'prompts', 'members', 'audit', 'errors', 'settings'] },
 ]
