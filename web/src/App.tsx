@@ -19,12 +19,14 @@ import { Coverage } from './views/Coverage'
 import { Prompts } from './views/Prompts'
 import { Errors } from './views/Errors'
 import { Overview } from './views/Overview'
+import { Feeds } from './views/Feeds'
 
 type Tab =
   | 'overview'
   | 'create'
   | 'summaries'
   | 'schedules'
+  | 'feeds'
   | 'whatsapp'
   | 'discord'
   | 'slack'
@@ -149,6 +151,7 @@ export default function App() {
         {tab === 'plugins' && <Plugins />}
         {tab === 'jobs' && <Jobs />}
         {tab === 'coverage' && <Coverage />}
+        {tab === 'feeds' && <Feeds />}
         {tab === 'prompts' && <Prompts />}
         {tab === 'errors' && <Errors />}
         {tab === 'knowledge' && <Knowledge />}
@@ -165,5 +168,5 @@ export default function App() {
 const NAV: { section?: string; tabs: Tab[] }[] = [
   { tabs: ['overview', 'create', 'summaries', 'schedules', 'knowledge', 'coverage', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
-  { section: 'Admin', tabs: ['delivery', 'plugins', 'prompts', 'members', 'audit', 'errors', 'settings'] },
+  { section: 'Admin', tabs: ['delivery', 'feeds', 'plugins', 'prompts', 'members', 'audit', 'errors', 'settings'] },
 ]

@@ -20,6 +20,7 @@ mod events;
 mod identity_claims;
 mod coverage;
 mod errors;
+mod feeds;
 mod jobs;
 mod overview;
 mod prompts;
@@ -40,7 +41,7 @@ pub use error::ApiError;
 pub use events::LiveEvent;
 pub use scheduler_driver::spawn_scheduler;
 
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use domain::summarize::{Model, ModelLadder, ModelPrice};
 use domain::Secret;
@@ -384,6 +385,8 @@ pub fn build_router(state: AppState) -> Router {
     #[allow(unused_mut)]
     let mut router = Router::new()
         .route("/healthz", get(healthz))
+        // Public, token-gated RSS render (ADR-133 A4) — no auth (the token is the capability).
+        .route("/feeds/:token", get(feeds::render_feed))
         .route("/metrics", get(metrics))
         .route("/openapi.json", get(openapi))
         .route("/auth/login", post(auth::login))
@@ -419,6 +422,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/workspaces/:ws/jobs", get(jobs::list_jobs))
         .route("/workspaces/:ws/overview", get(overview::overview))
+        .route(
+            "/workspaces/:ws/feeds",
+            get(feeds::list_feeds).post(feeds::create_feed),
+        )
+        .route("/workspaces/:ws/feeds/:id", delete(feeds::delete_feed))
         .route("/workspaces/:ws/coverage", get(coverage::coverage))
         .route("/workspaces/:ws/errors", get(errors::list_errors))
         .route(

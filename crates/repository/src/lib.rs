@@ -10,6 +10,7 @@ use rusqlite::Connection;
 mod budget;
 mod coverage_store;
 mod destination;
+mod feed;
 mod identity;
 mod identity_claim;
 mod job;
@@ -35,6 +36,7 @@ mod workspace_settings;
 pub use budget::{BudgetRepository, BudgetRow};
 pub use coverage_store::{ChannelContent, CoverageRepository, SummarySpan};
 pub use destination::{DestinationRepository, StoredDestination};
+pub use feed::{Feed, FeedRepository};
 pub use identity::{AuditEntry, IdentityRepository, LinkError};
 pub use identity_claim::{IdentityClaim, IdentityClaimRepository};
 pub use job::JobRepository;
@@ -498,6 +500,21 @@ impl SqliteRepository {
             );
             CREATE INDEX IF NOT EXISTS idx_operational_errors_workspace
                 ON operational_errors(workspace_id, resolved, created_at);
+            -- RSS/Atom feeds of summaries (ADR-133 A4). The url_token is the
+            -- public capability; is_public is an advisory flag.
+            CREATE TABLE IF NOT EXISTS feeds (
+                id            TEXT PRIMARY KEY,
+                workspace_id  TEXT    NOT NULL,
+                channel_id    TEXT,
+                feed_type     TEXT    NOT NULL,
+                is_public     INTEGER NOT NULL DEFAULT 0,
+                url_token     TEXT    NOT NULL UNIQUE,
+                title         TEXT,
+                access_count  INTEGER NOT NULL DEFAULT 0,
+                created_at    INTEGER NOT NULL,
+                last_accessed INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_feeds_workspace ON feeds(workspace_id);
             -- Per-schedule steering options (ADR-133 §B): prompt template /
             -- perspective / title template / continuity. Side-table so the core
             -- Schedule value object stays small (rolling_config precedent).

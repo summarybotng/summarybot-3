@@ -28,6 +28,14 @@ pub mod summarize;
 pub mod tenant_routing;
 pub mod whatsapp;
 pub mod wiki;
+/// A URL-safe random token (`n_bytes` of entropy), hex-encoded. Always available
+/// (unlike the `oauth`-feature-gated variant) — used for feed tokens (ADR-133 A4).
+pub fn random_url_token(n_bytes: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; n_bytes];
+    getrandom::getrandom(&mut buf).map_err(|e| e.to_string())?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 pub use auth::{new_correlation_id, verify_token, AuthError, AuthService, TokenPair};
 pub use coverage::{
     cancel_invitation, content_coverage, contributors_for, coverage_for, list_invitations,

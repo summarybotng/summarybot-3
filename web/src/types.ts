@@ -249,6 +249,20 @@ export interface RetrospectiveResult {
   truncated: boolean
 }
 
+/** An RSS feed of summaries (ADR-133 A4). */
+export interface Feed {
+  id: string
+  channel_id: string | null
+  feed_type: string
+  is_public: boolean
+  title: string | null
+  access_count: number
+  created_at: number
+  last_accessed: number | null
+  /** Public URL path (`/feeds/<token>`). */
+  url: string
+}
+
 /** Workspace overview / dashboard home (ADR-133 A6). */
 export interface Overview {
   summary_count: number

@@ -21,6 +21,7 @@ import type {
   PromptTemplate,
   Errors as ErrorsData,
   Overview,
+  Feed,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -397,6 +398,19 @@ export class Client {
   /** Workspace overview / dashboard home (ADR-133 A6). */
   overview(): Promise<Overview> {
     return this.json<Overview>(`/workspaces/${this.ws()}/overview`)
+  }
+
+  /** RSS feeds of summaries (ADR-133 A4). */
+  listFeeds(): Promise<Feed[]> {
+    return this.json<Feed[]>(`/workspaces/${this.ws()}/feeds`)
+  }
+
+  createFeed(input: { channel_id?: string | null; title?: string | null; is_public?: boolean }): Promise<Feed> {
+    return this.json<Feed>(`/workspaces/${this.ws()}/feeds`, this.body('POST', input))
+  }
+
+  deleteFeed(id: string): Promise<{ removed: boolean }> {
+    return this.json<{ removed: boolean }>(`/workspaces/${this.ws()}/feeds/${id}`, { method: 'DELETE' })
   }
 
   /** Server-wide + per-channel summary coverage (ADR-133). */
