@@ -77,3 +77,78 @@ pub async fn list_jobs(
             .collect(),
     ))
 }
+
+/// `POST /workspaces/:ws/jobs/:id/retry` — re-run a job (ADR-133 D1). Our jobs
+/// wrap *synchronous* work, so only a **scheduled** job can be replayed: we
+/// re-fire its originating schedule (same path as a manual trigger), which
+/// records a fresh job. Other types (ad-hoc summaries, sync) aren't replayable
+/// from the job row alone — re-run them from their own screen. There is no
+/// pause/resume: nothing sits mid-flight in a synchronous model (recurring
+/// cadence is paused on the Schedules screen).
+pub async fn retry_job(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use host::llm::ResilientLlm;
+    use host::{ScheduleRunner, SummarizingScheduleRunner};
+    use repository::{JobRepository, ScheduleRepository, StructuredSummaryRepository};
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let job_id = domain::JobId::parse(id).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let now = crate::auth::now_secs();
+
+    let job = {
+        let repo = state.repo.lock().expect("repo mutex");
+        repo.get_job(&workspace, &job_id)
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or(ApiError::NotFound)?
+    };
+    if job.job_type != domain::JobType::Scheduled {
+        return Err(ApiError::bad_request(
+            "only scheduled jobs can be retried automatically — re-run others from their screen",
+        ));
+    }
+    let Some(schedule_id) = job.schedule_name.clone() else {
+        return Err(ApiError::bad_request("job has no originating schedule to retry"));
+    };
+
+    let repo = state.repo.lock().expect("repo mutex");
+    let resolution = crate::resolve_llm(&repo, &workspace, &state.model, state.master_key());
+    let charge = crate::budget_gate(&repo, &resolution, now)?;
+    let engine = ResilientLlm::new(
+        state.client_for_base(resolution.base_url, resolution.api_key),
+        state.limiter.clone(),
+    );
+    let ladder = state.ladder_for(&resolution.model);
+    let stored = repo
+        .get_schedule(&workspace, &schedule_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::bad_request("the originating schedule no longer exists"))?;
+    let deliverers = state.deliverers();
+    let runner = SummarizingScheduleRunner::new(&*repo, &engine, &ladder)
+        .with_delivery(&deliverers, state.master_key().copied())
+        .with_knowledge(&*state.embedder);
+    runner
+        .run(&stored, now)
+        .map_err(|e| ApiError::Internal(format!("retry failed: {e}")))?;
+    let produced = repo
+        .get_record(&workspace, &format!("sum_{schedule_id}_{now}"))
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    if let Some(rec) = &produced {
+        crate::knowledge::ingest_summary(
+            &state,
+            &repo,
+            &workspace,
+            &rec.summary,
+            &rec.id,
+            rec.channel_id.as_ref().map(|c| c.as_str()),
+            now,
+        );
+        if let Some((tenant, window)) = &charge {
+            crate::budget_charge(&repo, tenant, *window, rec.cost_micros)?;
+        }
+    }
+    Ok(Json(serde_json::json!({ "produced": produced.map(|r| r.id) })))
+}

@@ -398,6 +398,14 @@ export class Client {
     return this.json<Job[]>(`/workspaces/${this.ws()}/jobs?limit=${limit}`)
   }
 
+  /** Re-run a (scheduled) job by re-firing its schedule (ADR-133 D1). */
+  retryJob(id: string): Promise<{ produced: string | null }> {
+    return this.json<{ produced: string | null }>(
+      `/workspaces/${this.ws()}/jobs/${id}/retry`,
+      this.body('POST', {}),
+    )
+  }
+
   /** Workspace overview / dashboard home (ADR-133 A6). */
   overview(): Promise<Overview> {
     return this.json<Overview>(`/workspaces/${this.ws()}/overview`)

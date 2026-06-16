@@ -435,6 +435,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/workspaces/:ws/issues/:id/status", post(issues::set_issue_status))
         .route("/workspaces/:ws/coverage", get(coverage::coverage))
+        .route("/workspaces/:ws/jobs/:id/retry", post(jobs::retry_job))
         .route("/workspaces/:ws/errors", get(errors::list_errors))
         .route(
             "/workspaces/:ws/errors/resolve-all",

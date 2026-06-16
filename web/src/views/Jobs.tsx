@@ -242,6 +242,22 @@ export function Jobs() {
                   )}
                   <dt className="text-slate-400">ID</dt>
                   <dd className="break-all font-mono">{j.id}</dd>
+                  {j.job_type === 'scheduled' && (
+                    <>
+                      <dt className="text-slate-400">Actions</dt>
+                      <dd>
+                        <button
+                          onClick={async () => {
+                            await client?.retryJob(j.id)
+                            await load()
+                          }}
+                          className="rounded border border-slate-300 px-2 py-0.5 text-xs hover:bg-slate-50"
+                        >
+                          🔁 Retry (re-run schedule)
+                        </button>
+                      </dd>
+                    </>
+                  )}
                 </dl>
               )}
             </li>
