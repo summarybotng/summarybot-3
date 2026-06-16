@@ -427,7 +427,7 @@ async fn regenerate_core(
     // Load the original + its recorded source window.
     let original = {
         let repo = state.repo.lock().expect("repo mutex");
-        repo.get_record(&workspace, &id)
+        repo.get_record(&workspace, id)
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or(ApiError::NotFound)?
     };
@@ -566,7 +566,7 @@ async fn regenerate_core(
             crate::budget_charge(&repo, tenant, *window, record.cost_micros)?;
         }
         crate::knowledge::ingest_summary(
-            &state,
+            state,
             &repo,
             &workspace,
             &record.summary,
