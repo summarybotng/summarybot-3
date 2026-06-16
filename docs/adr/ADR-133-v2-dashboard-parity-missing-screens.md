@@ -12,7 +12,10 @@
   perspective+kind facets & Calendar; Channels bot-accessibility. Live-only
   follow-ups: Discord channel-permission resolution; per-summary Length filtering;
   host-side error recording at scheduled-run/delivery sites; live fan-out delivery
-  status (test-send is recorded today).
+  status (test-send is recorded today). **§D (in-screen actions)** added
+  2026-06-15 after an action-level re-audit — Report-Issue (ADR-039) shipped;
+  D1–D5 (Jobs pause/resume/retry, per-summary publish/push + bulk, report-issue
+  fidelity, minor affordances) pending.
 - **Deciders**: Martin Cleaver
 - **Related**: ADR-013/040 (jobs), ADR-072/112/121 (coverage), ADR-067/077/090/127
   (wiki/knowledge), ADR-088/089/101 (retrospective/rolling), ADR-126 (delivery
@@ -123,6 +126,25 @@ existing feature-flag conventions where it needs new I/O.
   **operator plugin veto** (ADR-131).
 
 These stay. Parity work must not flatten them back to v2's level.
+
+### D. In-screen actions (verbs on existing objects)
+
+The §A/§B audit enumerated *screens* (nouns) well but *actions* (verbs on an
+object) poorly — the Report-Issue miss was the first symptom (now shipped as
+ADR-039: `problem_reports` + `/issues` + the "Report a problem" button + Issues
+triage tab). A re-walk of the live v2 bundle for action labels surfaced the rest.
+Build these as `host`/`api`/web increments; each is a verb on a job/summary.
+
+| # | Action | v2 behavior | Status |
+|---|--------|-------------|--------|
+| D1 | **Jobs: Pause / Resume / Retry** | Per-job operational controls ("Job paused/resumed successfully", "Retry job created"). | ❌ — we track status + show buckets/details, but expose no job actions (our only `resume` is for *schedules*). `Job::pause` exists for restart recovery; add user-facing pause/resume + retry (re-enqueue) endpoints + Jobs-view buttons. |
+| D2 | **Per-summary Publish to Confluence / Push to Google Drive (+ open, unpublish, bulk)** | On-demand publish/push of a *stored* summary, plus "Open in Drive" and bulk publish/unpublish (ADR-110). | ❌ — we model Confluence/Drive only as *scheduled delivery destinations*. Add `POST /summaries/:id/publish` (kind=confluence/gdrive) reusing the deliverers, store the returned URL, and a per-summary action + bulk. |
+| D3 | **Bulk summary Regenerate / Publish** | Bulk regenerate + bulk publish/unpublish over selected summaries. | ❌ — we have bulk *delete* + *archive* and *single* regenerate; add bulk regenerate + bulk publish (pairs with D2). |
+| D4 | **Report-Issue fidelity deltas** | v2's report carries **severity** (and the Issues list filters by it — "All Severity"), auto-captured **browser/real page URL**, and a **paginated list with status/type/severity filters**; issues also link to a public GitHub tracker (ADR-070). | 🟡 — we shipped the core (category + description + page-hash + triage). Missing vs v2: `severity` field+filter, real `browser_info`/page URL capture, list pagination + type/severity filters, GitHub linkage. |
+| D5 | *(minor)* Feed **Preview** sheet; **Duplicate** prompt template; **Export Settings**; Coverage **"Full refresh"** recompute. | Small affordances. | ❌ — low value; do last or skip. |
+
+Known deferrals (already recorded elsewhere, not new): Slack OAuth install flow
+(bot-token path works), Discord channel-permission accessibility (Slack works).
 
 ## Priority / sequencing
 
