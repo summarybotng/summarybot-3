@@ -408,6 +408,14 @@ pub fn build_router(state: AppState) -> Router {
             "/workspaces/:ws/summaries/:id/regenerate",
             post(summaries::regenerate_summary),
         )
+        .route(
+            "/workspaces/:ws/summaries/:id/publish",
+            post(destinations::publish_summary),
+        )
+        .route(
+            "/workspaces/:ws/destinations/:id/publish",
+            post(destinations::bulk_publish),
+        )
         .route("/workspaces/:ws/events", get(events::workspace_events))
         .route(
             "/workspaces/:ws/settings",

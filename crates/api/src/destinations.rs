@@ -337,3 +337,117 @@ fn unique_suffix() -> u128 {
         .map(|d| d.as_nanos())
         .unwrap_or(0)
 }
+
+/// Publish an already-stored summary to one configured destination, on demand
+/// (ADR-133 D2). Resolves the destination's effective config exactly as a real
+/// delivery would, dispatches the rendered summary through its deliverer, and
+/// records the attempt's status. Returns Ok(()) on success, Err(msg) otherwise.
+fn publish_one(
+    state: &AppState,
+    repo: &repository::SqliteRepository,
+    workspace: &domain::WorkspaceId,
+    summary: &repository::SummaryRecord,
+    dest: &StoredDestination,
+    deliverers: &[Box<dyn host::Deliverer>],
+    master: Option<&[u8; 32]>,
+) -> Result<(), String> {
+    let config = decrypt_config(dest, master)
+        .and_then(|c| host::resolve_destination_config(repo, workspace, &dest.kind, c, master))
+        .ok_or_else(|| "destination config unreadable or disabled for this tenant".to_string())?;
+    let deliverer = deliverers
+        .iter()
+        .find(|d| d.id() == dest.kind)
+        .ok_or_else(|| format!("no '{}' deliverer in this build", dest.kind))?;
+    let rendered = host::RenderedSummary::new(&summary.summary);
+    let outcome = deliverer.deliver(&config, &rendered);
+    let now = crate::auth::now_secs();
+    let status = match &outcome {
+        Ok(()) => "published".to_string(),
+        Err(e) => format!("publish failed: {e}"),
+    };
+    let _ = repo.record_delivery_result(workspace, &dest.id, now, &status);
+    let _ = state; // (kept for symmetry / future event publish)
+    outcome
+}
+
+#[derive(serde::Deserialize)]
+pub struct PublishSummaryRequest {
+    pub destination_id: String,
+}
+
+/// `POST /workspaces/:ws/summaries/:id/publish` — publish one stored summary to a
+/// chosen destination (Confluence / Drive / webhook / …) on demand (ADR-133 D2).
+pub async fn publish_summary(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, id)): Path<(String, String)>,
+    Json(body): Json<PublishSummaryRequest>,
+) -> Result<Json<TestResult>, ApiError> {
+    use repository::StructuredSummaryRepository;
+    user.require_workspace(&ws)?;
+    let workspace = workspace(ws)?;
+    let master = state.master_key();
+    let deliverers = state.deliverers();
+    let repo = state.repo.lock().expect("repo mutex");
+    let summary = repo
+        .get_record(&workspace, &id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or(ApiError::NotFound)?;
+    let dest = repo
+        .list_destinations(&workspace)?
+        .into_iter()
+        .find(|d| d.id == body.destination_id)
+        .ok_or_else(|| ApiError::bad_request("unknown destination_id"))?;
+    match publish_one(&state, &repo, &workspace, &summary, &dest, &deliverers, master) {
+        Ok(()) => Ok(Json(TestResult { ok: true, detail: None })),
+        Err(e) => Ok(Json(TestResult { ok: false, detail: Some(e) })),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct BulkPublishRequest {
+    pub summary_ids: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct BulkPublishResult {
+    pub published: usize,
+    pub failed: usize,
+}
+
+/// `POST /workspaces/:ws/destinations/:id/publish` — publish a set of stored
+/// summaries to this destination (ADR-133 D2 bulk).
+pub async fn bulk_publish(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path((ws, dest_id)): Path<(String, String)>,
+    Json(body): Json<BulkPublishRequest>,
+) -> Result<Json<BulkPublishResult>, ApiError> {
+    use repository::StructuredSummaryRepository;
+    user.require_workspace(&ws)?;
+    let workspace = workspace(ws)?;
+    let master = state.master_key();
+    let deliverers = state.deliverers();
+    let repo = state.repo.lock().expect("repo mutex");
+    let dest = repo
+        .list_destinations(&workspace)?
+        .into_iter()
+        .find(|d| d.id == dest_id)
+        .ok_or_else(|| ApiError::bad_request("unknown destination id"))?;
+    let (mut published, mut failed) = (0usize, 0usize);
+    for sid in &body.summary_ids {
+        match repo.get_record(&workspace, sid) {
+            Ok(Some(summary)) => {
+                if publish_one(&state, &repo, &workspace, &summary, &dest, &deliverers, master)
+                    .is_ok()
+                {
+                    published += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+            _ => failed += 1,
+        }
+    }
+    Ok(Json(BulkPublishResult { published, failed }))
+}

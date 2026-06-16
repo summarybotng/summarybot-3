@@ -40,6 +40,9 @@ export function Summaries() {
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [liveFlash, setLiveFlash] = useState<string | null>(null)
+  // Enabled destinations for on-demand publish (ADR-133 D2).
+  const [dests, setDests] = useState<{ id: string; kind: string }[]>([])
+  const [publishMsg, setPublishMsg] = useState<string | null>(null)
   // Client-side facets over the loaded set (ADR-133 §B).
   const [kind, setKind] = useState('all')
   const [persp, setPersp] = useState('all')
@@ -68,6 +71,21 @@ export function Summaries() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    if (!client) return
+    client
+      .listDestinations()
+      .then((d) => setDests(d.filter((x) => x.enabled).map((x) => ({ id: x.id, kind: x.kind }))))
+      .catch(() => {})
+  }, [client])
+
+  async function publishTo(id: string, destId: string) {
+    if (!client || !destId) return
+    const r = await client.publishSummary(id, destId)
+    setPublishMsg(r.ok ? 'Published ✓' : `Publish failed: ${r.detail ?? 'error'}`)
+    setTimeout(() => setPublishMsg(null), 2500)
+  }
 
   // Live updates: prepend on create, drop on delete (deduped by id).
   useSSE(client?.eventsUrl() ?? '', client?.token() ?? '', !!client, (kind, data) => {
@@ -477,6 +495,27 @@ export function Summaries() {
                       <dd className="break-all font-mono">{s.id}</dd>
                     </dl>
                   </details>
+                  {dests.length > 0 && (
+                    <div className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                      <span>Publish to:</span>
+                      <select
+                        defaultValue=""
+                        onChange={(e) => {
+                          if (e.target.value) void publishTo(s.id, e.target.value)
+                          e.target.value = ''
+                        }}
+                        className="rounded border border-slate-300 px-1.5 py-1"
+                      >
+                        <option value="">choose destination…</option>
+                        {dests.map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.kind} ({d.id.slice(0, 8)})
+                          </option>
+                        ))}
+                      </select>
+                      {publishMsg && <span className="text-accent">{publishMsg}</span>}
+                    </div>
+                  )}
                 </div>
               )}
             </li>

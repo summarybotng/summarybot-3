@@ -234,6 +234,14 @@ export class Client {
     return this.json<void>(`/workspaces/${this.ws()}/summaries/${id}`, { method: 'DELETE' })
   }
 
+  /** Publish a stored summary to a configured destination on demand (ADR-133 D2). */
+  publishSummary(id: string, destinationId: string): Promise<DeliveryTestResult> {
+    return this.json<DeliveryTestResult>(
+      `/workspaces/${this.ws()}/summaries/${id}/publish`,
+      this.body('POST', { destination_id: destinationId }),
+    )
+  }
+
   /** Re-run a stored summary over its source window with changed params (ADR-133). */
   regenerateSummary(
     id: string,
