@@ -21,6 +21,7 @@ mod identity_claims;
 mod coverage;
 mod errors;
 mod feeds;
+mod issues;
 mod jobs;
 mod overview;
 mod prompts;
@@ -428,6 +429,11 @@ pub fn build_router(state: AppState) -> Router {
             get(feeds::list_feeds).post(feeds::create_feed),
         )
         .route("/workspaces/:ws/feeds/:id", delete(feeds::delete_feed))
+        .route(
+            "/workspaces/:ws/issues",
+            get(issues::list_issues).post(issues::create_issue),
+        )
+        .route("/workspaces/:ws/issues/:id/status", post(issues::set_issue_status))
         .route("/workspaces/:ws/coverage", get(coverage::coverage))
         .route("/workspaces/:ws/errors", get(errors::list_errors))
         .route(

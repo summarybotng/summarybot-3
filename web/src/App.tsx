@@ -21,6 +21,8 @@ import { Errors } from './views/Errors'
 import { Overview } from './views/Overview'
 import { Feeds } from './views/Feeds'
 import { RuVector } from './views/RuVector'
+import { Issues } from './views/Issues'
+import { ReportIssue } from './components/ReportIssue'
 
 type Tab =
   | 'overview'
@@ -42,6 +44,7 @@ type Tab =
   | 'members'
   | 'audit'
   | 'errors'
+  | 'issues'
   | 'settings'
 
 export default function App() {
@@ -133,6 +136,7 @@ export default function App() {
           ))}
         </nav>
 
+        <ReportIssue currentTab={tab} />
         <button
           onClick={signOut}
           className="border-t border-slate-100 px-4 py-3 text-left text-sm text-slate-500 hover:text-slate-800"
@@ -155,6 +159,7 @@ export default function App() {
         {tab === 'coverage' && <Coverage />}
         {tab === 'feeds' && <Feeds />}
         {tab === 'ruvector' && <RuVector />}
+        {tab === 'issues' && <Issues />}
         {tab === 'prompts' && <Prompts />}
         {tab === 'errors' && <Errors />}
         {tab === 'knowledge' && <Knowledge />}
@@ -171,5 +176,5 @@ export default function App() {
 const NAV: { section?: string; tabs: Tab[] }[] = [
   { tabs: ['overview', 'create', 'summaries', 'schedules', 'knowledge', 'ruvector', 'coverage', 'spend', 'jobs'] },
   { section: 'Sources', tabs: ['whatsapp', 'discord', 'slack'] },
-  { section: 'Admin', tabs: ['delivery', 'feeds', 'plugins', 'prompts', 'members', 'audit', 'errors', 'settings'] },
+  { section: 'Admin', tabs: ['delivery', 'feeds', 'plugins', 'prompts', 'members', 'audit', 'errors', 'issues', 'settings'] },
 ]

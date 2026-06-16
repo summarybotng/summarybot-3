@@ -249,6 +249,26 @@ export interface RetrospectiveResult {
   truncated: boolean
 }
 
+/** A user-submitted problem report (ADR-039). */
+export interface Issue {
+  id: string
+  category: string
+  description: string
+  resource_type: string | null
+  resource_id: string | null
+  page_url: string | null
+  reported_by: string | null
+  status: string
+  created_at: number
+}
+
+/** Problem reports payload (ADR-039). */
+export interface Issues {
+  open: number
+  categories: string[]
+  issues: Issue[]
+}
+
 /** Vector-store browser payload (ADR-133 A7 RuVector Explorer). */
 export interface Vectors {
   total: number

@@ -19,6 +19,7 @@ mod llm_config;
 mod membership;
 mod operational_error;
 mod platform_credential;
+mod problem_report;
 mod prompt_template;
 mod rolling_store;
 mod schedule;
@@ -45,6 +46,7 @@ pub use llm_config::{LlmConfigRepository, TenantLlmConfig};
 pub use membership::MembershipRepository;
 pub use operational_error::{OperationalError, OperationalErrorRepository};
 pub use platform_credential::PlatformCredentialRepository;
+pub use problem_report::{ProblemReport, ProblemReportRepository};
 pub use prompt_template::{PromptTemplate, PromptTemplateRepository};
 pub use rolling_store::{RollingConfig, RollingRepository, RollingSummaryRow};
 pub use schedule::{ScheduleRepository, StoredSchedule};
@@ -515,6 +517,22 @@ impl SqliteRepository {
                 last_accessed INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_feeds_workspace ON feeds(workspace_id);
+            -- User-submitted problem reports (ADR-039) — the Report-issue button;
+            -- distinct from the system-generated operational error log.
+            CREATE TABLE IF NOT EXISTS problem_reports (
+                id            TEXT PRIMARY KEY,
+                workspace_id  TEXT    NOT NULL,
+                category      TEXT    NOT NULL,
+                description   TEXT    NOT NULL,
+                resource_type TEXT,
+                resource_id   TEXT,
+                page_url      TEXT,
+                reported_by   TEXT,
+                status        TEXT    NOT NULL DEFAULT 'open',
+                created_at    INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_problem_reports_workspace
+                ON problem_reports(workspace_id, status, created_at);
             -- Per-schedule steering options (ADR-133 §B): prompt template /
             -- perspective / title template / continuity. Side-table so the core
             -- Schedule value object stays small (rolling_config precedent).

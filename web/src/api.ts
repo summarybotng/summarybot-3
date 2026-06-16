@@ -23,6 +23,8 @@ import type {
   Overview,
   Feed,
   Vectors,
+  Issue,
+  Issues,
   RetrospectiveResult,
   CoverageGap,
   ImportInvitation,
@@ -399,6 +401,30 @@ export class Client {
   /** Workspace overview / dashboard home (ADR-133 A6). */
   overview(): Promise<Overview> {
     return this.json<Overview>(`/workspaces/${this.ws()}/overview`)
+  }
+
+  /** User problem reports (ADR-039 "Report a problem"). */
+  listIssues(includeResolved = false): Promise<Issues> {
+    return this.json<Issues>(
+      `/workspaces/${this.ws()}/issues?include_resolved=${includeResolved}`,
+    )
+  }
+
+  createIssue(input: {
+    category: string
+    description: string
+    resource_type?: string | null
+    resource_id?: string | null
+    page_url?: string | null
+  }): Promise<Issue> {
+    return this.json<Issue>(`/workspaces/${this.ws()}/issues`, this.body('POST', input))
+  }
+
+  setIssueStatus(id: string, status: string): Promise<{ updated: boolean }> {
+    return this.json<{ updated: boolean }>(
+      `/workspaces/${this.ws()}/issues/${id}/status`,
+      this.body('POST', { status }),
+    )
   }
 
   /** Vector-store browser (ADR-133 A7). */
