@@ -105,7 +105,10 @@ fn to_dto(
         display_name: desc.display_name.to_string(),
         tenant_fields: desc.tenant_fields().map(field_dto).collect(),
         workspace_fields: desc.workspace_fields().map(field_dto).collect(),
-        enabled: row.map(|r| r.enabled).unwrap_or(false),
+        // Default-on (ADR-126): a plugin with no tenant row is enabled — matching
+        // the delivery gate, which only skips an *explicit* disable. So an
+        // untouched plugin shows as enabled rather than off.
+        enabled: row.map(|r| r.enabled).unwrap_or(true),
         configured,
         connected: row.map(|r| r.connected).unwrap_or(false),
         supports_connect: supports_connect(desc.id),
@@ -348,7 +351,10 @@ pub async fn set_operator_plugin(
     let current = repo.get_tenant_plugin(&tenant, &kind)?;
     let row = TenantPlugin {
         kind: kind.clone(),
-        enabled: current.as_ref().map(|r| r.enabled).unwrap_or(false),
+        // Default-on (ADR-126): vetoing a never-configured plugin leaves the
+        // tenant's own enablement at the default (enabled), so clearing the veto
+        // later restores it to on.
+        enabled: current.as_ref().map(|r| r.enabled).unwrap_or(true),
         config_enc: current.as_ref().and_then(|r| r.config_enc.clone()),
         connected: current.as_ref().map(|r| r.connected).unwrap_or(false),
         updated_at: now_secs(),

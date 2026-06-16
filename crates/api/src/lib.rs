@@ -1981,6 +1981,26 @@ mod tests {
         let app = build_router(state);
         let auth = format!("Bearer {token}");
 
+        // Default-on (ADR-126): a plugin with no tenant row lists as enabled.
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::get("/tenants/acme/plugins")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let lj = body_json(listed).await;
+        let untouched = lj
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["kind"] == "confluence")
+            .expect("confluence plugin listed");
+        assert_eq!(untouched["enabled"], true, "untouched plugin defaults to enabled");
+
         // Enable + configure Confluence credentials at the tenant level.
         let put = app
             .clone()
