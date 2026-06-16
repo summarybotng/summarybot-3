@@ -23,6 +23,36 @@ import { Feeds } from './views/Feeds'
 import { RuVector } from './views/RuVector'
 import { Issues } from './views/Issues'
 import { ReportIssue } from './components/ReportIssue'
+import {
+  LayoutDashboard, PlusCircle, FileText, CalendarClock, Rss, MessageSquare,
+  Hash, MessageCircle as SlackIcon, Send, Plug, BookOpen, Boxes, BarChart3, DollarSign,
+  ListChecks, Users, AlertTriangle, Bug, Settings as SettingsIcon,
+  History, MessagesSquare, type LucideIcon,
+} from 'lucide-react'
+
+const NAV_ICON: Record<Tab, LucideIcon> = {
+  overview: LayoutDashboard,
+  create: PlusCircle,
+  summaries: FileText,
+  schedules: CalendarClock,
+  feeds: Rss,
+  whatsapp: MessageSquare,
+  discord: Hash,
+  slack: SlackIcon,
+  delivery: Send,
+  plugins: Plug,
+  knowledge: BookOpen,
+  ruvector: Boxes,
+  coverage: BarChart3,
+  prompts: MessagesSquare,
+  spend: DollarSign,
+  jobs: ListChecks,
+  members: Users,
+  audit: History,
+  errors: AlertTriangle,
+  issues: Bug,
+  settings: SettingsIcon,
+}
 
 type Tab =
   | 'overview'
@@ -118,19 +148,23 @@ export default function App() {
                 </div>
               )}
               <div className="space-y-0.5">
-                {group.tabs.map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTab(t)}
-                    className={`block w-full rounded-lg px-3 py-1.5 text-left text-sm capitalize ${
-                      tab === t
-                        ? 'bg-accent/10 font-medium text-accent'
-                        : 'text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {t}
-                  </button>
-                ))}
+                {group.tabs.map((t) => {
+                  const Icon = NAV_ICON[t]
+                  return (
+                    <button
+                      key={t}
+                      onClick={() => setTab(t)}
+                      className={`flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left text-sm capitalize ${
+                        tab === t
+                          ? 'bg-accent/10 font-medium text-accent'
+                          : 'text-slate-600 hover:bg-slate-100'
+                      }`}
+                    >
+                      <Icon size={16} className="shrink-0" />
+                      {t}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           ))}
