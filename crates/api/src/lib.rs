@@ -405,6 +405,10 @@ pub fn build_router(state: AppState) -> Router {
             get(summaries::get_summary).delete(summaries::delete_summary),
         )
         .route(
+            "/workspaces/:ws/summaries/bulk-regenerate",
+            post(summaries::bulk_regenerate),
+        )
+        .route(
             "/workspaces/:ws/summaries/:id/regenerate",
             post(summaries::regenerate_summary),
         )

@@ -254,6 +254,25 @@ export function Summaries() {
             </option>
           ))}
         </select>
+        {(() => {
+          const regenerable = shown.filter((s) => s.period_end > s.period_start)
+          return regenerable.length > 0 ? (
+            <button
+              type="button"
+              onClick={async () => {
+                if (!client || !window.confirm(`Regenerate ${regenerable.length} summary(ies)?`)) return
+                const r = await client.bulkRegenerate(regenerable.map((s) => s.id))
+                setPublishMsg(`Regenerated ${r.regenerated}, skipped ${r.skipped}`)
+                setTimeout(() => setPublishMsg(null), 3000)
+                await load({ q, participant, tag, includeArchived })
+              }}
+              className="rounded-lg border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            >
+              ↻ Regenerate {regenerable.length}
+            </button>
+          ) : null
+        })()}
+        {publishMsg && <span className="text-xs text-accent">{publishMsg}</span>}
         <div className="ml-auto inline-flex overflow-hidden rounded-lg ring-1 ring-slate-300">
           {(['list', 'calendar'] as const).map((v) => (
             <button

@@ -401,13 +401,27 @@ pub async fn regenerate_summary(
     Path((ws, id)): Path<(String, String)>,
     Json(body): Json<RegenerateRequest>,
 ) -> Result<Json<SummaryDto>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let record = regenerate_core(&state, &workspace, &id, &body).await?;
+    Ok(Json(SummaryDto::from(record)))
+}
+
+/// Core of a single regenerate (ADR-133): re-run summary `id` over its recorded
+/// window with the request's steering, deliver + ingest, and return the new
+/// record. Shared by the single endpoint and bulk regenerate (D3).
+async fn regenerate_core(
+    state: &AppState,
+    workspace: &domain::WorkspaceId,
+    id: &str,
+    body: &RegenerateRequest,
+) -> Result<SummaryRecord, ApiError> {
     use host::llm::{LlmProvider, RequestPriority, ResilientLlm};
     use host::{SummarizationService, SummarizeRequest};
     use repository::{JobRepository, PromptTemplateRepository, WhatsAppRepository};
 
-    user.require_workspace(&ws)?;
-    let workspace =
-        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let workspace = workspace.clone();
     let now = crate::auth::now_secs();
 
     // Load the original + its recorded source window.
@@ -565,7 +579,56 @@ pub async fn regenerate_summary(
         let _ = repo.update_job(&job);
     }
     state.publish(crate::LiveEvent::summary_created(&workspace, &record.id));
-    Ok(Json(SummaryDto::from(record)))
+    Ok(record)
+}
+
+/// `POST /workspaces/:ws/summaries/regenerate` — bulk regenerate (ADR-133 D3).
+/// Each id is regenerated independently with the shared steering; non-regenerable
+/// summaries (no window/channel) are counted as skipped rather than failing all.
+pub async fn bulk_regenerate(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(ws): Path<String>,
+    Json(body): Json<BulkRegenerateRequest>,
+) -> Result<Json<BulkRegenerateResult>, ApiError> {
+    user.require_workspace(&ws)?;
+    let workspace =
+        domain::WorkspaceId::parse(ws).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let opts = RegenerateRequest {
+        perspective: body.perspective.clone(),
+        prompt_template_id: body.prompt_template_id.clone(),
+        length: body.length.clone(),
+    };
+    let (mut regenerated, mut skipped) = (0usize, 0usize);
+    let mut new_ids = Vec::new();
+    for id in &body.ids {
+        match regenerate_core(&state, &workspace, id, &opts).await {
+            Ok(rec) => {
+                regenerated += 1;
+                new_ids.push(rec.id);
+            }
+            Err(_) => skipped += 1,
+        }
+    }
+    Ok(Json(BulkRegenerateResult { regenerated, skipped, new_ids }))
+}
+
+#[derive(Deserialize)]
+pub struct BulkRegenerateRequest {
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub perspective: Option<String>,
+    #[serde(default)]
+    pub prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub length: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BulkRegenerateResult {
+    pub regenerated: usize,
+    pub skipped: usize,
+    pub new_ids: Vec<String>,
 }
 
 /// A unique-enough id suffix from the clock (nanos).

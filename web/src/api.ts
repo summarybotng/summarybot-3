@@ -234,6 +234,14 @@ export class Client {
     return this.json<void>(`/workspaces/${this.ws()}/summaries/${id}`, { method: 'DELETE' })
   }
 
+  /** Bulk-regenerate a set of summaries with shared steering (ADR-133 D3). */
+  bulkRegenerate(
+    ids: string[],
+    opts: { perspective?: string; length?: string } = {},
+  ): Promise<{ regenerated: number; skipped: number; new_ids: string[] }> {
+    return this.json(`/workspaces/${this.ws()}/summaries/bulk-regenerate`, this.body('POST', { ids, ...opts }))
+  }
+
   /** Publish a stored summary to a configured destination on demand (ADR-133 D2). */
   publishSummary(id: string, destinationId: string): Promise<DeliveryTestResult> {
     return this.json<DeliveryTestResult>(
