@@ -523,10 +523,12 @@ impl SqliteRepository {
                 id            TEXT PRIMARY KEY,
                 workspace_id  TEXT    NOT NULL,
                 category      TEXT    NOT NULL,
+                severity      TEXT    NOT NULL DEFAULT 'medium',
                 description   TEXT    NOT NULL,
                 resource_type TEXT,
                 resource_id   TEXT,
                 page_url      TEXT,
+                browser       TEXT,
                 reported_by   TEXT,
                 status        TEXT    NOT NULL DEFAULT 'open',
                 created_at    INTEGER NOT NULL
@@ -722,6 +724,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
     // Per-destination last delivery time + status (ADR-133 A5).
     ("0025_dest_last_delivery_at", "ALTER TABLE workspace_destinations ADD COLUMN last_delivery_at INTEGER"),
     ("0026_dest_last_status", "ALTER TABLE workspace_destinations ADD COLUMN last_status TEXT"),
+    // Report-issue fidelity (ADR-133 D4 / ADR-039): severity + captured browser.
+    ("0027_problem_reports_severity", "ALTER TABLE problem_reports ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium'"),
+    ("0028_problem_reports_browser", "ALTER TABLE problem_reports ADD COLUMN browser TEXT"),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose

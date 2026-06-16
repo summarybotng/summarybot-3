@@ -428,18 +428,25 @@ export class Client {
   }
 
   /** User problem reports (ADR-039 "Report a problem"). */
-  listIssues(includeResolved = false): Promise<Issues> {
-    return this.json<Issues>(
-      `/workspaces/${this.ws()}/issues?include_resolved=${includeResolved}`,
-    )
+  listIssues(
+    opts: { includeResolved?: boolean; severity?: string; limit?: number; offset?: number } = {},
+  ): Promise<Issues> {
+    const p = new URLSearchParams()
+    p.set('include_resolved', String(opts.includeResolved ?? false))
+    if (opts.severity) p.set('severity', opts.severity)
+    if (opts.limit != null) p.set('limit', String(opts.limit))
+    if (opts.offset != null) p.set('offset', String(opts.offset))
+    return this.json<Issues>(`/workspaces/${this.ws()}/issues?${p.toString()}`)
   }
 
   createIssue(input: {
     category: string
+    severity?: string
     description: string
     resource_type?: string | null
     resource_id?: string | null
     page_url?: string | null
+    browser?: string | null
   }): Promise<Issue> {
     return this.json<Issue>(`/workspaces/${this.ws()}/issues`, this.body('POST', input))
   }

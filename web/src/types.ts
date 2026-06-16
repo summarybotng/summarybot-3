@@ -253,10 +253,12 @@ export interface RetrospectiveResult {
 export interface Issue {
   id: string
   category: string
+  severity: string
   description: string
   resource_type: string | null
   resource_id: string | null
   page_url: string | null
+  browser: string | null
   reported_by: string | null
   status: string
   created_at: number
@@ -265,7 +267,10 @@ export interface Issue {
 /** Problem reports payload (ADR-039). */
 export interface Issues {
   open: number
+  /** Total matching the active filters (for pagination). */
+  total: number
   categories: string[]
+  severities: string[]
   issues: Issue[]
 }
 
