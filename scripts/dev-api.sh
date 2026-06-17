@@ -13,10 +13,21 @@ cd "$(dirname "$0")/.."
 ENV_FILE="${ENV_FILE:-.env.local}"
 if [[ -f "$ENV_FILE" ]]; then
   echo "==> loading $ENV_FILE"
-  set -a
-  # shellcheck disable=SC1090
-  source "$ENV_FILE"
-  set +a
+  # Parse KEY=VALUE literally (do NOT `source` — that evaluates the file as bash,
+  # so unquoted values with spaces/dates would be run as commands). Values are
+  # taken verbatim up to end-of-line; no quoting required.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Strip a leading "export " and surrounding whitespace; skip blanks/comments.
+    line="${line#"${line%%[![:space:]]*}"}"   # ltrim
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    line="${line#export }"
+    [[ "$line" != *=* ]] && continue
+    key="${line%%=*}"
+    val="${line#*=}"
+    key="$(printf '%s' "$key" | tr -d '[:space:]')"   # keys never contain spaces
+    [[ -z "$key" ]] && continue
+    export "$key=$val"
+  done < "$ENV_FILE"
 else
   echo "==> no $ENV_FILE found — using demo defaults (set SECRET_KEY at minimum)"
 fi
