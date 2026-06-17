@@ -26,6 +26,9 @@ if [[ -f "$ENV_FILE" ]]; then
     val="${line#*=}"
     key="$(printf '%s' "$key" | tr -d '[:space:]')"   # keys never contain spaces
     [[ -z "$key" ]] && continue
+    # A blank value (e.g. `LLM_MODEL=`) means "unset" — skip it so it neither
+    # clobbers a value already exported into this env nor sends an empty string.
+    [[ -z "$val" ]] && continue
     export "$key=$val"
   done < "$ENV_FILE"
 else
