@@ -42,6 +42,16 @@ to reflect this; `HttpLlmClient::openrouter(key)` remains a convenience ctor.
 hard-coded `"demo"`. Dev points the model at whatever the Mac mini serves
 (e.g. `llama3.1`); OpenRouter points it at a hosted model id.
 
+> **Defaults & failure modes (added 2026-06-17, ADR-134).** "Comes from config"
+> left the *no-model-set* case undefined, and the implementation defaulted it to
+> the literal `"demo"` — which a real provider rejects (`Llm(InvalidRequest)`).
+> Resolved: an explicit `LLM_MODEL` wins; otherwise the **default is
+> backend-aware** — OpenRouter → `anthropic/claude-3.5-haiku` (economical current
+> Claude, like v2's baked-in default), a local `LLM_BASE_URL` must still pin its
+> deployment-specific model name, and the demo backend keeps `"demo"`. General
+> rule for every rung here: a rung that resolves a *backend* must also resolve a
+> usable *model*, or fail loudly — never silently fall back to a demo constant.
+
 **3. LLM provider configuration is resolved per tenant, with a defined
 precedence** (the "who pays" model):
 
