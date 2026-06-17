@@ -12,6 +12,11 @@ CLAUDE.md.pre-ruflo*
 web/node_modules
 web/dist
 
+# Local secrets / env — never commit (only the *.example template is tracked)
+.env
+.env.local
+.env.*.local
+
 # Local SQLite databases (demo/dev runtime data + WAL/SHM sidecars)
 *.db
 *.db-wal
