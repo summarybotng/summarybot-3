@@ -78,12 +78,16 @@ The "show what's wrong" behavior v2 had, ported to the rewrite:
   when any failed, an amber panel ("25 of 44 channels couldn't be read — fix the
   access below, then sync again") with the per-channel reasons.
 
-Still pending from this cluster: **pre-flight accessibility** (ADR-097) for
-Discord — populating `ChannelInfo.accessible` by resolving the bot's per-channel
-permissions in the channel directory, so the browser shows read access *before*
-a sync. Slack already reports it via `is_member`; Discord needs permission-
-overwrite math (guild roles + bot member roles + channel overwrites) and is the
-larger follow-on.
+- **Pre-flight accessibility (ADR-097).** Discord's channel directory now
+  populates `ChannelInfo.accessible` by resolving the bot's effective per-channel
+  permissions (`discord.rs::can_read_channel` + `channel_access_map`): base
+  `@everyone` + bot-role perms with an `ADMINISTRATOR` bypass, then channel
+  overwrites (`@everyone` → union of the bot's role overwrites → member overwrite),
+  checking `VIEW_CHANNEL` ∧ `READ_MESSAGE_HISTORY`. The browser already renders a
+  "🔒 no access" badge + disabled checkbox for `accessible == false`, so unreadable
+  channels are flagged *before* a sync (Slack already did this via `is_member`).
+  The permission math is the bug-prone part and is unit-tested; the live wiring is
+  best-effort (any roles/member fetch failure leaves `accessible` as `None`).
 
 ### §4. The nets that catch the class
 

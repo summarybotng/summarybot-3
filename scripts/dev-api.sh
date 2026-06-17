@@ -35,9 +35,11 @@ else
   echo "==> no $ENV_FILE found — using demo defaults (set SECRET_KEY at minimum)"
 fi
 
-# Sensible local defaults if the env file didn't set them.
+# Sensible local defaults if the env file didn't set them. The DB lives in the
+# repo (gitignored *.db), NOT /tmp — /tmp gets cleaned and silently wipes the
+# bot token + dev data (which then reads as "no token set").
 export API_BIND="${API_BIND:-127.0.0.1:8080}"
-export DATABASE_URL="${DATABASE_URL:-/tmp/sbverify.db}"
+export DATABASE_URL="${DATABASE_URL:-dev.db}"
 export OAUTH_REDIRECT_BASE="${OAUTH_REDIRECT_BASE:-http://localhost:8080}"
 
 # Feature set: real LLM + OAuth connect + all delivery sinks.

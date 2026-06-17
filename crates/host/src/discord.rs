@@ -108,10 +108,76 @@ pub fn parse_channel_directory(channels: &serde_json::Value) -> Vec<crate::platf
                 category_id: parent_id.map(|s| s.to_string()),
                 // Discord accessibility needs permission-overwrite resolution
                 // against the bot's roles (ADR-097); unknown from the list alone.
+                // Filled in by `DiscordFetcher::channel_directory` when the bot's
+                // roles + guild roles resolve.
                 accessible: None,
             })
         })
         .collect()
+}
+
+/// Discord permission bits we care about for *reading* a channel (ADR-097).
+const PERM_ADMINISTRATOR: u64 = 1 << 3;
+const PERM_VIEW_CHANNEL: u64 = 1 << 10;
+const PERM_READ_MESSAGE_HISTORY: u64 = 1 << 16;
+
+/// Compute whether the bot can read a channel's history, following Discord's
+/// permission resolution (ADR-097 / v2 parity): base = the `@everyone` role perms
+/// OR'd with each of the bot's role perms; `ADMINISTRATOR` short-circuits to true;
+/// then channel overwrites apply in order — `@everyone`, then the union of the
+/// bot's role overwrites, then the bot's member overwrite. Read access needs both
+/// `VIEW_CHANNEL` and `READ_MESSAGE_HISTORY`. Permission bitfields arrive as
+/// strings (they can exceed 53 bits), so callers parse them to `u64`.
+pub fn can_read_channel(
+    guild_id: &str,
+    bot_user_id: &str,
+    bot_role_ids: &[String],
+    role_base_perms: &std::collections::HashMap<String, u64>,
+    overwrites: &serde_json::Value,
+) -> bool {
+    // Base permissions: @everyone (role id == guild id) + each of the bot's roles.
+    let mut perms = role_base_perms.get(guild_id).copied().unwrap_or(0);
+    for r in bot_role_ids {
+        perms |= role_base_perms.get(r).copied().unwrap_or(0);
+    }
+    if perms & PERM_ADMINISTRATOR != 0 {
+        return true; // admins bypass channel overwrites entirely
+    }
+    let ows = overwrites.as_array().cloned().unwrap_or_default();
+    let bits = |o: &serde_json::Value, k: &str| -> u64 {
+        o.get(k)
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let is_role = |o: &serde_json::Value| o.get("type").and_then(|t| t.as_i64()) == Some(0);
+    let is_member = |o: &serde_json::Value| o.get("type").and_then(|t| t.as_i64()) == Some(1);
+    let id_of = |o: &serde_json::Value| o.get("id").and_then(|x| x.as_str()).map(str::to_string);
+
+    // 1) @everyone channel overwrite.
+    if let Some(ev) = ows.iter().find(|o| is_role(o) && id_of(o).as_deref() == Some(guild_id)) {
+        perms &= !bits(ev, "deny");
+        perms |= bits(ev, "allow");
+    }
+    // 2) Union of the bot's role overwrites (deny first, then allow).
+    let (mut allow, mut deny) = (0u64, 0u64);
+    for o in ows.iter().filter(|o| is_role(o)) {
+        match id_of(o) {
+            Some(id) if id != guild_id && bot_role_ids.iter().any(|r| r == &id) => {
+                allow |= bits(o, "allow");
+                deny |= bits(o, "deny");
+            }
+            _ => {}
+        }
+    }
+    perms &= !deny;
+    perms |= allow;
+    // 3) The bot's member-specific overwrite.
+    if let Some(m) = ows.iter().find(|o| is_member(o) && id_of(o).as_deref() == Some(bot_user_id)) {
+        perms &= !bits(m, "deny");
+        perms |= bits(m, "allow");
+    }
+    perms & PERM_VIEW_CHANNEL != 0 && perms & PERM_READ_MESSAGE_HISTORY != 0
 }
 
 /// Parse one Discord message object into a [`NormalizedMessage`]. Returns `None`
@@ -441,7 +507,78 @@ mod live {
 
         fn channel_directory(&self) -> Result<Vec<ChannelInfo>, String> {
             let url = format!("{API_BASE}/guilds/{}/channels", self.guild_id);
-            Ok(super::parse_channel_directory(&self.get(&url)?))
+            let channels = self.get(&url)?;
+            let mut dir = super::parse_channel_directory(&channels);
+            // Pre-flight accessibility (ADR-097): best-effort — if we can resolve
+            // the bot's roles + the guild roles, compute per-channel read access so
+            // the browser shows it *before* a sync. Any failure leaves `accessible`
+            // as None rather than breaking the directory.
+            if let Ok(access) = self.channel_access_map(&channels) {
+                for c in &mut dir {
+                    c.accessible = access.get(c.id.as_str()).copied();
+                }
+            }
+            Ok(dir)
+        }
+    }
+
+    impl DiscordFetcher {
+        /// Resolve per-channel read access (ADR-097). Fetches the bot's user id,
+        /// the guild roles (id → permission bitfield), and the bot's member roles,
+        /// then applies [`can_read_channel`] over each text channel's overwrites.
+        fn channel_access_map(
+            &self,
+            channels: &serde_json::Value,
+        ) -> Result<std::collections::HashMap<String, bool>, String> {
+            use std::collections::HashMap;
+            let me = self.get(&format!("{API_BASE}/users/@me"))?;
+            let bot_id = me
+                .get("id")
+                .and_then(|x| x.as_str())
+                .ok_or("no bot user id")?
+                .to_string();
+            let roles = self.get(&format!("{API_BASE}/guilds/{}/roles", self.guild_id))?;
+            let mut role_perms: HashMap<String, u64> = HashMap::new();
+            for r in roles.as_array().ok_or("roles: expected array")? {
+                if let (Some(id), Some(p)) = (
+                    r.get("id").and_then(|x| x.as_str()),
+                    r.get("permissions")
+                        .and_then(|x| x.as_str())
+                        .and_then(|s| s.parse::<u64>().ok()),
+                ) {
+                    role_perms.insert(id.to_string(), p);
+                }
+            }
+            let member = self.get(&format!(
+                "{API_BASE}/guilds/{}/members/{}",
+                self.guild_id, bot_id
+            ))?;
+            let bot_roles: Vec<String> = member
+                .get("roles")
+                .and_then(|x| x.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+
+            let mut out = HashMap::new();
+            if let Some(arr) = channels.as_array() {
+                let empty = serde_json::Value::Array(vec![]);
+                for c in arr.iter().filter(|c| is_text_channel(c)) {
+                    if let Some(id) = c.get("id").and_then(|x| x.as_str()) {
+                        let ows = c.get("permission_overwrites").unwrap_or(&empty);
+                        out.insert(
+                            id.to_string(),
+                            super::can_read_channel(
+                                &self.guild_id,
+                                &bot_id,
+                                &bot_roles,
+                                &role_perms,
+                                ows,
+                            ),
+                        );
+                    }
+                }
+            }
+            Ok(out)
         }
     }
 
@@ -505,6 +642,42 @@ mod tests {
         assert!(is_text_channel(&json!({"type": 5}))); // announcement
         assert!(!is_text_channel(&json!({"type": 2}))); // voice
         assert!(!is_text_channel(&json!({"type": 4}))); // category
+    }
+
+    #[test]
+    fn channel_access_resolution() {
+        use std::collections::HashMap;
+        let guild = "1"; // @everyone role id == guild id
+        let bot = "999";
+        // VIEW_CHANNEL (1<<10) | READ_MESSAGE_HISTORY (1<<16) = 0x10400.
+        let read = (1u64 << 10) | (1u64 << 16);
+
+        // 1) @everyone grants read, no overwrites, bot has no extra roles → yes.
+        let mut roles = HashMap::new();
+        roles.insert(guild.to_string(), read);
+        assert!(can_read_channel(guild, bot, &[], &roles, &json!([])));
+
+        // 2) @everyone grants nothing, but a bot role does → yes.
+        let mut roles2 = HashMap::new();
+        roles2.insert(guild.to_string(), 0);
+        roles2.insert("42".to_string(), read);
+        assert!(can_read_channel(guild, bot, &["42".into()], &roles2, &json!([])));
+
+        // 3) Base grants read, but a channel @everyone overwrite denies VIEW → no.
+        let deny_view = json!([{"id": guild, "type": 0, "allow": "0", "deny": "1024"}]); // 1<<10
+        assert!(!can_read_channel(guild, bot, &[], &roles, &deny_view));
+
+        // 4) ADMINISTRATOR (1<<3) bypasses an explicit channel deny → yes.
+        let mut admin = HashMap::new();
+        admin.insert(guild.to_string(), 1u64 << 3);
+        assert!(can_read_channel(guild, bot, &[], &admin, &deny_view));
+
+        // 5) Role overwrite denies, but a member overwrite re-allows → yes.
+        let ow = json!([
+            {"id": "42", "type": 0, "allow": "0", "deny": "66560"},        // role denies read
+            {"id": bot,  "type": 1, "allow": "66560", "deny": "0"},        // member re-allows
+        ]);
+        assert!(can_read_channel(guild, bot, &["42".into()], &roles, &ow));
     }
 
     #[test]
