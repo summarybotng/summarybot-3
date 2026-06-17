@@ -148,6 +148,9 @@ pub struct SyncRequest {
 #[derive(Serialize)]
 pub struct SyncErrorDto {
     pub channel: String,
+    /// Human channel name when resolvable (ADR-134 / v2 ADR-041), so the UI can
+    /// say "#admins" rather than a raw snowflake id.
+    pub channel_name: Option<String>,
     pub message: String,
 }
 
@@ -155,6 +158,12 @@ pub struct SyncErrorDto {
 pub struct SyncResponse {
     /// Channels fetched from (their ids — the UI can summarize each directly).
     pub channel_ids: Vec<String>,
+    /// Total channels the sync attempted (= read OK + failed).
+    pub channels_total: usize,
+    /// Channels that could not be read (e.g. missing permission). Surfaced so the
+    /// UI can show "completed with N unreadable channels" rather than a bare
+    /// success (ADR-134 / v2 ADR-041 partial-access reporting).
+    pub channels_failed: usize,
     /// Messages fetched within the window.
     pub fetched: usize,
     /// Newly stored (idempotent: re-syncing the same window stores 0).
@@ -241,7 +250,8 @@ pub async fn sync(
     .with_date_range(start, now);
     let _ = job.start(now);
 
-    // Fetch + persist via the shared helper (also used by the scheduler).
+    // Fetch + persist via the shared helper (also used by the scheduler). Keep
+    // the repo lock only around DB work — never across the network calls below.
     let report = {
         use repository::JobRepository;
         let repo = state.repo.lock().expect("repo mutex");
@@ -251,19 +261,6 @@ pub async fn sync(
                 job.set_progress(r.stored as u32, r.fetched as u32, crate::auth::now_secs());
                 let _ = job.complete(0, crate::auth::now_secs());
                 let _ = repo.update_job(&job);
-                // Per-channel fetch failures are soft-fails (ADR-041/097): the
-                // sync succeeds over what it could read, and each unreadable
-                // channel is recorded for the Errors view (ADR-133/031).
-                for (channel, message) in &r.errors {
-                    crate::errors::record_operational_error(
-                        &repo,
-                        &workspace,
-                        "sync",
-                        domain::FailureClass::Unknown,
-                        Some(channel.clone()),
-                        format!("could not read channel during {} sync: {message}", platform.as_str()),
-                    );
-                }
                 r
             }
             Err(e) => {
@@ -282,14 +279,72 @@ pub async fn sync(
         }
     };
 
+    // Resolve channel id → name for any failures so the UI and Errors log read
+    // "#admins" rather than a raw snowflake (ADR-134 / v2 ADR-041). Only fetch
+    // the directory when there's actually something to label, and never while
+    // holding the repo lock (it's a network call).
+    let channel_names: std::collections::HashMap<String, String> = if report.errors.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        fetcher
+            .channel_directory()
+            .map(|dir| {
+                dir.into_iter()
+                    .map(|c| (c.id.as_str().to_string(), c.name))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let name_of = |id: &str| channel_names.get(id).filter(|n| !n.is_empty()).cloned();
+    let label = |id: &str| match name_of(id) {
+        Some(n) => format!("#{n} ({id})"),
+        None => id.to_string(),
+    };
+
+    // Per-channel fetch failures are soft-fails (ADR-041/097): the sync succeeds
+    // over what it could read. Rather than one Errors-log row per channel (v2's
+    // "logs pile up with repetitive permission errors"), aggregate by distinct
+    // failure and record one row each, listing the affected channels by name.
+    if !report.errors.is_empty() {
+        let mut by_message: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (channel, message) in &report.errors {
+            by_message.entry(message.clone()).or_default().push(label(channel));
+        }
+        let repo = state.repo.lock().expect("repo mutex");
+        for (message, channels) in &by_message {
+            crate::errors::record_operational_error(
+                &repo,
+                &workspace,
+                "sync",
+                domain::FailureClass::Unknown,
+                channels.first().cloned(),
+                format!(
+                    "{} sync: {} channel(s) unreadable — {message}. Channels: {}",
+                    platform.as_str(),
+                    channels.len(),
+                    channels.join(", "),
+                ),
+            );
+        }
+    }
+
+    let channels_total = report.channel_ids.len();
+    let channels_failed = report.errors.len();
     Ok(Json(SyncResponse {
         channel_ids: report.channel_ids,
+        channels_total,
+        channels_failed,
         fetched: report.fetched,
         stored: report.stored,
         errors: report
             .errors
             .into_iter()
-            .map(|(channel, message)| SyncErrorDto { channel, message })
+            .map(|(channel, message)| SyncErrorDto {
+                channel_name: name_of(&channel),
+                channel,
+                message,
+            })
             .collect(),
     }))
 }

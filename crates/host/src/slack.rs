@@ -153,6 +153,38 @@ mod live {
     /// Cap pages per channel per fetch (v1 backfill bound).
     const MAX_PAGES: usize = 10;
 
+    /// Turn a Slack API `error` code into an actionable message (ADR-134). Slack
+    /// signals failure in the body (`{"ok":false,"error":"..."}`); the raw code
+    /// (e.g. `not_in_channel`) is cryptic, so map the common ones to a fix.
+    fn classify_slack_error(err: &str) -> String {
+        match err {
+            "not_in_channel" => {
+                "the bot isn't in this channel — invite it (`/invite @your-bot`) so it can \
+                 read history (slack: not_in_channel)"
+                    .to_string()
+            }
+            "channel_not_found" => {
+                "channel not found — it may be archived, deleted, or invisible to the bot \
+                 (slack: channel_not_found)"
+                    .to_string()
+            }
+            "missing_scope" => {
+                "the Slack token is missing a required scope — reinstall the app with \
+                 `channels:history` / `groups:history` (slack: missing_scope)"
+                    .to_string()
+            }
+            "invalid_auth" | "not_authed" | "token_revoked" | "token_expired" => {
+                format!("invalid or revoked Slack token (slack: {err})")
+            }
+            "account_inactive" => {
+                "the Slack app/bot is disabled for this workspace (slack: account_inactive)"
+                    .to_string()
+            }
+            "ratelimited" => "rate limited by Slack (slack: ratelimited)".to_string(),
+            other => format!("slack: {other}"),
+        }
+    }
+
     /// A Slack Web API fetcher authenticated with a bot token (`xoxb-…`). The
     /// token is workspace-scoped, so there's no team/guild id.
     pub struct SlackFetcher {
@@ -191,7 +223,7 @@ mod live {
                     .get("error")
                     .and_then(|e| e.as_str())
                     .unwrap_or("unknown");
-                return Err(format!("slack: {err}"));
+                return Err(classify_slack_error(err));
             }
             Ok(body)
         }
@@ -370,6 +402,29 @@ mod live {
                 }
             }
             Ok(out)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn not_in_channel_explains_the_invite() {
+            let m = classify_slack_error("not_in_channel");
+            assert!(m.contains("invite"), "{m}");
+            assert!(m.contains("not_in_channel"));
+        }
+
+        #[test]
+        fn missing_scope_names_the_scopes() {
+            let m = classify_slack_error("missing_scope");
+            assert!(m.contains("channels:history") || m.contains("groups:history"), "{m}");
+        }
+
+        #[test]
+        fn unknown_error_is_passed_through() {
+            assert_eq!(classify_slack_error("weird_new_error"), "slack: weird_new_error");
         }
     }
 }

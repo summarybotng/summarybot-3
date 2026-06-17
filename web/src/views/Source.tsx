@@ -398,16 +398,28 @@ export function Source({ platform }: { platform: Platform }) {
         {result && (
           <div className="mt-4 rounded-lg bg-accent/10 p-3 text-sm text-slate-700">
             Fetched <span className="font-medium">{result.fetched}</span> messages from{' '}
-            <span className="font-medium">{result.channel_ids.length}</span> channel(s),{' '}
+            <span className="font-medium">
+              {result.channels_total - result.channels_failed}
+            </span>{' '}
+            of <span className="font-medium">{result.channels_total}</span> channel(s),{' '}
             <span className="font-medium">{result.stored}</span> newly stored.
-            {result.errors.length > 0 && (
-              <ul className="mt-2 list-disc pl-5 text-xs text-red-600">
-                {result.errors.map((e, i) => (
-                  <li key={i}>
-                    #{e.channel}: {e.message}
-                  </li>
-                ))}
-              </ul>
+            {result.channels_failed > 0 && (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-amber-900">
+                <p className="font-medium">
+                  {result.channels_failed === result.channels_total
+                    ? `Couldn't read any of the ${result.channels_total} channel(s).`
+                    : `${result.channels_failed} of ${result.channels_total} channel(s) couldn't be read.`}{' '}
+                  Fix the access below, then sync again.
+                </p>
+                <ul className="mt-1 list-disc pl-5 text-xs">
+                  {result.errors.map((e, i) => (
+                    <li key={i}>
+                      <span className="font-medium">{e.channel_name ?? `#${e.channel}`}</span>:{' '}
+                      {e.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
             {result.channel_ids.length > 0 && (
               <div className="mt-3 flex flex-wrap gap-2">

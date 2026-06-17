@@ -204,6 +204,51 @@ mod live {
     /// away (v1; 10 pages = up to 1000 messages).
     const MAX_PAGES: usize = 10;
 
+    /// Turn a Discord REST error status into an *actionable* message rather than a
+    /// bare `http 403` (ADR-134 / v2 ADR-041). Discord returns a JSON body
+    /// `{ "message": "...", "code": <int> }` on most 4xx; we surface it and, for
+    /// the common permission case, say exactly what to fix. A 403 here means the
+    /// bot can't read the channel (it lacks "View Channel" / "Read Message
+    /// History", or a role/channel overwrite denies it) — note this is distinct
+    /// from the Message Content Intent, which returns 200 with empty content.
+    fn classify_discord_error(code: u16, resp: ureq::Response) -> String {
+        let body = resp.into_json::<serde_json::Value>().ok();
+        discord_error_message(code, body.as_ref())
+    }
+
+    /// Pure status→message mapping (split out so it's unit-testable without a live
+    /// `ureq::Response`). `body` is Discord's optional `{message, code}` JSON.
+    fn discord_error_message(code: u16, body: Option<&serde_json::Value>) -> String {
+        let dcode = body
+            .and_then(|b| b.get("code"))
+            .and_then(|c| c.as_i64());
+        let dmsg = body
+            .and_then(|b| b.get("message"))
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
+        let detail = match (dcode, dmsg) {
+            (Some(c), m) if !m.is_empty() => format!(" (Discord {c}: {m})"),
+            (Some(c), _) => format!(" (Discord code {c})"),
+            (None, m) if !m.is_empty() => format!(" ({m})"),
+            _ => String::new(),
+        };
+        match code {
+            401 => format!("invalid or expired bot token{detail}"),
+            403 => format!(
+                "the bot can't read this channel — grant it \"View Channel\" and \
+                 \"Read Message History\" in Discord (check the channel's role/permission \
+                 overwrites){detail}"
+            ),
+            404 => format!(
+                "channel or server not found — it may have been deleted, or the bot was \
+                 removed from the server{detail}"
+            ),
+            429 => format!("rate limited by Discord{detail}"),
+            500..=599 => format!("Discord service error (http {code}){detail}"),
+            _ => format!("http {code}{detail}"),
+        }
+    }
+
     /// A Discord REST fetcher scoped to one guild, authenticated with a bot token.
     pub struct DiscordFetcher {
         token: Secret<String>,
@@ -244,7 +289,9 @@ mod live {
                             (wait * 1000.0) as u64,
                         ));
                     }
-                    Err(ureq::Error::Status(code, _)) => return Err(format!("http {code}")),
+                    Err(ureq::Error::Status(code, resp)) => {
+                        return Err(classify_discord_error(code, resp))
+                    }
                     Err(ureq::Error::Transport(t)) => return Err(format!("transport: {t}")),
                 }
             }
@@ -405,6 +452,35 @@ mod live {
         let fetcher = DiscordFetcher::new(token.to_string(), String::new());
         let json = fetcher.get(&format!("{API_BASE}/users/@me/guilds"))?;
         Ok(super::parse_guilds(&json))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        #[test]
+        fn forbidden_explains_the_permission_fix() {
+            let body = json!({"message": "Missing Access", "code": 50001});
+            let m = discord_error_message(403, Some(&body));
+            assert!(m.contains("Read Message History"), "should name the fix: {m}");
+            assert!(m.contains("View Channel"));
+            assert!(m.contains("50001") && m.contains("Missing Access"));
+        }
+
+        #[test]
+        fn unauthorized_points_at_the_token() {
+            let m = discord_error_message(401, None);
+            assert!(m.contains("token"), "{m}");
+        }
+
+        #[test]
+        fn unknown_status_still_surfaces_discord_detail() {
+            let body = json!({"message": "Unknown Channel", "code": 10003});
+            let m = discord_error_message(404, Some(&body));
+            assert!(m.contains("not found"));
+            assert!(m.contains("10003") && m.contains("Unknown Channel"));
+        }
     }
 }
 

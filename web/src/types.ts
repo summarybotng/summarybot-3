@@ -495,9 +495,13 @@ export interface IssuedInvite {
 
 export interface SourceSync {
   channel_ids: string[]
+  /** Channels attempted (= read OK + failed). */
+  channels_total: number
+  /** Channels that could not be read (e.g. missing permission). */
+  channels_failed: number
   fetched: number
   stored: number
-  errors: { channel: string; message: string }[]
+  errors: { channel: string; channel_name: string | null; message: string }[]
 }
 
 /** A server (Discord guild) the bot token can reach (WSP-006). */
