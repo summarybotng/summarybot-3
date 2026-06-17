@@ -34,10 +34,13 @@ async fn main() -> Result<()> {
     let mut state = AppState::with_llm(repo, Secret::new(secret.into_bytes()), llm, limiter)
         .with_base_domain(base_domain);
     // Summarization model name (ADR-125): whatever the configured backend serves
-    // (e.g. a Mac mini's `llama3.1`, or a hosted OpenRouter model id). Defaults to
-    // the deterministic demo model.
-    if let Some(model) = env::var("LLM_MODEL").ok().filter(|m| !m.trim().is_empty()) {
-        state = state.with_model(model.trim());
+    // (e.g. a Mac mini's `llama3.1`, or a hosted OpenRouter model id). An explicit
+    // `LLM_MODEL` always wins; otherwise pick a sensible default for the active
+    // backend so summaries work without model config (v2 parity — v2 shipped a
+    // baked-in Claude default and never asked the user to set one).
+    if let Some(model) = resolve_model() {
+        eprintln!("summarization model: {model}");
+        state = state.with_model(&model);
     }
     // Process-default model price (micros per 1k tokens) so platform-key spend
     // is measurable for per-tenant budgets (ADR-125 Phase 3). Default 0 (demo).
@@ -104,6 +107,44 @@ async fn main() -> Result<()> {
     eprintln!("SummaryBot API listening on {bind}");
     axum::serve(listener, app).await.context("serving")?;
     Ok(())
+}
+
+/// Economical, broadly-available current Claude model used as the default when
+/// OpenRouter is the backend and no `LLM_MODEL` is set (v2 defaulted to Claude).
+/// Overridable any time via `LLM_MODEL`.
+#[cfg(feature = "http-llm")]
+const DEFAULT_OPENROUTER_MODEL: &str = "anthropic/claude-3.5-haiku";
+
+/// Resolve the summarization model: an explicit `LLM_MODEL` always wins. Failing
+/// that, choose a default that matches the active backend so summaries work out
+/// of the box. A local `LLM_BASE_URL` still needs an explicit `LLM_MODEL` — its
+/// model name is deployment-specific (e.g. `qwen2.5:14b`) and can't be guessed —
+/// and the demo backend keeps the built-in `"demo"` id (it ignores the name).
+fn resolve_model() -> Option<String> {
+    if let Some(m) = env::var("LLM_MODEL")
+        .ok()
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+    {
+        return Some(m);
+    }
+    #[cfg(feature = "http-llm")]
+    {
+        let has_base = env::var("LLM_BASE_URL")
+            .ok()
+            .map(|b| !b.trim().is_empty())
+            .unwrap_or(false);
+        let has_openrouter = env::var("OPENROUTER_API_KEY")
+            .ok()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false);
+        // OpenRouter is selected only when there's no explicit base URL (see
+        // `select_llm`'s precedence) — match that here.
+        if !has_base && has_openrouter {
+            return Some(DEFAULT_OPENROUTER_MODEL.to_string());
+        }
+    }
+    None
 }
 
 /// Pick the process-default LLM backend from config (ADR-125, the "process
