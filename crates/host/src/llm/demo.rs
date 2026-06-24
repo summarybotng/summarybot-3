@@ -64,6 +64,7 @@ impl LlmClient for DemoLlmClient {
             model: "demo".to_string(),
             text: body.to_string(),
             finish_reason: FinishReason::Stop,
+            usage: None,
         })
     }
 }

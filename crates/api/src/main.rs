@@ -109,11 +109,13 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Economical, broadly-available current Claude model used as the default when
-/// OpenRouter is the backend and no `LLM_MODEL` is set (v2 defaulted to Claude).
-/// Overridable any time via `LLM_MODEL`.
+/// Economical, current Claude model used as the default when OpenRouter is the
+/// backend and no `LLM_MODEL` is set (v2 defaulted to Claude). Verified available
+/// on OpenRouter (ADR-134); the older `claude-3.5-haiku` slug was de-listed —
+/// a real-backend-only failure the live smoke test now guards. Override via
+/// `LLM_MODEL`.
 #[cfg(feature = "http-llm")]
-const DEFAULT_OPENROUTER_MODEL: &str = "anthropic/claude-3.5-haiku";
+const DEFAULT_OPENROUTER_MODEL: &str = "anthropic/claude-haiku-4.5";
 
 /// Resolve the summarization model: an explicit `LLM_MODEL` always wins. Failing
 /// that, choose a default that matches the active backend so summaries work out

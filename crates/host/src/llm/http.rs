@@ -10,7 +10,7 @@
 //!
 //! Feature-gated (`http-llm`) so the default build stays network-free.
 
-use super::engine::{LlmClient, LlmError, LlmRequest, LlmResponse};
+use super::engine::{LlmClient, LlmError, LlmRequest, LlmResponse, TokenUsage};
 use super::{classify_http_status, FailureClass, LlmProvider};
 use domain::summarize::FinishReason;
 use domain::Secret;
@@ -136,10 +136,42 @@ fn parse_success(request: &LlmRequest, response: ureq::Response) -> Result<LlmRe
         Some("content_filter") => FinishReason::ContentFilter,
         _ => FinishReason::Other,
     };
+    // Real token counts when the provider reports them (OpenAI/OpenRouter `usage`
+    // block). Both fields must be present and non-negative to count (ADR-134 #2);
+    // otherwise the caller falls back to character estimates.
+    let usage = parse_usage(&value);
     Ok(LlmResponse {
         model: request.model.clone(),
         text: text.to_string(),
         finish_reason,
+        usage,
+    })
+}
+
+/// Extract `usage.prompt_tokens` / `usage.completion_tokens` if the provider
+/// reported them. Tolerates either integer or string-encoded counts.
+fn parse_usage(value: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = value.get("usage")?;
+    let field = |k: &str| -> Option<i64> {
+        let v = usage.get(k)?;
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+    };
+    let prompt_tokens = field("prompt_tokens")?;
+    let completion_tokens = field("completion_tokens")?;
+    if prompt_tokens < 0 || completion_tokens < 0 {
+        return None;
+    }
+    // OpenRouter reports the real charge in `usage.cost` (USD). Convert to
+    // micro-dollars (1 USD = 1_000_000 µ$); absent/negative → None (estimate).
+    let cost_micros = usage
+        .get("cost")
+        .and_then(|c| c.as_f64())
+        .filter(|c| *c >= 0.0)
+        .map(|usd| (usd * 1_000_000.0).round() as i64);
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        cost_micros,
     })
 }
 
@@ -181,5 +213,27 @@ mod tests {
             c.endpoint(),
             "https://openrouter.ai/api/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn parses_usage_block_when_present() {
+        let v = serde_json::json!({
+            "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1200, "completion_tokens": 340, "cost": 0.000035}
+        });
+        let u = parse_usage(&v).expect("usage present");
+        assert_eq!(u.prompt_tokens, 1200);
+        assert_eq!(u.completion_tokens, 340);
+        assert_eq!(u.cost_micros, Some(35)); // 0.000035 USD → 35 µ$
+        // String-encoded counts (some gateways) parse too.
+        let s = serde_json::json!({"usage": {"prompt_tokens": "10", "completion_tokens": "5"}});
+        assert_eq!(parse_usage(&s).unwrap().completion_tokens, 5);
+    }
+
+    #[test]
+    fn missing_or_partial_usage_is_none() {
+        assert!(parse_usage(&serde_json::json!({"choices": []})).is_none());
+        // Partial usage (only one field) doesn't count → fall back to estimates.
+        assert!(parse_usage(&serde_json::json!({"usage": {"prompt_tokens": 10}})).is_none());
     }
 }

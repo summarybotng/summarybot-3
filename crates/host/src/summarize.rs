@@ -364,9 +364,21 @@ impl<'a, C: LlmClient> SummarizationService<'a, C> {
             };
             match self.engine.complete(&request) {
                 Ok(response) => {
-                    let out_tokens = estimate_tokens(&response.text);
-                    guard.record(model.price.cost_micros(input_tokens, out_tokens));
-                    guard.record_tokens(input_tokens, out_tokens);
+                    // Prefer the provider's real token counts (ADR-134 #2); fall
+                    // back to character estimates when it doesn't report `usage`
+                    // (demo client / local endpoints that omit it).
+                    let (in_tokens, out_tokens) = match &response.usage {
+                        Some(u) => (u.prompt_tokens, u.completion_tokens),
+                        None => (input_tokens, estimate_tokens(&response.text)),
+                    };
+                    // Prefer the provider's real charge when reported (OpenRouter
+                    // `usage.cost`); else the configured per-token price estimate.
+                    let cost = response
+                        .usage
+                        .and_then(|u| u.cost_micros)
+                        .unwrap_or_else(|| model.price.cost_micros(in_tokens, out_tokens));
+                    guard.record(cost);
+                    guard.record_tokens(in_tokens, out_tokens);
                     match self.parse_and_finalize(
                         &response.text,
                         response.finish_reason,
@@ -708,6 +720,7 @@ mod tests {
             model: "test-model".into(),
             text: json.into(),
             finish_reason: finish,
+            usage: None,
         })
     }
 

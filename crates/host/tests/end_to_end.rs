@@ -35,6 +35,7 @@ impl LlmClient for FakeLlm {
             }"#
             .into(),
             finish_reason: domain::summarize::FinishReason::Stop,
+            usage: None,
         })
     }
 }

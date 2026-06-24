@@ -901,6 +901,7 @@ mod tests {
                 model: "fake".into(),
                 text: r#"{"text":"Daily recap.","key_points":["shipped"],"action_items":[],"technical_terms":[],"participants":["Alice"],"citations":[]}"#.into(),
                 finish_reason: FinishReason::Stop,
+                usage: None,
             })
         }
     }
@@ -1163,6 +1164,8 @@ mod tests {
                     enabled: true,
                     created_at: 1,
                     rolling_deliver_intermediate: intermediate,
+                    last_delivery_at: None,
+                    last_status: None,
                 },
             )
             .unwrap();

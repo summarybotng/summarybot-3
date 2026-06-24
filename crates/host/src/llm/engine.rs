@@ -28,13 +28,29 @@ pub struct LlmRequest {
     pub prompt: String,
 }
 
+/// Actual token usage reported by the provider (OpenAI/OpenRouter `usage`
+/// block). When present, the pipeline records these *real* counts for spend +
+/// the metadata panel (ADR-106/134) instead of character-based estimates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenUsage {
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    /// The provider's *real* charge for this call in micro-dollars, when it
+    /// reports one (OpenRouter's `usage.cost`, USD → µ$). `None` → the caller
+    /// falls back to its configured per-token price estimate.
+    pub cost_micros: Option<i64>,
+}
+
 /// A successful completion. `finish_reason` is the structural signal the
-/// summarizer's quality gate uses (Q#6) to detect truncation.
+/// summarizer's quality gate uses (Q#6) to detect truncation. `usage` carries
+/// the provider's real token counts when it reports them (None for the demo
+/// client / providers that omit it → the caller falls back to estimates).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmResponse {
     pub model: String,
     pub text: String,
     pub finish_reason: FinishReason,
+    pub usage: Option<TokenUsage>,
 }
 
 /// A classified LLM failure (LEG-002). `retry_after_secs` is the server hint, if
@@ -257,6 +273,7 @@ mod tests {
             model: "m".into(),
             text: text.into(),
             finish_reason: FinishReason::Stop,
+            usage: None,
         })
     }
     fn err(class: FailureClass, retry_after: Option<i64>) -> Result<LlmResponse, LlmError> {
