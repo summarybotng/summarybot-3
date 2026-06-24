@@ -303,10 +303,22 @@ where
         let _ = job.start(now);
         let _ = self.repo.create_job(&job);
 
+        // Per-schedule length (ADR-133 §B / v2 parity) overrides the runner
+        // default when set; unknown values fall back to the default.
+        let length = opts
+            .as_ref()
+            .and_then(|o| o.length.as_deref())
+            .map(|l| match l {
+                "brief" => SummaryLength::Brief,
+                "comprehensive" => SummaryLength::Comprehensive,
+                _ => SummaryLength::Detailed,
+            })
+            .unwrap_or(self.length);
+
         let outcome = match SummarizationService::new(self.engine, self.ladder).summarize(
             &SummarizeRequest {
                 messages: &messages,
-                length: self.length,
+                length,
                 provider: self.provider,
                 priority: RequestPriority::Low, // scheduled work yields to manual
                 cap_micros: self.cap_micros,

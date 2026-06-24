@@ -17,6 +17,9 @@ pub struct ScheduleOptions {
     pub perspective: Option<String>,
     pub title_template: Option<String>,
     pub enable_continuity: bool,
+    /// Summary length for this schedule's runs (`brief`/`detailed`/`comprehensive`);
+    /// `None` falls back to the runner default (ADR-133 §B / v2 parity).
+    pub length: Option<String>,
 }
 
 impl ScheduleOptions {
@@ -26,6 +29,7 @@ impl ScheduleOptions {
             && self.perspective.is_none()
             && self.title_template.is_none()
             && !self.enable_continuity
+            && self.length.is_none()
     }
 }
 
@@ -40,19 +44,21 @@ impl ScheduleOptionsRepository for SqliteRepository {
     fn set_schedule_options(&self, schedule_id: &str, opts: &ScheduleOptions) -> Result<()> {
         self.conn.execute(
             "INSERT INTO schedule_options
-               (schedule_id, prompt_template_id, perspective, title_template, enable_continuity)
-             VALUES (?1,?2,?3,?4,?5)
+               (schedule_id, prompt_template_id, perspective, title_template, enable_continuity, length)
+             VALUES (?1,?2,?3,?4,?5,?6)
              ON CONFLICT(schedule_id) DO UPDATE SET
                prompt_template_id = excluded.prompt_template_id,
                perspective        = excluded.perspective,
                title_template     = excluded.title_template,
-               enable_continuity  = excluded.enable_continuity",
+               enable_continuity  = excluded.enable_continuity,
+               length             = excluded.length",
             params![
                 schedule_id,
                 opts.prompt_template_id,
                 opts.perspective,
                 opts.title_template,
                 opts.enable_continuity,
+                opts.length,
             ],
         )?;
         Ok(())
@@ -62,7 +68,7 @@ impl ScheduleOptionsRepository for SqliteRepository {
         Ok(self
             .conn
             .query_row(
-                "SELECT prompt_template_id, perspective, title_template, enable_continuity
+                "SELECT prompt_template_id, perspective, title_template, enable_continuity, length
                  FROM schedule_options WHERE schedule_id = ?1",
                 params![schedule_id],
                 |row| {
@@ -71,6 +77,7 @@ impl ScheduleOptionsRepository for SqliteRepository {
                         perspective: row.get(1)?,
                         title_template: row.get(2)?,
                         enable_continuity: row.get(3)?,
+                        length: row.get(4)?,
                     })
                 },
             )
@@ -99,6 +106,7 @@ mod tests {
             perspective: Some("developer".into()),
             title_template: Some("Weekly Eng Digest".into()),
             enable_continuity: true,
+            length: Some("brief".into()),
         };
         repo.set_schedule_options("s1", &opts).unwrap();
         assert_eq!(repo.get_schedule_options("s1").unwrap().unwrap(), opts);

@@ -77,6 +77,10 @@ pub struct CreateScheduleRequest {
     /// Carry the previous digest forward as context (continuity).
     #[serde(default)]
     pub enable_continuity: bool,
+    /// Summary length: `brief`/`detailed`/`comprehensive` (ADR-133 §B / v2 parity).
+    /// Omit to use the runner default.
+    #[serde(default)]
+    pub length: Option<String>,
 }
 
 fn default_dom() -> u32 {
@@ -116,6 +120,8 @@ pub struct ScheduleDto {
     pub perspective: Option<String>,
     pub title_template: Option<String>,
     pub enable_continuity: bool,
+    /// Summary length (`brief`/`detailed`/`comprehensive`), if set (ADR-133 §B).
+    pub length: Option<String>,
     pub next_run: i64,
     pub consecutive_failures: u32,
 }
@@ -143,6 +149,7 @@ impl From<StoredSchedule> for ScheduleDto {
             perspective: None,
             title_template: None,
             enable_continuity: false,
+            length: None,
             next_run: s.next_run,
             consecutive_failures: s.consecutive_failures,
         }
@@ -173,6 +180,7 @@ fn dto_with_source(repo: &repository::SqliteRepository, s: StoredSchedule) -> Sc
         dto.perspective = opts.perspective;
         dto.title_template = opts.title_template;
         dto.enable_continuity = opts.enable_continuity;
+        dto.length = opts.length;
     }
     dto
 }
@@ -191,11 +199,19 @@ fn apply_options(
             return Err(ApiError::bad_request("unknown perspective"));
         }
     }
+    // Validate the summary length if given (ADR-133 §B / v2 parity).
+    let length = body.length.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if let Some(l) = length {
+        if !matches!(l, "brief" | "detailed" | "comprehensive") {
+            return Err(ApiError::bad_request("length must be brief|detailed|comprehensive"));
+        }
+    }
     let opts = ScheduleOptions {
         prompt_template_id: body.prompt_template_id.clone().filter(|s| !s.trim().is_empty()),
         perspective: body.perspective.clone().filter(|s| !s.trim().is_empty()),
         title_template: body.title_template.clone().filter(|s| !s.trim().is_empty()),
         enable_continuity: body.enable_continuity,
+        length: length.map(|s| s.to_string()),
     };
     if opts.is_empty() {
         repo.delete_schedule_options(schedule_id)

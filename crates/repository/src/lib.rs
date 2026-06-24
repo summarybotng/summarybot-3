@@ -543,7 +543,8 @@ impl SqliteRepository {
                 prompt_template_id TEXT,
                 perspective        TEXT,
                 title_template     TEXT,
-                enable_continuity  INTEGER NOT NULL DEFAULT 0
+                enable_continuity  INTEGER NOT NULL DEFAULT 0,
+                length             TEXT
             );
             -- Knowledge units extracted from summaries (KNO-001; ADR-127). The
             -- embedding is f32 little-endian bytes; `model` pins which embedder
@@ -727,6 +728,9 @@ const MIGRATIONS: &[(&str, &str)] = &[
     // Report-issue fidelity (ADR-133 D4 / ADR-039): severity + captured browser.
     ("0027_problem_reports_severity", "ALTER TABLE problem_reports ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium'"),
     ("0028_problem_reports_browser", "ALTER TABLE problem_reports ADD COLUMN browser TEXT"),
+    // Per-schedule summary length (ADR-133 §B / v2 parity): the Create wizard's
+    // length choice, applied by the runner.
+    ("0029_schedule_options_length", "ALTER TABLE schedule_options ADD COLUMN length TEXT"),
 ];
 
 /// Apply any unapplied migrations in order. Tolerates an additive ALTER whose

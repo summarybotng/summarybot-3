@@ -120,6 +120,8 @@ export interface CreateScheduleBody {
   perspective?: string | null
   title_template?: string | null
   enable_continuity?: boolean
+  /** Summary length: brief | detailed | comprehensive (ADR-133 §B / v2 parity). */
+  length?: string | null
 }
 
 /** An authenticated API client bound to a session, with refresh-on-401. */
@@ -311,6 +313,8 @@ export class Client {
     chat: string,
     lookbackSecs: number,
     source?: { platform: string; sourceId: string | null },
+    // Steering options (ADR-133 §B / v2 parity): perspective / template / length.
+    opts: { perspective?: string | null; prompt_template_id?: string | null; length?: string | null } = {},
   ): Promise<{ produced: boolean; summary: Summary | null }> {
     const sched = await this.createSchedule({
       schedule_type: 'daily',
@@ -321,6 +325,9 @@ export class Client {
       // A live source lets category/channel scope resolve fresh before the run.
       platform: source?.platform ?? null,
       source_id: source?.sourceId ?? null,
+      perspective: opts.perspective ?? null,
+      prompt_template_id: opts.prompt_template_id ?? null,
+      length: opts.length ?? null,
     })
     try {
       return await this.triggerSchedule(sched.id)

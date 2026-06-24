@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAuth } from '../auth'
-import type { ChatCoverage, SourceChannel, SourceServer, Summary } from '../types'
+import type { ChatCoverage, Prompts, SourceChannel, SourceServer, Summary } from '../types'
 
 // Unified "Create Summary" wizard (ADR-088/089): one entry point for all three
 // summary-creation flows — Now / Recurring / Past — that previously lived as
@@ -26,10 +26,33 @@ const NOW_PRESETS: { label: string; secs: number }[] = [
 
 const ALL = '*'
 
+const LENGTHS: { id: string; label: string }[] = [
+  { id: 'brief', label: 'Brief' },
+  { id: 'detailed', label: 'Detailed' },
+  { id: 'comprehensive', label: 'Comprehensive' },
+]
+
+// Resolve the combined perspective/template picker value into the two server
+// fields. `t:<id>` → a saved template; `p:<id>` → a built-in perspective
+// (`general` means "no steering"); '' → default.
+function resolveSteer(v: string): { perspective: string | null; prompt_template_id: string | null } {
+  if (v.startsWith('t:')) return { perspective: null, prompt_template_id: v.slice(2) }
+  if (v.startsWith('p:')) {
+    const id = v.slice(2)
+    return { perspective: id === 'general' ? null : id, prompt_template_id: null }
+  }
+  return { perspective: null, prompt_template_id: null }
+}
+
 export function CreateSummary() {
   const { client } = useAuth()
   const [step, setStep] = useState<1 | 2>(1)
   const [platform, setPlatform] = useState<Platform | null>(null)
+
+  // Steering options (ADR-133 §B / v2 parity): perspective/template + length.
+  const [prompts, setPrompts] = useState<Prompts | null>(null)
+  const [steer, setSteer] = useState('') // '' | p:<id> | t:<id>
+  const [length, setLength] = useState('detailed')
 
   // Channel/chat selection.
   const [chats, setChats] = useState<ChatCoverage[]>([])
@@ -44,6 +67,12 @@ export function CreateSummary() {
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<string | null>(null)
   const [made, setMade] = useState<Summary | null>(null)
+
+  // Load perspectives + saved templates once for the options picker.
+  useEffect(() => {
+    if (!client) return
+    client.listPrompts().then(setPrompts).catch(() => setPrompts(null))
+  }, [client])
 
   // Reset downstream state whenever the platform changes.
   useEffect(() => {
@@ -84,9 +113,14 @@ export function CreateSummary() {
     setResult(null)
     setMade(null)
     try {
+      const { perspective, prompt_template_id } = resolveSteer(steer)
       if (when === 'now') {
         const src = platform === 'whatsapp' ? undefined : { platform: platform as string, sourceId: server || null }
-        const r = await client.summarizeChannelNow(channel, nowSecs, src)
+        const r = await client.summarizeChannelNow(channel, nowSecs, src, {
+          perspective,
+          prompt_template_id,
+          length,
+        })
         setMade(r.summary)
         setResult(
           r.produced ? 'Summary produced — see it below / on the Summaries tab.' : 'No messages in that window — nothing produced.',
@@ -101,6 +135,9 @@ export function CreateSummary() {
           platform: platform === 'whatsapp' ? null : platform,
           source_id: platform === 'whatsapp' ? null : server || null,
           rolling_period: rolling || null,
+          perspective,
+          prompt_template_id,
+          length,
         })
         setResult('Schedule created — manage it on the Schedules tab.')
       } else {
@@ -300,6 +337,49 @@ export function CreateSummary() {
             <p className="text-sm text-slate-500">
               Produces one summary per non-empty week across this chat's imported history.
             </p>
+          )}
+
+          {/* Summary options (ADR-133 §B / v2 parity): perspective/template + length.
+              Retrospective (Past) uses workspace defaults, so hide it there. */}
+          {when !== 'past' && (
+            <div className="flex flex-wrap items-end gap-3 border-t border-slate-100 pt-3">
+              <label className="flex-1 text-sm">
+                <span className="text-slate-500">Perspective / template</span>
+                <select
+                  value={steer}
+                  onChange={(e) => setSteer(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                >
+                  <option value="">General (default)</option>
+                  {(prompts?.perspectives ?? [])
+                    .filter((p) => p.id !== 'general')
+                    .map((p) => (
+                      <option key={p.id} value={`p:${p.id}`}>
+                        {p.label}
+                      </option>
+                    ))}
+                  {(prompts?.templates ?? []).map((t) => (
+                    <option key={t.id} value={`t:${t.id}`}>
+                      📝 {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm">
+                <span className="text-slate-500">Length</span>
+                <select
+                  value={length}
+                  onChange={(e) => setLength(e.target.value)}
+                  className="mt-1 rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                >
+                  {LENGTHS.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           )}
 
           <div className="flex items-center justify-between">
