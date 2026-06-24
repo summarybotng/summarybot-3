@@ -46,7 +46,7 @@ hard-coded `"demo"`. Dev points the model at whatever the Mac mini serves
 > left the *no-model-set* case undefined, and the implementation defaulted it to
 > the literal `"demo"` — which a real provider rejects (`Llm(InvalidRequest)`).
 > Resolved: an explicit `LLM_MODEL` wins; otherwise the **default is
-> backend-aware** — OpenRouter → `anthropic/claude-3.5-haiku` (economical current
+> backend-aware** — OpenRouter → `anthropic/claude-haiku-4.5` (economical current
 > Claude, like v2's baked-in default), a local `LLM_BASE_URL` must still pin its
 > deployment-specific model name, and the demo backend keeps `"demo"`. General
 > rule for every rung here: a rung that resolves a *backend* must also resolve a
